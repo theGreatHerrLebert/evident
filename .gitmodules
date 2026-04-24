@@ -1,0 +1,6 @@
+[submodule "cases/proteon"]
+	path = cases/proteon
+	url = https://github.com/theGreatHerrLebert/proteon
+[submodule "cases/cu-ims-primitives"]
+	path = cases/cu-ims-primitives
+	url = https://github.com/theGreatHerrLebert/cu-ims-primitives

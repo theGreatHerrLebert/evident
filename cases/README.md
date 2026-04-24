@@ -11,6 +11,15 @@ Each case should describe:
 
 ---
 
+## Current Cases
+
+- [Proteon](proteon.md) - oracle-backed release readiness for a structural
+  bioinformatics toolkit.
+- [cu-ims-primitives](cu-ims-primitives.md) - mid-flight validation of a
+  GPU-native proteomics primitive stack.
+
+---
+
 ## Example Ideas
 
 - AI-generated CUDA implementation

@@ -26,3 +26,20 @@ System performs well on known datasets but fails in practice.
 
 ## Plausible Output Bias
 Results look reasonable and are accepted without verification.
+
+---
+
+## Validation Theater
+Many benchmarks, plots, or comparisons are produced, but they do not state the
+trust question, oracle, tolerance, assumption, or decision rule they support.
+
+Why it is dangerous:
+- evidence volume is mistaken for evidence quality
+- teams optimize visible metrics without knowing what they prove
+- failures are hard to interpret because no claim was pinned in advance
+
+Recovery:
+- name the claim being validated
+- identify the oracle or reference
+- declare the tolerance before running the comparison
+- document what result would block release or require redesign
