@@ -2,7 +2,17 @@
 
 Modern software development has changed.
 
-With AI-assisted programming, we can generate complex systems faster than we can fully understand them. This breaks a long-standing assumption in scientific computing: that the person who writes the code understands it well enough to justify its behavior.
+Scientific computing has always had trust problems: legacy code, copied
+algorithms, opaque dependencies, numerical convention gaps, and tools used
+beyond the user's understanding.
+
+AI-assisted programming did not create those problems. It makes them easier to
+encounter. We can now generate complex systems faster than we can fully inspect
+or understand them, and more people can build software in domains where they
+may not yet have deep implementation experience.
+
+That weakens a long-standing assumption in scientific computing: that the
+person who writes the code understands it well enough to justify its behavior.
 
 This repository is a starting point for a community-driven effort to answer a simple question:
 
@@ -76,9 +86,11 @@ Scientific results depend on computational systems.
 
 If we cannot justify how those systems behave, we cannot defend the conclusions drawn from them.
 
-AI-assisted development increases both capability and risk:
+These problems are not new. AI-assisted development makes them more visible and
+more urgent by increasing both capability and risk:
 - systems grow faster
 - inspection becomes harder
+- less-experienced developers can reach complex implementations sooner
 - errors become easier to miss
 
 This repository explores how to respond to that shift.
