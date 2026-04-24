@@ -1,0 +1,7 @@
+.git
+.gitmodules
+cases/proteon
+cases/cu-ims-primitives
+**/__pycache__
+**/.pytest_cache
+**/.mypy_cache

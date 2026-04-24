@@ -45,16 +45,19 @@ This is not a fixed standard. It is a growing collection of:
 - **Patterns** → repeatable solutions
 - **Anti-patterns** → common failure modes
 - **Checklists** → practical tools for day-to-day use
+- **Workflow blueprint** → manifest-driven evidence replay
 
 ---
 
 ## Structure
+/evident.yaml     → example claim manifest
 /concepts        → definitions and mental models
 /rules           → enforceable guidelines
 /patterns        → how to solve recurring problems
 /anti-patterns   → how things go wrong
 /checklists      → practical evaluation tools
 /cases           → real-world examples
+/workflow        → Docker and manifest validation blueprint
 
 ---
 

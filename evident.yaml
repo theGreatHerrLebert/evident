@@ -1,0 +1,66 @@
+version: 0.1
+claims:
+  - id: proteon-oracle-backed-release-gate
+    title: Proteon core numerical claims are release-gated by external oracles
+    case: cases/proteon.md
+    source: cases/proteon
+    tier: release
+    trust_strategy:
+      - validation
+      - understanding
+    pattern: patterns/README.md#oracle-backed-release-gate
+    claim: >
+      Core Proteon numerical and structural-biology claims should be accepted
+      for release only when they point to an independent oracle, a documented
+      tolerance, a reproducible command, and a recorded artifact for the release
+      commit.
+    evidence:
+      oracle:
+        - OpenMM
+        - BALL
+        - USAlign
+        - Biopython
+        - Gemmi
+        - FreeSASA
+        - pydssp
+        - reduce
+      tolerance: Declared per oracle test or validation script.
+      command: pytest tests/oracle -v
+      artifact: validation/report.html
+    assumptions:
+      - Heavy release oracles may not run in fast CI.
+      - Oracle disagreement is treated as a Proteon bug until a convention gap
+        is demonstrated and documented.
+    failure_modes:
+      - Golden fixtures drift without live oracle regeneration.
+      - Release claims outgrow the checks actually rerun before tagging.
+
+  - id: cu-ims-layered-sim-real-validation
+    title: cu-ims-primitives uses layered simulated and real-reference validation
+    case: cases/cu-ims-primitives.md
+    source: cases/cu-ims-primitives
+    tier: research
+    trust_strategy:
+      - validation
+    pattern: patterns/README.md#layered-evaluation-against-simulated-and-real-references
+    claim: >
+      A mid-flight GPU proteomics pipeline should be evaluated in layers:
+      simulated ground truth for exact intermediate checks, real-data reference
+      tools for external pressure, and CPU/CUDA parity for acceleration risk.
+    evidence:
+      oracle:
+        - TimSim synthetic blueprint
+        - timsseek
+        - DiaTracer
+        - DiaNN
+        - FragPipe
+      tolerance: Tiered by primitive; see docs/primitives/TEST_MATRIX.md.
+      command: python py/eval/run_layered_eval.py --help
+      artifact: bench/<track>/<phase>/metrics.json
+    assumptions:
+      - Simulated truth is exact only for what the simulator models.
+      - Real-data reference tools are proxies, not absolute ground truth.
+      - Some primitives can only be judged by downstream behavior.
+    failure_modes:
+      - Simulator overfitting improves synthetic metrics while hurting real data.
+      - Benchmark volume creates false confidence without decision rules.
