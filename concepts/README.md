@@ -33,6 +33,17 @@ Examples:
 - simulation with ground truth
 - cross-implementation agreement
 
+### Levels of Validation
+
+0. Smoke — it runs
+1. Example — passes hand-picked inputs
+2. Property — invariants hold over generated inputs
+3. Oracle — agrees with an independent reference within tolerance
+4. Multi-oracle — agrees with references that disagree with each other
+5. Reference — adopted as the reference by external users
+
+The Understanding and Validation ladders trade off: lower understanding requires higher validation.
+
 Validation depends on assumptions and can fail systematically.
 
 ---
@@ -59,6 +70,17 @@ It arises from a combination of:
 - validation
 - proof
 
+### Trust Envelope
+
+Trust is relational. A claim states:
+
+- purpose — what the component is used for
+- tolerance — how much error is acceptable for that purpose
+- environment — hardware, dataset, dependency versions
+- expiry — what would invalidate the claim
+
+A claim outside its envelope is not the same claim.
+
 ---
 
 ## Failure Modes
@@ -77,3 +99,16 @@ Examples:
 - established tools
 - analytical solutions
 - simulated ground truth
+
+---
+
+## Provenance
+
+The chain of custody of evidence. Separable from Understanding (mental model) and Validation (results).
+
+Includes:
+- source — port, transcription, generation, paper-inspired, original
+- attribution — authorship and license boundaries
+- audit trail — oracle version, fixture commit, environment, run
+
+A result without provenance is not reproducible evidence.
