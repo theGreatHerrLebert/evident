@@ -1,6 +1,6 @@
 # Patterns
 
-Patterns are reusable solutions for establishing trust.
+Patterns are reusable evidence structures for supporting specific claims.
 
 ---
 

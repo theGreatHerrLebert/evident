@@ -1,38 +1,40 @@
-# Trust in AI-Assisted Scientific Software
+# EVIDENT
 
-Modern software development has changed.
+EVIDENT is a claim-based evidence workflow for AI-assisted scientific
+software. It does not ask whether code "looks right"; it asks what claim is
+being made, what evidence supports it, and what would falsify it.
 
-Scientific computing has always had trust problems: legacy code, copied
-algorithms, opaque dependencies, numerical convention gaps, and tools used
-beyond the user's understanding.
-
-AI-assisted programming did not create those problems. It makes them easier to
-encounter. We can now generate complex systems faster than we can fully inspect
-or understand them, and more people can build software in domains where they
-may not yet have deep implementation experience.
-
-That weakens a long-standing assumption in scientific computing: that the
-person who writes the code understands it well enough to justify its behavior.
-
-This repository is a starting point for a community-driven effort to answer a simple question:
+It starts from a simple question:
 
 > **How do we justify trust in computational results when we did not fully author or inspect the code that produced them?**
 
 ---
 
-## Core Idea
+## Core Workflow
 
-We shift from:
+EVIDENT shifts from:
 
 - “I trust this because I understand it”
 
 to:
 
-- **“I trust this because I have sufficient evidence, understanding, or guarantees.”**
+- **“I trust this claim because it has sufficient evidence, understanding, or guarantees.”**
+
+The workflow is:
+
+```text
+claim
+  -> trust strategy
+  -> oracle/reference
+  -> tolerance or decision rule
+  -> reproducible command
+  -> artifact
+  -> assumptions and failure modes
+```
 
 ---
 
-## Foundations of Trust
+## Trust Strategies
 
 Trust in a computational component can be established through three complementary mechanisms:
 
@@ -48,26 +50,31 @@ In practice, most systems rely on a combination of these.
 
 ## What This Repository Provides
 
-This is not a fixed standard. It is a growing collection of:
+This is not a fixed standard. It is a small framework for making computational
+trust claims explicit and reviewable:
 
-- **Concepts** → shared vocabulary (e.g. understanding levels, validation types)
+- **Manifest** → claim, evidence, command, artifact, assumptions, failure modes
+- **Workflow blueprint** → lightweight manifest checks plus case-specific replay
+- **Cases** → real examples of release-grade and research-grade evidence
+- **Patterns** → repeatable evidence structures
+- **Anti-patterns** → common ways evidence becomes misleading
 - **Rules** → actionable guidelines
-- **Patterns** → repeatable solutions
-- **Anti-patterns** → common failure modes
-- **Checklists** → practical tools for day-to-day use
-- **Workflow blueprint** → manifest-driven evidence replay
+- **Concepts and checklists** → shared vocabulary for review
 
 ---
 
 ## Structure
-/evident.yaml     → example claim manifest
-/concepts        → definitions and mental models
-/rules           → enforceable guidelines
-/patterns        → how to solve recurring problems
-/anti-patterns   → how things go wrong
-/checklists      → practical evaluation tools
-/cases           → real-world examples
-/workflow        → Docker and manifest validation blueprint
+
+```text
+evident.yaml      example claim manifest
+workflow/         Docker and manifest validation blueprint
+cases/            real-world examples
+patterns/         reusable evidence structures
+anti-patterns/    misleading evidence patterns
+rules/            actionable guidelines
+concepts/         definitions and mental models
+checklist/        practical review prompts
+```
 
 ---
 
@@ -82,16 +89,14 @@ This is not a fixed standard. It is a growing collection of:
 
 ## Why This Matters
 
-Scientific results depend on computational systems.
+Scientific computing already has trust problems: legacy code, copied
+algorithms, opaque dependencies, numerical convention gaps, and tools used
+beyond the user's understanding. AI-assisted development makes those problems
+easier to encounter because complex systems can now be produced faster than
+they can be fully inspected.
 
-If we cannot justify how those systems behave, we cannot defend the conclusions drawn from them.
-
-These problems are not new. AI-assisted development makes them more visible and
-more urgent by increasing both capability and risk:
-- systems grow faster
-- inspection becomes harder
-- less-experienced developers can reach complex implementations sooner
-- errors become easier to miss
+If we cannot justify how a computational system behaves, we cannot defend the
+conclusions drawn from it.
 
 This repository explores how to respond to that shift.
 
@@ -101,10 +106,10 @@ This repository explores how to respond to that shift.
 
 Start small:
 
-- Add a concept
-- Propose a rule
-- Document a failure case
-- Share a validation strategy
+- Add a claim
+- Tighten an oracle or tolerance
+- Document a failure mode
+- Improve a replay command
 
 You don’t need to be complete — partial insights are valuable.
 

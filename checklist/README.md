@@ -1,17 +1,18 @@
-# Checklists
+# Checklist
 
-Practical tools for evaluating components.
+Practical prompts for reviewing an EVIDENT claim.
 
 ---
 
-## Component Trust Checklist
+## Claim Trust Checklist
 
-- [ ] What level of understanding is available?
-- [ ] What validation strategy is used?
+- [ ] What claim is being made?
+- [ ] What trust strategy is used: understanding, validation, proof, or a mix?
 - [ ] Is there an independent oracle?
-- [ ] Are assumptions documented?
-- [ ] Are failure modes known?
-- [ ] Is validation reproducible?
+- [ ] Is the tolerance or decision rule explicit?
+- [ ] Is there a reproducible command?
+- [ ] Is there a recorded artifact?
+- [ ] Are assumptions and failure modes documented?
 - [ ] Are attribution and sources clear?
 - [ ] Are licensing constraints considered?
 

@@ -1,14 +1,14 @@
-# EVIDENT Workflow Blueprint
+# Workflow Blueprint
 
-This directory sketches how an EVIDENT trust workflow can be shipped and
-replayed without turning every case study into one giant container.
+This directory sketches how an EVIDENT claim can be checked and replayed
+without turning every case study into one giant container.
 
-The key idea is separation:
+The separation is deliberate:
 
-- the **manifest** declares claims, evidence, commands, tolerances, and
-  reproducibility tier
-- the **base runner** checks repo-native evidence structure
-- optional **case runners** provide heavy domain environments such as OpenMM,
+- the **manifest** declares the claim, evidence, command, tolerance, artifact,
+  assumptions, failure modes, and reproducibility tier
+- the **base runner** checks structure and local paths
+- optional **case runners** provide domain environments such as OpenMM,
   CUDA, or large benchmark data
 
 Docker packages the reproducibility boundary. It should not hide the trust
@@ -18,7 +18,7 @@ without running the container.
 ## Workflow Shape
 
 ```text
-evident.yaml              trust claims and replay recipes
+evident.yaml              claim manifest
 workflow/
   README.md               workflow model
   Dockerfile              lightweight base runner
@@ -60,7 +60,7 @@ Each claim should answer:
 ## Container Strategy
 
 The default Docker image is deliberately small. It validates the manifest and
-can run documentation-level checks.
+local paths. It does not prove scientific correctness.
 
 Heavy validation should be split into optional images or compose profiles:
 

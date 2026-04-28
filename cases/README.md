@@ -1,13 +1,13 @@
 # Cases
 
-Real-world examples of applying these principles.
+Real-world examples of claim-based evidence workflows.
 
 Each case should describe:
-- the problem
-- the approach
-- what worked
-- what failed
-- how trust was established (or not)
+- the claim being evaluated
+- the trust strategy
+- the oracle, tolerance, command, and artifact
+- the assumptions and failure modes
+- what worked and what still failed
 
 ---
 

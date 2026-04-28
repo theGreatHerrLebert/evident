@@ -1,13 +1,14 @@
 # Rules
 
-Rules are actionable guidelines. They should be specific, checkable, and useful in practice.
+Rules are actionable guidelines for making claims specific, checkable, and
+useful in practice.
 
 ---
 
 ## Core Rules
 
 ### 1. Declare Trust Strategy
-Every component must state how its correctness is established:
+Every claim must state how its correctness is established:
 - understanding
 - validation
 - proof
@@ -48,7 +49,7 @@ Only validated components should be used as building blocks.
 ---
 
 ### 8. Ensure Reproducibility
-Validation must be:
+Evidence must be:
 - versioned
 - automated
 - repeatable
