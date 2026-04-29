@@ -70,6 +70,14 @@ It arises from a combination of:
 - validation
 - proof
 
+Claims can sit at different layers:
+- implementation — behavior of a component
+- pipeline — reproducible transformation from inputs to outputs
+- scientific — interpretation supported by outputs under assumptions
+
+Evidence should be judged at the layer where the claim is made. Correct code
+does not by itself establish a scientific conclusion.
+
 ### Trust Envelope
 
 Trust is relational. A claim states:

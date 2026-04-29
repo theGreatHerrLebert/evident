@@ -32,6 +32,14 @@ claim
   -> assumptions and failure modes
 ```
 
+Claims may be about different layers:
+
+- **Implementation claim** — a component behaves according to a specification.
+- **Pipeline claim** — a workflow transforms inputs into outputs reproducibly.
+- **Scientific claim** — outputs support an interpretation under stated assumptions.
+
+Evidence for one layer does not automatically validate the next.
+
 ---
 
 ## Trust Strategies

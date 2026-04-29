@@ -7,6 +7,7 @@ Practical prompts for reviewing an EVIDENT claim.
 ## Claim Trust Checklist
 
 - [ ] What claim is being made?
+- [ ] Is it an implementation, pipeline, or scientific claim?
 - [ ] What trust strategy is used: understanding, validation, proof, or a mix?
 - [ ] Is there an independent oracle?
 - [ ] Is the tolerance or decision rule explicit?
