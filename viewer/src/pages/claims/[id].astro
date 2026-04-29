@@ -1,0 +1,171 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import { allClaims, type Claim } from '../../lib/manifest';
+
+export function getStaticPaths() {
+  return allClaims.map((claim) => ({
+    params: { id: claim.id },
+    props: { claim },
+  }));
+}
+
+interface Props { claim: Claim }
+const { claim } = Astro.props;
+
+function isPlaceholder(s: string | null | undefined): boolean {
+  return typeof s === 'string' && s.startsWith('PENDING-');
+}
+
+const lv = claim.last_verified;
+const lvEmpty = !lv || (!lv.commit && !lv.date && lv.value == null && !lv.corpus_sha);
+---
+<Layout title={claim.title}>
+  <article class="claim-detail">
+    <header>
+      <p class="meta"><a href="/">← All claims</a></p>
+      <h1>{claim.title}</h1>
+      <p class="meta">
+        <code>{claim.id}</code>
+        {' · '}<span class={`badge kind-${claim.kind}`}>{claim.kind}</span>
+        {' · '}<span class={`badge tier-${claim.tier}`}>{claim.tier}</span>
+        {claim.subsystem && (<>{' · '}<code>{claim.subsystem}</code></>)}
+        {' · '}<span>{claim.project}</span>
+      </p>
+    </header>
+
+    <section>
+      <h2>Claim</h2>
+      <blockquote class="quote">{claim.claim}</blockquote>
+    </section>
+
+    {claim.tolerances?.length ? (
+      <section>
+        <h2>Tolerances</h2>
+        <ul class="tolerances">
+          {claim.tolerances.map((t) => (
+            <li>
+              {t.metric ? (
+                <div><span class="tol-spec">{t.metric} {t.op} {t.value}</span></div>
+              ) : null}
+              <div>{t.prose}</div>
+            </li>
+          ))}
+        </ul>
+      </section>
+    ) : null}
+
+    {claim.inputs ? (
+      <section>
+        <h2>Inputs</h2>
+        <dl class="kv">
+          {claim.inputs.corpus ? (<><dt>Corpus</dt><dd>{claim.inputs.corpus}</dd></>) : null}
+          {claim.inputs.n != null ? (<><dt>n</dt><dd>{claim.inputs.n}</dd></>) : null}
+          {claim.inputs.class ? (<><dt>Class</dt><dd>{claim.inputs.class}</dd></>) : null}
+          {claim.inputs.fixture_path ? (<><dt>Fixture</dt><dd><code>{claim.inputs.fixture_path}</code></dd></>) : null}
+          {claim.inputs.corpus_sha ? (
+            <>
+              <dt>Corpus SHA</dt>
+              <dd>
+                <code class={isPlaceholder(claim.inputs.corpus_sha) ? 'placeholder' : ''}>
+                  {claim.inputs.corpus_sha}
+                </code>
+                {isPlaceholder(claim.inputs.corpus_sha) ? (<span class="placeholder"> (placeholder)</span>) : null}
+              </dd>
+            </>
+          ) : null}
+        </dl>
+      </section>
+    ) : null}
+
+    {claim.outputs ? (
+      <section>
+        <h2>Outputs</h2>
+        <ul class="bare">
+          {Object.entries(claim.outputs).map(([name, def]) => (
+            <li>
+              <code>{name}</code>
+              {def.unit ? <span class="meta"> ({def.unit})</span> : null}
+              {def.description ? <div>{def.description}</div> : null}
+            </li>
+          ))}
+        </ul>
+      </section>
+    ) : null}
+
+    {claim.pinned_versions ? (
+      <section>
+        <h2>Pinned versions</h2>
+        <dl class="kv">
+          {Object.entries(claim.pinned_versions).map(([name, ver]) => (
+            <>
+              <dt>{name}</dt>
+              <dd>
+                <code class={isPlaceholder(ver) ? 'placeholder' : ''}>{ver}</code>
+                {isPlaceholder(ver) ? (<span class="placeholder"> (placeholder)</span>) : null}
+              </dd>
+            </>
+          ))}
+        </dl>
+      </section>
+    ) : null}
+
+    <section>
+      <h2>Evidence</h2>
+      <dl class="kv">
+        <dt>Oracles</dt>
+        <dd>{claim.evidence.oracle.join(', ')}</dd>
+        <dt>Command</dt>
+        <dd><pre><code>{claim.evidence.command}</code></pre></dd>
+        <dt>Artifact</dt>
+        <dd><code>{claim.evidence.artifact}</code></dd>
+      </dl>
+    </section>
+
+    <section>
+      <h2>Last verified</h2>
+      {lvEmpty ? (
+        <p class="meta"><em>Not yet verified.</em></p>
+      ) : (
+        <dl class="kv">
+          {lv?.commit ? (<><dt>Commit</dt><dd><code>{lv.commit}</code></dd></>) : null}
+          {lv?.date ? (<><dt>Date</dt><dd>{lv.date}</dd></>) : null}
+          {lv && lv.value != null ? (<><dt>Value</dt><dd>{lv.value}</dd></>) : null}
+          {lv?.corpus_sha ? (<><dt>Corpus SHA</dt><dd><code>{lv.corpus_sha}</code></dd></>) : null}
+        </dl>
+      )}
+    </section>
+
+    <section>
+      <h2>Trust strategy</h2>
+      <p>{claim.trust_strategy.join(', ')}</p>
+    </section>
+
+    {claim.capabilities?.length ? (
+      <section>
+        <h2>Capabilities satisfied</h2>
+        <ul class="bare">
+          {claim.capabilities.map((c) => <li><code>{c}</code></li>)}
+        </ul>
+      </section>
+    ) : null}
+
+    <section>
+      <h2>Assumptions</h2>
+      <ul>
+        {claim.assumptions.map((a) => <li>{a}</li>)}
+      </ul>
+    </section>
+
+    <section>
+      <h2>Failure modes</h2>
+      <ul>
+        {claim.failure_modes.map((f) => <li>{f}</li>)}
+      </ul>
+    </section>
+
+    <section class="compact">
+      <h2>Source</h2>
+      <p class="meta"><code>{claim.case}</code> · source: <code>{claim.source}</code></p>
+    </section>
+  </article>
+</Layout>

@@ -1,0 +1,160 @@
+---
+import Layout from '../layouts/Layout.astro';
+import { allClaims, manifests, uniqueSorted, type Tier } from '../lib/manifest';
+
+const tiers: Tier[] = ['ci', 'release', 'research'];
+const subsystems = uniqueSorted(allClaims.flatMap((c) => (c.subsystem ? [c.subsystem] : [])));
+const policyClaims = allClaims.filter((c) => c.kind === 'policy');
+const referenceClaims = allClaims.filter((c) => c.kind === 'reference');
+
+function claimsAt(subsystem: string, tier: Tier) {
+  return allClaims.filter(
+    (c) => c.kind === 'measurement' && c.subsystem === subsystem && c.tier === tier
+  );
+}
+---
+<Layout title="Coverage">
+  <h1>Coverage</h1>
+  <p class="summary-line">
+    Subsystem × tier matrix for measurement claims across {manifests.length} project{manifests.length === 1 ? '' : 's'}.
+    Each cell links to the claims at that level. Empty cells are gaps.
+  </p>
+
+  {subsystems.length === 0 ? (
+    <p><em>No measurement claims yet.</em></p>
+  ) : (
+    <table class="coverage">
+      <thead>
+        <tr>
+          <th data-sort-key="subsystem" class="sortable sort-asc">Subsystem</th>
+          {tiers.map((t) => (
+            <th data-sort-key={t} class="sortable">
+              <span class={`badge tier-${t}`}>{t}</span>
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {subsystems.map((s) => {
+          const counts = Object.fromEntries(tiers.map((t) => [t, claimsAt(s, t).length]));
+          return (
+            <tr
+              data-subsystem={s}
+              data-ci={counts.ci}
+              data-release={counts.release}
+              data-research={counts.research}
+            >
+              <th scope="row"><code>{s}</code></th>
+              {tiers.map((t) => {
+                const matching = claimsAt(s, t);
+                return (
+                  <td class={matching.length > 0 ? 'has-claims' : 'no-claims'}>
+                    {matching.length > 0 ? (
+                      <ul class="bare">
+                        {matching.map((c) => (
+                          <li>
+                            <a href={`/claims/${c.id}`} title={c.title}>
+                              {c.project} · {c.id.replace(`${c.project}-`, '')}
+                            </a>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <span class="gap">gap</span>
+                    )}
+                  </td>
+                );
+              })}
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  )}
+
+  <script is:inline>
+    (function () {
+      const tbody = document.querySelector('table.coverage tbody');
+      if (!tbody) return;
+      const headers = document.querySelectorAll('table.coverage th[data-sort-key]');
+      const params = new URLSearchParams(location.search);
+      let sortKey = params.get('sort') || 'subsystem';
+      let sortDir = params.get('dir') === 'desc' ? 'desc' : 'asc';
+
+      function getValue(row, key) {
+        if (key === 'subsystem') return row.dataset.subsystem || '';
+        return parseInt(row.dataset[key] || '0', 10);
+      }
+
+      function applySort() {
+        const rows = Array.from(tbody.querySelectorAll('tr'));
+        rows.sort((a, b) => {
+          const va = getValue(a, sortKey);
+          const vb = getValue(b, sortKey);
+          let cmp;
+          if (typeof va === 'number' && typeof vb === 'number') {
+            cmp = va - vb;
+          } else {
+            cmp = String(va).localeCompare(String(vb));
+          }
+          return sortDir === 'asc' ? cmp : -cmp;
+        });
+        rows.forEach((r) => tbody.appendChild(r));
+        headers.forEach((th) => {
+          th.classList.remove('sort-asc', 'sort-desc');
+          if (th.dataset.sortKey === sortKey) th.classList.add(`sort-${sortDir}`);
+        });
+        const p = new URLSearchParams(location.search);
+        p.set('sort', sortKey);
+        p.set('dir', sortDir);
+        history.replaceState(null, '', `?${p.toString()}`);
+      }
+
+      headers.forEach((th) => {
+        th.addEventListener('click', () => {
+          const key = th.dataset.sortKey;
+          if (sortKey === key) {
+            sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+          } else {
+            sortKey = key;
+            // Tier columns default to descending (most claims first)
+            sortDir = key === 'subsystem' ? 'asc' : 'desc';
+          }
+          applySort();
+        });
+      });
+
+      applySort();
+    })();
+  </script>
+
+  {policyClaims.length > 0 ? (
+    <section>
+      <h2>Policy claims</h2>
+      <ul>
+        {policyClaims.map((c) => (
+          <li>
+            <a href={`/claims/${c.id}`}>{c.title}</a>
+            {' · '}<span class={`badge tier-${c.tier}`}>{c.tier}</span>
+            {' · '}{c.project}
+          </li>
+        ))}
+      </ul>
+    </section>
+  ) : null}
+
+  {referenceClaims.length > 0 ? (
+    <section>
+      <h2>Reference claims</h2>
+      <ul>
+        {referenceClaims.map((c) => (
+          <li>
+            <a href={`/claims/${c.id}`}>{c.title}</a>
+            {' · '}<span class={`badge tier-${c.tier}`}>{c.tier}</span>
+            {' · '}{c.project}
+          </li>
+        ))}
+      </ul>
+    </section>
+  ) : null}
+</Layout>

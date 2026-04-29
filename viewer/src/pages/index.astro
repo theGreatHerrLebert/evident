@@ -1,0 +1,253 @@
+---
+import Layout from '../layouts/Layout.astro';
+import { allClaims, manifests, uniqueSorted } from '../lib/manifest';
+
+const tiers = ['ci', 'release', 'research'];
+const kinds = ['measurement', 'policy', 'reference'];
+const subsystems = uniqueSorted(allClaims.flatMap((c) => (c.subsystem ? [c.subsystem] : [])));
+const oracles = uniqueSorted(allClaims.flatMap((c) => c.evidence?.oracle ?? []));
+const projects = uniqueSorted(manifests.map((m) => m.project));
+
+const sortedClaims = [...allClaims].sort((a, b) => {
+  if (a.project !== b.project) return a.project.localeCompare(b.project);
+  if (a.tier !== b.tier) return tiers.indexOf(a.tier) - tiers.indexOf(b.tier);
+  return a.id.localeCompare(b.id);
+});
+
+const searchBlob = (c: typeof allClaims[number]) =>
+  [
+    c.id,
+    c.title,
+    c.subsystem,
+    c.project,
+    c.kind,
+    ...(c.evidence?.oracle ?? []),
+    ...(c.capabilities ?? []),
+    ...(c.tolerances?.flatMap((t) => [t.metric, t.prose]) ?? []),
+    c.claim,
+    ...(c.assumptions ?? []),
+    ...(c.failure_modes ?? []),
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+---
+<Layout title="Claims">
+  <h1>Claims</h1>
+  <p class="summary-line">
+    {allClaims.length} claims across {projects.length} project{projects.length === 1 ? '' : 's'}
+    ({projects.join(', ')}).
+  </p>
+
+  <div class="search-row">
+    <input
+      type="search"
+      id="search-q"
+      placeholder="Search id, title, oracles, claim text, assumptions, failure modes…"
+      autocomplete="off"
+      spellcheck="false"
+    />
+    <span id="search-count" class="meta"></span>
+  </div>
+
+  <details open>
+    <summary><strong>Filters</strong></summary>
+    <div class="filters">
+      <fieldset><legend>Tier</legend>
+        {tiers.map((t) => (
+          <label><input type="checkbox" data-filter="tier" value={t} checked />{t}</label>
+        ))}
+      </fieldset>
+      <fieldset><legend>Kind</legend>
+        {kinds.map((k) => (
+          <label><input type="checkbox" data-filter="kind" value={k} checked />{k}</label>
+        ))}
+      </fieldset>
+      <fieldset><legend>Project</legend>
+        {projects.map((p) => (
+          <label><input type="checkbox" data-filter="project" value={p} checked />{p}</label>
+        ))}
+      </fieldset>
+      {subsystems.length > 0 && (
+        <fieldset><legend>Subsystem</legend>
+          {subsystems.map((s) => (
+            <label><input type="checkbox" data-filter="subsystem" value={s} checked />{s}</label>
+          ))}
+        </fieldset>
+      )}
+      {oracles.length > 0 && (
+        <fieldset><legend>Oracle (any)</legend>
+          {oracles.map((o) => (
+            <label><input type="checkbox" data-filter="oracle" value={o} checked />{o}</label>
+          ))}
+        </fieldset>
+      )}
+    </div>
+  </details>
+
+  <table class="claims-table">
+    <thead>
+      <tr>
+        <th data-sort-key="id" class="sortable">ID</th>
+        <th data-sort-key="tier" class="sortable sort-asc">Tier</th>
+        <th data-sort-key="kind" class="sortable">Kind</th>
+        <th data-sort-key="project" class="sortable">Project</th>
+        <th data-sort-key="subsystem" class="sortable">Subsystem</th>
+        <th data-sort-key="oracles" class="sortable">Oracles</th>
+        <th data-sort-key="title" class="sortable">Title</th>
+      </tr>
+    </thead>
+    <tbody>
+      {sortedClaims.map((c) => (
+        <tr
+          data-id={c.id}
+          data-tier={c.tier}
+          data-kind={c.kind}
+          data-project={c.project}
+          data-subsystem={c.subsystem ?? ''}
+          data-oracles={(c.evidence?.oracle ?? []).join(',')}
+          data-title={c.title}
+          data-search={searchBlob(c)}
+        >
+          <td><a href={`/claims/${c.id}`}><code>{c.id}</code></a></td>
+          <td><span class={`badge tier-${c.tier}`}>{c.tier}</span></td>
+          <td><span class={`badge kind-${c.kind}`}>{c.kind}</span></td>
+          <td>{c.project}</td>
+          <td>{c.subsystem ?? <span class="gap">—</span>}</td>
+          <td>{(c.evidence?.oracle ?? []).join(', ')}</td>
+          <td>{c.title}</td>
+        </tr>
+      ))}
+    </tbody>
+  </table>
+
+  <script is:inline>
+    (function () {
+      const TIER_ORDER = { ci: 0, release: 1, research: 2 };
+      const KIND_ORDER = { measurement: 0, policy: 1, reference: 2 };
+
+      const checkboxes = document.querySelectorAll('input[data-filter]');
+      const tbody = document.querySelector('tbody');
+      const headers = document.querySelectorAll('th[data-sort-key]');
+      const searchInput = document.getElementById('search-q');
+      const searchCount = document.getElementById('search-count');
+
+      function selected() {
+        const sel = {};
+        checkboxes.forEach((cb) => {
+          const f = cb.dataset.filter;
+          if (!sel[f]) sel[f] = new Set();
+          if (cb.checked) sel[f].add(cb.value);
+        });
+        return sel;
+      }
+
+      function applyFilter() {
+        const sel = selected();
+        const q = (searchInput.value || '').trim().toLowerCase();
+        let visibleCount = 0;
+        let total = 0;
+        tbody.querySelectorAll('tr').forEach((row) => {
+          total += 1;
+          const tier = row.dataset.tier;
+          const kind = row.dataset.kind;
+          const project = row.dataset.project;
+          const subsystem = row.dataset.subsystem;
+          const oracles = (row.dataset.oracles || '').split(',').filter(Boolean);
+          const searchText = row.dataset.search || '';
+          let visible = true;
+          if (sel.tier && !sel.tier.has(tier)) visible = false;
+          if (visible && sel.kind && !sel.kind.has(kind)) visible = false;
+          if (visible && sel.project && !sel.project.has(project)) visible = false;
+          if (visible && sel.subsystem) {
+            if (subsystem && !sel.subsystem.has(subsystem)) visible = false;
+          }
+          if (visible && sel.oracle && oracles.length > 0) {
+            const hit = oracles.some((o) => sel.oracle.has(o));
+            if (!hit) visible = false;
+          }
+          if (visible && q && !searchText.includes(q)) visible = false;
+          row.style.display = visible ? '' : 'none';
+          if (visible) visibleCount += 1;
+        });
+        searchCount.textContent = q
+          ? `${visibleCount} of ${total} match`
+          : '';
+        const p = new URLSearchParams(location.search);
+        if (q) p.set('q', q); else p.delete('q');
+        history.replaceState(null, '', p.toString() ? `?${p.toString()}` : location.pathname);
+      }
+
+      function getSortValue(row, key) {
+        if (key === 'tier') return TIER_ORDER[row.dataset.tier] ?? 99;
+        if (key === 'kind') return KIND_ORDER[row.dataset.kind] ?? 99;
+        if (key === 'id') return row.dataset.id || '';
+        if (key === 'project') return row.dataset.project || '';
+        if (key === 'subsystem') return row.dataset.subsystem || '￿';
+        if (key === 'oracles') return row.dataset.oracles || '';
+        if (key === 'title') return row.dataset.title || '';
+        return '';
+      }
+
+      const params = new URLSearchParams(location.search);
+      let sortKey = params.get('sort') || 'tier';
+      let sortDir = params.get('dir') === 'desc' ? 'desc' : 'asc';
+
+      function applySort() {
+        const rows = Array.from(tbody.querySelectorAll('tr'));
+        rows.sort((a, b) => {
+          const va = getSortValue(a, sortKey);
+          const vb = getSortValue(b, sortKey);
+          let cmp;
+          if (typeof va === 'number' && typeof vb === 'number') {
+            cmp = va - vb;
+          } else {
+            cmp = String(va).localeCompare(String(vb));
+          }
+          return sortDir === 'asc' ? cmp : -cmp;
+        });
+        rows.forEach((r) => tbody.appendChild(r));
+        updateHeaders();
+        updateUrl();
+      }
+
+      function updateHeaders() {
+        headers.forEach((th) => {
+          th.classList.remove('sort-asc', 'sort-desc');
+          if (th.dataset.sortKey === sortKey) {
+            th.classList.add(`sort-${sortDir}`);
+          }
+        });
+      }
+
+      function updateUrl() {
+        const p = new URLSearchParams(location.search);
+        p.set('sort', sortKey);
+        p.set('dir', sortDir);
+        history.replaceState(null, '', `?${p.toString()}`);
+      }
+
+      headers.forEach((th) => {
+        th.addEventListener('click', () => {
+          const key = th.dataset.sortKey;
+          if (sortKey === key) {
+            sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+          } else {
+            sortKey = key;
+            sortDir = 'asc';
+          }
+          applySort();
+        });
+      });
+
+      checkboxes.forEach((cb) => cb.addEventListener('change', applyFilter));
+      searchInput.addEventListener('input', applyFilter);
+
+      const initialQ = params.get('q');
+      if (initialQ) searchInput.value = initialQ;
+
+      applySort();
+      applyFilter();
+    })();
+  </script>
+</Layout>
