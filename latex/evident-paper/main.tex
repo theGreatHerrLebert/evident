@@ -54,7 +54,7 @@
 \newcommand{\Note}[1]{\marginpar{\tiny{\color{gray}\thenote\ #1}} \stepcounter{note}}
 \newcommand{\MNote}[1]{\marginpar{\tiny{\color{gray}#1}}}
 
-\title{EVIDENT: Claim-Based Evidence Workflows for Trustworthy AI-Assisted Scientific Software}
+\title{EVIDENT: Claim-Based Evidence Workflows for Scientific Software in the Era of AI-Assisted Development}
 \author[1,2]{David Teschner}
 \author[1,2]{Andreas Hildebrandt}
 \author[3,4,5]{Stefan Tenzer}
@@ -238,7 +238,10 @@ is target scale and use context. Assurance cases are often system-level,
 regulatory, safety, or security artifacts. EVIDENT is intended to be
 repo-native and close to everyday scientific software work: a parser claim, a
 GPU/CPU equivalence claim, an AI-assisted refactor claim, a workflow replay
-claim, or a scientific interpretation claim.
+claim, or a scientific interpretation claim. In this sense, EVIDENT is not a
+new assurance-case notation; it is a smaller workflow for applying
+claim-evidence discipline where most scientific software is actually reviewed:
+inside repositories, test suites, validation reports, and release artifacts.
 
 \paragraph{Verification and validation in scientific computing.}
 Scientific computing has long treated trust as evidence-relative and
@@ -251,6 +254,9 @@ ambitious and less domain-specific than full V\&V/UQ practice. It does not
 estimate predictive uncertainty or replace model validation. Instead, it
 borrows the discipline of explicit context, decision rules, and limits, and
 applies it to a broader set of scientific-software claims.
+The gap is not that V\&V lacks rigor, but that full V\&V/UQ practice is often
+too heavy or too model-centered for smaller claims such as parsers, refactors,
+file-format transformations, and implementation-equivalence checks.
 
 \paragraph{Reproducibility, provenance, and artifact review.}
 Reproducible research and research-software engineering provide practical
@@ -264,7 +270,10 @@ identification of the software and data involved in computation
 \citep{w3c_prov_dm,smith2016software,barker2022fair}. These practices are
 necessary but not sufficient for claim review. Provenance records how an
 artifact was produced; EVIDENT records what claim that artifact is evidence
-for.
+for. Similarly, an artifact badge can show that an artifact is available,
+functional, reusable, or capable of supporting reproduced results, but it does
+not by itself localize which implementation, pipeline, or scientific claim that
+artifact supports.
 
 \paragraph{AI-assisted software development.}
 Large language models trained on code have made software generation and
@@ -277,6 +286,12 @@ not the root cause of the trust problem. Its role in this paper is to motivate
 why authorship and informal inspection become weaker proxies for trust, and why
 external oracles, replayable artifacts, and explicit failure modes become more
 important.
+
+EVIDENT is therefore not proposed as a replacement for assurance cases, V\&V,
+provenance, testing, or reproducibility practice. It is a low-friction binding
+layer between these practices and localized scientific-software claims. Its
+intended scale is smaller than a regulatory assurance case and more explicit
+than a conventional test suite or artifact badge.
 
 \section{Claim-Based Evidence}
 
@@ -511,7 +526,9 @@ Proteon is a useful EVIDENT case because its claims vary in maturity. Some are
 CI-tier claims over small fixtures. Some are release-tier claims over larger
 corpora. Some are research-tier claims where the evidence is useful but not yet
 release-gating. This creates a realistic trust envelope rather than a polished
-toy.
+toy. The purpose of the case study is not to validate Proteon as a tool, but to
+test whether EVIDENT exposes heterogeneous evidence quality in a realistic
+codebase.
 
 \begin{table}[h]
 \centering
