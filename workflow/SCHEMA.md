@@ -4,6 +4,33 @@ Reference for the manifest format consumed by `validate_manifest.py` and
 `evident.py`. Designed to be **machine-queryable** so claims can be
 composed into requirement profiles, not only read by humans.
 
+## Design principles
+
+The schema enforces a small set of rules. The rationale lives in
+`GRAMMAR.md`; this is the one-line summary so a reader knows what the
+format is trying to protect before scanning the field reference.
+
+1. **The prose is the docstring; the structured fields are the data.**
+   No inference or query layer is required to parse English.
+2. **Primitives stay tight; expressiveness comes from composition.**
+   Cross-cutting enums (`tier`, `tolerance_metric`, `tolerance_op`,
+   `input_class`, `kind`, `provenance`, `trust_strategy`) are closed
+   sets and grow only by intentional spec change.
+3. **The manifest is a record, not an interpretation.** Scoring,
+   ranking, risk modeling, and probabilistic inference belong in
+   separate tools that read the manifest.
+4. **Closed cross-cutting vocabularies; open project vocabularies.**
+   `subsystem`, `oracle`, and `capability` are declared per-manifest;
+   everything else is fixed by the framework.
+5. **Identity and reference are structured, not nominal.** Cross-claim
+   relationships are claim ids and vocabulary terms, not prose.
+6. **The escape hatch is `tier: research`, and only there.** Loosely-
+   structured claims are admissible only at research tier and cannot
+   be promoted without acquiring structure.
+
+See `GRAMMAR.md` for the admissibility table by tier, the composition
+contract, and the anti-patterns to refuse on review.
+
 ## Manifest top-level
 
 ```yaml
@@ -61,6 +88,8 @@ silently mis-match.
 | `claim`           | yes      | string | Prose statement of the claim |
 | `tolerances`      | yes¹     | list   | Structured tolerance entries (see below) |
 | `evidence`        | yes      | object | `{oracle, command, artifact}` (no `tolerance` field — it moved up) |
+| `provenance`      | no       | enum   | `automatic` (default), `human`, `peer-reviewed` — review level (see below) |
+| `reviewers`       | no²      | list   | Named reviewers backing a `peer-reviewed` claim |
 | `last_verified`   | no       | object | `{commit, date, value, corpus_sha}` — staleness signal |
 | `assumptions`     | yes      | list   | Prose strings |
 | `failure_modes`   | yes      | list   | Prose strings |
@@ -153,6 +182,40 @@ key in `pinned_versions`, and that exactly one key matches the project
 declared by the manifest's `source:` (the project under test). Versions
 are strings; quote numeric-looking versions to avoid YAML parsing them
 as floats.
+
+### Provenance and reviewers
+
+```yaml
+provenance: peer-reviewed     # automatic (default) | human | peer-reviewed
+reviewers:                    # required iff provenance == peer-reviewed
+  - name: Jane Doe
+    orcid: "0000-0000-0000-0000"   # optional
+    affiliation: Example University # optional
+    date: 2026-04-30                # ISO date the review was completed
+```
+
+`provenance` declares **how the claim was vetted**, not whether the
+underlying numbers are correct (that is what `tolerances` and
+`last_verified` are for). The three levels:
+
+- `automatic` — produced by a runner (CI, an oracle script, a benchmark).
+  No human attested to it. Default if omitted.
+- `human` — a human inside the project read the case writeup and the
+  evidence and judged the claim sound. The author of the code may be
+  this human.
+- `peer-reviewed` — at least one named reviewer who is **not an author
+  of `source`** read the claim and the evidence and signed off, with
+  ORCID or affiliation recorded. The manifest entry is the *record* of
+  that review, not the review itself.
+
+²`reviewers` is required when `provenance == peer-reviewed` and forbidden
+otherwise. Each entry must have a non-empty `name`. `orcid`,
+`affiliation`, and `date` are optional strings; ISO dates are
+recommended.
+
+`provenance` is a coarse, self-declared signal — it is more honest than
+no signal at all, and lets readers discount accordingly. It does not
+replace the underlying `tolerances` and `evidence` fields.
 
 ### Last verified
 
