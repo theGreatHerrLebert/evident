@@ -46,6 +46,7 @@ BASE_VOCABULARIES: dict[str, set[str]] = {
 VALID_TIERS = {"ci", "release", "research"}
 VALID_TRUST_STRATEGIES = {"understanding", "validation", "proof"}
 VALID_KINDS = {"measurement", "policy", "reference"}
+VALID_PROVENANCE = {"automatic", "human", "peer-reviewed"}
 
 REQUIRED_FIELDS_ALL = {
     "id",
@@ -237,6 +238,48 @@ def validate_outputs(value: Any, claim_id: str) -> None:
             fail(f"claim {claim_id}: outputs[{name!r}] must be a mapping")
 
 
+def validate_provenance_and_reviewers(claim: dict, claim_id: str) -> None:
+    provenance = claim.get("provenance", "automatic")
+    if provenance not in VALID_PROVENANCE:
+        fail(
+            f"claim {claim_id}: invalid provenance {provenance!r}; "
+            f"allowed: {sorted(VALID_PROVENANCE)}"
+        )
+    reviewers = claim.get("reviewers")
+    if provenance == "peer-reviewed":
+        if not isinstance(reviewers, list) or not reviewers:
+            fail(
+                f"claim {claim_id}: provenance=peer-reviewed requires a "
+                f"non-empty reviewers list"
+            )
+    else:
+        if reviewers is not None:
+            fail(
+                f"claim {claim_id}: reviewers may only be set when "
+                f"provenance=peer-reviewed (got provenance={provenance!r})"
+            )
+        return
+    for i, entry in enumerate(reviewers):
+        if not isinstance(entry, dict):
+            fail(f"claim {claim_id}: reviewers[{i}] must be a mapping")
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.strip():
+            fail(f"claim {claim_id}: reviewers[{i}].name is required")
+        for opt in ("orcid", "affiliation", "date"):
+            if opt in entry and entry[opt] is not None:
+                if not isinstance(entry[opt], str) or not entry[opt].strip():
+                    fail(
+                        f"claim {claim_id}: reviewers[{i}].{opt} must be a "
+                        f"non-empty string when present"
+                    )
+        unknown = set(entry) - {"name", "orcid", "affiliation", "date"}
+        if unknown:
+            fail(
+                f"claim {claim_id}: reviewers[{i}] has unknown keys: "
+                f"{sorted(unknown)}"
+            )
+
+
 def validate_last_verified(value: Any, claim_id: str) -> None:
     if not isinstance(value, dict):
         fail(f"claim {claim_id}: last_verified must be a mapping")
@@ -390,6 +433,7 @@ def validate_manifest(path: pathlib.Path) -> None:
             validate_outputs(claim["outputs"], claim_id)
         if "last_verified" in claim:
             validate_last_verified(claim["last_verified"], claim_id)
+        validate_provenance_and_reviewers(claim, claim_id)
 
         if kind == "measurement":
             missing_meas = sorted(REQUIRED_FIELDS_MEASUREMENT - claim.keys())
