@@ -27,6 +27,45 @@ EVIDENT works for both at the same forcing-function level.
 
 ---
 
+## Foundation: the scientific method
+
+The pattern is durable because it is not new. It is the epistemology
+of empirical science, applied to code:
+
+- **Default skepticism.** A claim is not believed because the author
+  is confident, persuasive, or trusted. It is believed in proportion
+  to the verifiable evidence behind it. The validator instantiates
+  this directly: a claim without `metric / op / value` does not pass.
+  No quantity of confident prose changes the verdict.
+- **Falsifiability.** A claim must be specific enough to be wrong.
+  "Agrees with OpenMM" is not falsifiable. "Median relative error
+  < 0.5% on 1000 PDBs at NoCutoff" is. The schema requires the
+  second form.
+- **Reproducibility.** Evidence must be re-executable by a third
+  party from the cited artifacts. `evidence.command` is the
+  protocol; `pinned_versions` is the materials list. A claim
+  whose evidence cannot be re-run by an outsider is not evidence,
+  it is testimony.
+- **Provenance.** Who ran what, against what, when. The
+  `last_verified.{commit, date, value, corpus_sha}` block is the
+  audit trail. Without it, a green test today is not evidence
+  next year — it is a memory.
+
+This is why the pattern works for AI-authored and human-authored code
+symmetrically. The scientific method does not care who wrote the
+claim — it cares whether the evidence stands. EVIDENT inherits that
+property by construction. The framework's durability is bound not to
+a particular tooling era (LLMs, CI providers, programming languages)
+but to the older and more robust epistemology underneath.
+
+A useful test for any future EVIDENT extension is to ask: does it
+strengthen one of these four pillars (skepticism, falsifiability,
+reproducibility, provenance), or does it sit alongside them as
+convenience? Convenience is fine but should not be confused with
+the foundation.
+
+---
+
 ## Why it fits AI-assisted coding
 
 Four properties make EVIDENT particularly well suited as a layer
@@ -220,3 +259,10 @@ Worth debating as the framework matures:
 
 **Build the replay loop first; everything else is interesting but
 swallowed by claim rot if `last_verified` is null.**
+
+The deeper one-line summary, for the framework as a whole:
+
+**EVIDENT is the scientific method applied to code — don't believe
+by default; believe based on verifiable evidence — and that
+foundation is what makes the pattern durable across the AI
+transition rather than dependent on it.**
