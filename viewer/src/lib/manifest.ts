@@ -4,6 +4,14 @@ import YAML from 'yaml';
 
 export type Kind = 'measurement' | 'policy' | 'reference';
 export type Tier = 'ci' | 'release' | 'research';
+export type Provenance = 'automatic' | 'human' | 'peer-reviewed';
+
+export interface Reviewer {
+  name: string;
+  orcid?: string;
+  affiliation?: string;
+  date?: string;
+}
 
 export interface Tolerance {
   metric?: string;
@@ -55,6 +63,8 @@ export interface Claim {
   claim: string;
   tolerances?: Tolerance[];
   evidence: Evidence;
+  provenance: Provenance;
+  reviewers?: Reviewer[];
   last_verified?: LastVerified;
   assumptions: string[];
   failure_modes: string[];
@@ -105,6 +115,7 @@ function readYaml(filePath: string): any {
 function normalizeClaim(raw: any, project: string, manifestPath: string): Claim {
   return {
     kind: raw.kind ?? 'measurement',
+    provenance: (raw.provenance ?? 'automatic') as Provenance,
     project,
     manifestPath,
     ...raw,

@@ -28,6 +28,7 @@ const lvEmpty = !lv || (!lv.commit && !lv.date && lv.value == null && !lv.corpus
         <code>{claim.id}</code>
         {' · '}<span class={`badge kind-${claim.kind}`}>{claim.kind}</span>
         {' · '}<span class={`badge tier-${claim.tier}`}>{claim.tier}</span>
+        {' · '}<span class={`badge prov-${claim.provenance}`}>{claim.provenance}</span>
         {claim.subsystem && (<>{' · '}<code>{claim.subsystem}</code></>)}
         {' · '}<span>{claim.project}</span>
       </p>
@@ -139,6 +140,22 @@ const lvEmpty = !lv || (!lv.commit && !lv.date && lv.value == null && !lv.corpus
       <h2>Trust strategy</h2>
       <p>{claim.trust_strategy.join(', ')}</p>
     </section>
+
+    {claim.provenance === 'peer-reviewed' && claim.reviewers?.length ? (
+      <section>
+        <h2>Reviewers</h2>
+        <ul class="bare reviewers">
+          {claim.reviewers.map((r) => (
+            <li>
+              <strong>{r.name}</strong>
+              {r.affiliation ? <span class="meta"> · {r.affiliation}</span> : null}
+              {r.orcid ? (<span class="meta"> · ORCID <code>{r.orcid}</code></span>) : null}
+              {r.date ? <span class="meta"> · {r.date}</span> : null}
+            </li>
+          ))}
+        </ul>
+      </section>
+    ) : null}
 
     {claim.capabilities?.length ? (
       <section>
