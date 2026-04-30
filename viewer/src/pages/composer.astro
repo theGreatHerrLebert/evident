@@ -1,0 +1,307 @@
+---
+import Layout from '../layouts/Layout.astro';
+import { allClaims, manifests, uniqueSorted } from '../lib/manifest';
+
+const measurement = allClaims.filter((c) => c.kind === 'measurement');
+
+const subsystems = uniqueSorted(measurement.flatMap((c) => (c.subsystem ? [c.subsystem] : [])));
+const oracles = uniqueSorted(measurement.flatMap((c) => c.evidence?.oracle ?? []));
+const capabilities = uniqueSorted(measurement.flatMap((c) => c.capabilities ?? []));
+const inputClasses = uniqueSorted(measurement.flatMap((c) => (c.inputs?.class ? [c.inputs.class] : [])));
+const tolMetrics = uniqueSorted(measurement.flatMap((c) => c.tolerances?.map((t) => t.metric).filter(Boolean) as string[] ?? []));
+
+const claimsForClient = measurement.map((c) => ({
+  id: c.id,
+  title: c.title,
+  kind: c.kind,
+  subsystem: c.subsystem ?? null,
+  tier: c.tier,
+  project: c.project,
+  capabilities: c.capabilities ?? [],
+  evidence: { oracle: c.evidence?.oracle ?? [] },
+  tolerances: c.tolerances ?? [],
+  inputs: c.inputs
+    ? {
+        class: c.inputs.class ?? null,
+        corpus_sha: c.inputs.corpus_sha ?? null,
+      }
+    : null,
+  pinned_versions: c.pinned_versions ?? {},
+}));
+---
+<Layout title="Composer">
+  <h1>Composer</h1>
+  <p class="summary-line">
+    Build a requirement profile and see which of the {measurement.length} measurement
+    claim{measurement.length === 1 ? '' : 's'} from {manifests.length} project{manifests.length === 1 ? '' : 's'}
+    satisfy it. Gaps are reported when your profile asks for coverage that no claim provides.
+  </p>
+
+  <form id="composer-form" class="composer-form">
+    <fieldset>
+      <legend>Subsystem (any of)</legend>
+      <div class="chips" data-field="subsystem">
+        {subsystems.map((s) => (
+          <label><input type="checkbox" value={s} />{s}</label>
+        ))}
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Tier (any of)</legend>
+      <div class="chips" data-field="tier">
+        <label><input type="checkbox" value="ci" />ci</label>
+        <label><input type="checkbox" value="release" />release</label>
+        <label><input type="checkbox" value="research" />research</label>
+      </div>
+    </fieldset>
+
+    {oracles.length > 0 && (
+      <fieldset>
+        <legend>Oracle (any of)</legend>
+        <div class="chips" data-field="oracle">
+          {oracles.map((o) => (
+            <label><input type="checkbox" value={o} />{o}</label>
+          ))}
+        </div>
+      </fieldset>
+    )}
+
+    {capabilities.length > 0 && (
+      <fieldset>
+        <legend>Capability (any of)</legend>
+        <div class="chips" data-field="capability">
+          {capabilities.map((c) => (
+            <label><input type="checkbox" value={c} />{c}</label>
+          ))}
+        </div>
+      </fieldset>
+    )}
+
+    {inputClasses.length > 0 && (
+      <fieldset>
+        <legend>Input class (any of)</legend>
+        <div class="chips" data-field="class">
+          {inputClasses.map((cls) => (
+            <label><input type="checkbox" value={cls} />{cls}</label>
+          ))}
+        </div>
+      </fieldset>
+    )}
+
+    <fieldset>
+      <legend>Tolerance constraint</legend>
+      <div class="tolerance-row">
+        <label>
+          Metric
+          <select id="tol-metric" data-field="metric">
+            <option value="">(any)</option>
+            {tolMetrics.map((m) => <option value={m}>{m}</option>)}
+          </select>
+        </label>
+        <label>
+          Op
+          <select id="tol-op" data-field="op">
+            <option value="<=">≤</option>
+            <option value="<">{'<'}</option>
+            <option value=">=">≥</option>
+            <option value=">">{'>'}</option>
+          </select>
+        </label>
+        <label>
+          Value
+          <input type="number" step="any" id="tol-value" data-field="value" placeholder="0.01" />
+        </label>
+      </div>
+      <p class="meta">
+        A claim satisfies if it asserts the same metric in the same direction with an
+        equal-or-tighter bound. Lower-is-better metrics: relative_error, median_relative_error,
+        absolute_error, drift. Higher-is-better: pass_rate, recall, precision, f1.
+      </p>
+    </fieldset>
+
+    <fieldset>
+      <legend>Reproducibility</legend>
+      <label>
+        <input type="checkbox" id="require-pinned" data-field="pinned" value="1" />
+        Require pinned versions (reject claims with PENDING- placeholders in
+        <code>pinned_versions</code> or <code>inputs.corpus_sha</code>)
+      </label>
+    </fieldset>
+
+    <div class="composer-actions">
+      <button type="button" id="reset-btn">Reset</button>
+      <button type="button" id="copy-url-btn">Copy share URL</button>
+      <span id="copy-feedback" class="meta"></span>
+    </div>
+  </form>
+
+  <div id="results" class="results">
+    <section class="result-section result-matched">
+      <h2>Matched <span class="count" id="match-count">0</span></h2>
+      <ul class="bare result-list" id="match-list"></ul>
+    </section>
+    <section class="result-section result-partial">
+      <h2>Partial <span class="count" id="partial-count">0</span></h2>
+      <p class="meta">Claims that miss exactly one criterion — useful for "you're one constraint away".</p>
+      <ul class="bare result-list" id="partial-list"></ul>
+    </section>
+    <section class="result-section result-gaps">
+      <h2>Coverage gaps <span class="count" id="gap-count">0</span></h2>
+      <p class="meta">Subsystems / capabilities / metrics in your profile with no covering claim.</p>
+      <ul class="bare result-list" id="gap-list"></ul>
+    </section>
+  </div>
+
+  <script type="application/json" id="claims-data" set:html={JSON.stringify(claimsForClient)} />
+
+  <script>
+    import { match, profileFromQuery, profileToQuery, type Profile } from '../lib/match';
+    import type { Claim } from '../lib/manifest';
+
+    const dataEl = document.getElementById('claims-data');
+    const claims: Claim[] = JSON.parse(dataEl?.textContent ?? '[]');
+
+    const form = document.getElementById('composer-form') as HTMLFormElement;
+
+    function readForm(): Profile {
+      const collect = (field: string) =>
+        Array.from(
+          form.querySelectorAll<HTMLInputElement>(
+            `[data-field="${field}"] input[type=checkbox]:checked`
+          )
+        ).map((el) => el.value);
+
+      const subsystems = collect('subsystem');
+      const tiers = collect('tier') as Profile['tiers'];
+      const oracles = collect('oracle');
+      const capabilities = collect('capability');
+      const inputClasses = collect('class');
+
+      const metric = (form.querySelector('#tol-metric') as HTMLSelectElement).value;
+      const op = (form.querySelector('#tol-op') as HTMLSelectElement).value;
+      const valueStr = (form.querySelector('#tol-value') as HTMLInputElement).value;
+      const value = valueStr === '' ? NaN : parseFloat(valueStr);
+
+      const tolerance =
+        metric && op && !Number.isNaN(value)
+          ? { metric, op: op as any, value }
+          : undefined;
+
+      const requirePinned =
+        (form.querySelector('#require-pinned') as HTMLInputElement).checked || undefined;
+
+      return {
+        subsystems: subsystems.length ? subsystems : undefined,
+        tiers: tiers && tiers.length ? tiers : undefined,
+        oracles: oracles.length ? oracles : undefined,
+        capabilities: capabilities.length ? capabilities : undefined,
+        inputClasses: inputClasses.length ? inputClasses : undefined,
+        tolerance,
+        requirePinned,
+      };
+    }
+
+    function writeForm(profile: Profile) {
+      const setBoxes = (field: string, values: string[] | undefined) => {
+        const set = new Set(values ?? []);
+        form
+          .querySelectorAll<HTMLInputElement>(`[data-field="${field}"] input[type=checkbox]`)
+          .forEach((cb) => {
+            cb.checked = set.has(cb.value);
+          });
+      };
+      setBoxes('subsystem', profile.subsystems);
+      setBoxes('tier', profile.tiers);
+      setBoxes('oracle', profile.oracles);
+      setBoxes('capability', profile.capabilities);
+      setBoxes('class', profile.inputClasses);
+
+      (form.querySelector('#tol-metric') as HTMLSelectElement).value =
+        profile.tolerance?.metric ?? '';
+      (form.querySelector('#tol-op') as HTMLSelectElement).value =
+        profile.tolerance?.op ?? '<=';
+      (form.querySelector('#tol-value') as HTMLInputElement).value =
+        profile.tolerance && !Number.isNaN(profile.tolerance.value)
+          ? String(profile.tolerance.value)
+          : '';
+
+      (form.querySelector('#require-pinned') as HTMLInputElement).checked =
+        Boolean(profile.requirePinned);
+    }
+
+    function escape(s: string): string {
+      return s.replace(/[&<>"']/g, (ch) => {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]!;
+      });
+    }
+
+    function renderClaim(c: Claim, missing?: string[]): string {
+      const tier = `<span class="badge tier-${c.tier}">${c.tier}</span>`;
+      const sub = c.subsystem ? `<code>${escape(c.subsystem)}</code>` : '<span class="gap">—</span>';
+      const miss = missing && missing.length
+        ? `<div class="missing">missing: ${missing.map(escape).join('; ')}</div>`
+        : '';
+      return `
+        <li>
+          <a href="/claims/${escape(c.id)}"><strong>${escape(c.title)}</strong></a>
+          <div class="meta">${tier} · ${sub} · ${escape(c.project)} · oracles: ${escape((c.evidence?.oracle ?? []).join(', '))}</div>
+          ${miss}
+        </li>`;
+    }
+
+    function render(profile: Profile) {
+      const out = match(claims, profile);
+
+      const matchList = document.getElementById('match-list')!;
+      const partialList = document.getElementById('partial-list')!;
+      const gapList = document.getElementById('gap-list')!;
+
+      document.getElementById('match-count')!.textContent = String(out.matched.length);
+      document.getElementById('partial-count')!.textContent = String(out.partial.length);
+      document.getElementById('gap-count')!.textContent = String(out.gaps.length);
+
+      matchList.innerHTML = out.matched.length
+        ? out.matched.map((c) => renderClaim(c)).join('')
+        : '<li class="meta"><em>No claims satisfy the current profile.</em></li>';
+
+      partialList.innerHTML = out.partial.length
+        ? out.partial.map(({ claim, missing }) => renderClaim(claim, missing)).join('')
+        : '<li class="meta"><em>None.</em></li>';
+
+      gapList.innerHTML = out.gaps.length
+        ? out.gaps.map((g) => `<li>${escape(g)}</li>`).join('')
+        : '<li class="meta"><em>No gaps for the current profile.</em></li>';
+
+      const qs = profileToQuery(profile);
+      history.replaceState(null, '', qs || location.pathname);
+    }
+
+    // Initial: load from URL
+    const initial = profileFromQuery(new URLSearchParams(location.search));
+    writeForm(initial);
+    render(initial);
+
+    form.addEventListener('change', () => render(readForm()));
+    form.addEventListener('input', (e) => {
+      // input fires for typing in number/text fields
+      if ((e.target as HTMLElement).tagName === 'INPUT') render(readForm());
+    });
+
+    document.getElementById('reset-btn')!.addEventListener('click', () => {
+      writeForm({});
+      render({});
+    });
+
+    document.getElementById('copy-url-btn')!.addEventListener('click', async () => {
+      const feedback = document.getElementById('copy-feedback')!;
+      try {
+        await navigator.clipboard.writeText(location.href);
+        feedback.textContent = 'Copied.';
+      } catch {
+        feedback.textContent = location.href;
+      }
+      setTimeout(() => (feedback.textContent = ''), 2500);
+    });
+  </script>
+</Layout>

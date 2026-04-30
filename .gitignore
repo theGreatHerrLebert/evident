@@ -26,6 +26,11 @@ share/python-wheels/
 *.egg
 MANIFEST
 
+# The unanchored `lib/` rule above was inherited from the Python packaging
+# template and matches at any depth. Re-allow the Astro viewer's TypeScript
+# lib directory so its source is committed.
+!viewer/src/lib/
+
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.

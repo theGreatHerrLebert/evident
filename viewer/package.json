@@ -1,0 +1,17 @@
+{
+  "name": "evident-viewer",
+  "type": "module",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Static viewer for EVIDENT claim manifests",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "check": "astro check"
+  },
+  "dependencies": {
+    "astro": "^4.16.18",
+    "yaml": "^2.6.1"
+  }
+}
