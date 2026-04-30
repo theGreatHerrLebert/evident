@@ -13,9 +13,10 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import json
+import os
 import pathlib
 import re
-import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -479,25 +480,27 @@ def _run_command(command: str, cwd: pathlib.Path, timeout: float) -> dict:
       stdout_tail: str — last ~2 KB of stdout, useful for the eventual
                          value-extractor design
       stderr_tail: str — last ~2 KB of stderr, surfaces failure cause
+
+    Process-group hygiene: the child is started in a new POSIX session
+    (`start_new_session=True`) so the shell and any commands it spawns
+    share one process group. On timeout we kill the whole group with
+    SIGTERM, then SIGKILL if it doesn't exit within 5s. Without this,
+    `subprocess.run(..., shell=True, timeout=...)` only kills the shell
+    on timeout, leaving long-running benchmark children orphaned —
+    real risk for evidence.command lines that invoke pytest with heavy
+    fixtures.
     """
     started = time.monotonic()
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             command,
             shell=True,
             cwd=str(cwd),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
-            check=False,
+            start_new_session=True,
         )
-    except subprocess.TimeoutExpired as exc:
-        return {
-            "exit_code": -1,
-            "duration_seconds": round(time.monotonic() - started, 3),
-            "stdout_tail": (exc.stdout or b"")[-2048:].decode("utf-8", errors="replace") if isinstance(exc.stdout, (bytes, bytearray)) else (exc.stdout or "")[-2048:],
-            "stderr_tail": (exc.stderr or b"")[-2048:].decode("utf-8", errors="replace") if isinstance(exc.stderr, (bytes, bytearray)) else (exc.stderr or "")[-2048:],
-        }
     except (FileNotFoundError, OSError) as exc:
         return {
             "exit_code": -2,
@@ -506,12 +509,39 @@ def _run_command(command: str, cwd: pathlib.Path, timeout: float) -> dict:
             "stderr_tail": f"spawn error: {exc}",
         }
 
-    return {
-        "exit_code": proc.returncode,
-        "duration_seconds": round(time.monotonic() - started, 3),
-        "stdout_tail": proc.stdout[-2048:],
-        "stderr_tail": proc.stderr[-2048:],
-    }
+    pgid = os.getpgid(proc.pid)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+        return {
+            "exit_code": proc.returncode,
+            "duration_seconds": round(time.monotonic() - started, 3),
+            "stdout_tail": (stdout or "")[-2048:],
+            "stderr_tail": (stderr or "")[-2048:],
+        }
+    except subprocess.TimeoutExpired:
+        # SIGTERM the whole group, give it 5s, then SIGKILL.
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            stdout, stderr = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            stdout, stderr = proc.communicate()
+        return {
+            "exit_code": -1,
+            "duration_seconds": round(time.monotonic() - started, 3),
+            "stdout_tail": (stdout or "")[-2048:],
+            "stderr_tail": (
+                (stderr or "")[-2048:]
+                + f"\n[evident replay] timed out after {timeout}s, "
+                f"process group {pgid} killed"
+            ),
+        }
 
 
 def _is_stale(entry: dict | None, n_days: int, today: _dt.date) -> bool:
@@ -533,6 +563,22 @@ def _is_stale(entry: dict | None, n_days: int, today: _dt.date) -> bool:
 
 def cmd_replay(args: argparse.Namespace) -> int:
     manifest_path = pathlib.Path(args.manifest).resolve()
+
+    # Validate first. Replay executes commands; running them against a
+    # manifest with duplicate IDs (sidecar entries clobber each other),
+    # invalid paths, malformed evidence, or unknown vocabulary is worse
+    # than refusing to run. The validator already enforces all of those
+    # invariants.
+    try:
+        validate_manifest.validate_manifest(manifest_path)
+    except (SystemExit, ValueError) as exc:
+        msg = str(exc)
+        if msg and msg != "1":
+            print(f"manifest invalid: {msg}", file=sys.stderr)
+        else:
+            print("manifest invalid (re-run `evident validate` for details)", file=sys.stderr)
+        return 2
+
     claims = _load_claims(manifest_path)
     state = _load_sidecar(manifest_path)
     today = _dt.date.today()
@@ -555,9 +601,25 @@ def cmd_replay(args: argparse.Namespace) -> int:
         print("(no claims match)", file=sys.stderr)
         return 0
 
-    commit = _git_short_commit(manifest_path.parent)
     today_iso = today.isoformat()
     cwd = manifest_path.parent
+
+    # Cache git commits per source path — typical manifests have one
+    # source for every claim, so this avoids spawning git for each.
+    commit_cache: dict[pathlib.Path, str | None] = {}
+
+    def _commit_for_claim(claim: dict) -> str | None:
+        # Each claim's `source` is a path relative to the manifest root.
+        # Resolve it and ask git there. The schema defines
+        # last_verified.commit as the SOURCE SHA where the claim
+        # passed; recording the manifest's repo SHA when a claim points
+        # at a different source root would write a convincing-but-wrong
+        # value into the sidecar.
+        src = claim.get("source") or "."
+        resolved = (manifest_path.parent / src).resolve()
+        if resolved not in commit_cache:
+            commit_cache[resolved] = _git_short_commit(resolved)
+        return commit_cache[resolved]
 
     n_pass = n_fail = 0
     for claim in selected:
@@ -583,7 +645,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
 
         entry = {
             "date": today_iso if ok else None,
-            "commit": commit if ok else None,
+            "commit": _commit_for_claim(claim) if ok else None,
             "value": None,
             "corpus_sha": corpus_sha if ok else None,
             "exit_code": result["exit_code"],
