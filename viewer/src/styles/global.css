@@ -17,6 +17,9 @@
   --kind-policy: #b7791f;
   --kind-reference: #4a5568;
   --kind-bg: #ffffff;
+  --prov-automatic: #a0a0a0;
+  --prov-human: #4a5568;
+  --prov-peer-reviewed: #6b46c1;
   --has-claims-bg: #f0f9f4;
   --no-claims-bg: #fdf3f3;
   --code-bg: #f6f6f4;
@@ -48,6 +51,9 @@
   --kind-policy: #e3b75e;
   --kind-reference: #9aa5b1;
   --kind-bg: #1a1c22;
+  --prov-automatic: #6a6e78;
+  --prov-human: #b3b8c2;
+  --prov-peer-reviewed: #b794f4;
   --has-claims-bg: #142219;
   --no-claims-bg: #251416;
   --code-bg: #14161c;
@@ -140,6 +146,9 @@ pre code { background: transparent; padding: 0; }
 .kind-measurement { border: 1px solid var(--kind-measurement); color: var(--kind-measurement); background: var(--kind-bg); }
 .kind-policy { border: 1px solid var(--kind-policy); color: var(--kind-policy); background: var(--kind-bg); }
 .kind-reference { border: 1px solid var(--kind-reference); color: var(--kind-reference); background: var(--kind-bg); }
+.prov-automatic { border: 1px dashed var(--prov-automatic); color: var(--prov-automatic); background: var(--kind-bg); }
+.prov-human { border: 1px solid var(--prov-human); color: var(--prov-human); background: var(--kind-bg); }
+.prov-peer-reviewed { background: var(--prov-peer-reviewed); color: var(--badge-fg); }
 
 table.claims-table, table.coverage {
   width: 100%;
