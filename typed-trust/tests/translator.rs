@@ -7,12 +7,14 @@
 //!   /scratch/TMAlign/proteon/evident/claims/dssp.yaml
 
 use typed_trust::translate::{
-    parse_manifest_file, translate_claim, translate_tolerances,
+    parse_manifest_file, translate_claim, translate_evidence, translate_tolerances,
     TranslateError, TranslationContext,
 };
 use typed_trust::*;
 
 /// proteon-sasa-vs-biopython-ci — single-output single-oracle CI claim.
+/// `last_verified` block has all null values (the CI replay loop is
+/// not populated for this tier).
 const PROTEON_SASA_CI_YAML: &str = r#"
 claims:
   - id: proteon-sasa-vs-biopython-ci
@@ -42,10 +44,58 @@ claims:
       command: pytest tests/test_sasa.py::TestBiopythonOracle -v
       artifact: pytest console output (CI-tier; no persisted artifact)
     provenance: automatic
+    last_verified:
+      commit: null
+      date: null
+      value: null
+      corpus_sha: null
     assumptions:
       - Biopython's Bio.PDB.SASA.ShrakeRupley uses the same probe radius.
     failure_modes:
       - Single-oracle agreement can mask a shared convention choice.
+"#;
+
+/// proteon-sasa-vs-biopython-release-1k-pdbs — the rich release-tier
+/// claim with a populated last_verified block. Verbatim values for the
+/// fields that matter; oracle list trimmed to one for the
+/// single-oracle path (the real claim has two — Biopython AND
+/// FreeSASA — covered by a separate test).
+const PROTEON_SASA_RELEASE_YAML: &str = r#"
+claims:
+  - id: proteon-sasa-vs-biopython-release-1k-pdbs
+    title: Proteon SASA tracks Biopython on 1000 random PDBs
+    kind: measurement
+    subsystem: sasa
+    case: claims/sasa.md
+    source: ..
+    tier: release
+    trust_strategy:
+      - validation
+    claim: >
+      Across a 1000-PDB validation corpus proteon total SASA agrees
+      with Biopython's Shrake-Rupley implementation; median rel err < 0.5%.
+    tolerances:
+      - metric: median_relative_error
+        op: "<"
+        value: 0.005
+        output: total_sasa
+        prose: |
+          Median(|proteon_total - biopython_total| / biopython_total) < 0.005
+    evidence:
+      oracle:
+        - Biopython
+      command: python validation/run_validation.py --n-structures 1000
+      artifact: validation/results.json
+    provenance: human
+    last_verified:
+      commit: "4d6ddbec100b810b85c0d2104ecd63d78ac848ec"
+      date: "2026-05-11"
+      value: 0.0017
+      corpus_sha: "b319c47c59871ed3990f81fb025c6ae90abba6adcff0b91ff7f118e41c730a53"
+    assumptions:
+      - validation/pdbs/ is a representative sample.
+    failure_modes:
+      - Biopython and FreeSASA disagree by ~0.5-1% on non-standard residues.
 "#;
 
 /// release_gate — kind: policy, out of scope per §0.
@@ -160,10 +210,10 @@ fn translates_sasa_ci_claim_into_attested_claim() {
 #[test]
 fn translates_single_oracle_tolerance_populates_against() {
     let manifest = parse_manifest_file(PROTEON_SASA_CI_YAML).unwrap();
-    let tolerances = translate_tolerances(&manifest.claims[0]).unwrap();
+    let criteria = translate_tolerances(&manifest.claims[0]).unwrap();
 
-    assert_eq!(tolerances.len(), 1);
-    let t = &tolerances[0];
+    assert_eq!(criteria.len(), 1);
+    let t = &criteria[0].tolerance;
     assert_eq!(t.metric, "relative_error");
     assert_eq!(t.op, ComparisonOp::Lt);
     assert_eq!(t.value, 0.02);
@@ -172,6 +222,13 @@ fn translates_single_oracle_tolerance_populates_against() {
     // entry in `evidence.oracle`.
     assert_eq!(t.against.as_deref(), Some("Biopython"));
     assert!(t.prose.contains("biopython_total"));
+
+    // CriterionId is generated deterministically — observations in
+    // last_verified Reruns bind to this stable id.
+    assert_eq!(
+        criteria[0].id.as_str(),
+        "proteon-sasa-vs-biopython-ci-criterion-0"
+    );
 }
 
 #[test]
@@ -194,28 +251,38 @@ fn translates_dssp_tolerances_including_eq_operator() {
     // F-PR1 win: ComparisonOp::Eq is restored for integer/discrete
     // equality assertions (DSSP residue_count parity).
     let manifest = parse_manifest_file(PROTEON_DSSP_YAML).unwrap();
-    let tolerances = translate_tolerances(&manifest.claims[0]).unwrap();
+    let criteria = translate_tolerances(&manifest.claims[0]).unwrap();
 
-    assert_eq!(tolerances.len(), 3);
+    assert_eq!(criteria.len(), 3);
 
     // First tolerance: absolute_error == 0 on residue_count.
-    assert_eq!(tolerances[0].op, ComparisonOp::Eq);
-    assert_eq!(tolerances[0].value, 0.0);
-    assert_eq!(tolerances[0].output.as_deref(), Some("residue_count"));
-    assert_eq!(tolerances[0].metric, "absolute_error");
+    assert_eq!(criteria[0].tolerance.op, ComparisonOp::Eq);
+    assert_eq!(criteria[0].tolerance.value, 0.0);
+    assert_eq!(criteria[0].tolerance.output.as_deref(), Some("residue_count"));
+    assert_eq!(criteria[0].tolerance.metric, "absolute_error");
 
     // Second: pass_rate >= 0.95.
-    assert_eq!(tolerances[1].op, ComparisonOp::GtEq);
-    assert_eq!(tolerances[1].metric, "pass_rate");
+    assert_eq!(criteria[1].tolerance.op, ComparisonOp::GtEq);
+    assert_eq!(criteria[1].tolerance.metric, "pass_rate");
 
     // Third: absolute_error < 0.10.
-    assert_eq!(tolerances[2].op, ComparisonOp::Lt);
-    assert_eq!(tolerances[2].output.as_deref(), Some("helix_fraction"));
+    assert_eq!(criteria[2].tolerance.op, ComparisonOp::Lt);
+    assert_eq!(criteria[2].tolerance.output.as_deref(), Some("helix_fraction"));
 
     // Single-oracle case (pydssp) → all three get against=Some("pydssp").
-    for t in &tolerances {
-        assert_eq!(t.against.as_deref(), Some("pydssp"));
+    for c in &criteria {
+        assert_eq!(c.tolerance.against.as_deref(), Some("pydssp"));
     }
+
+    // CriterionIds are stable, ordered by tolerance index.
+    assert_eq!(
+        criteria[0].id.as_str(),
+        "proteon-dssp-vs-pydssp-ci-criterion-0"
+    );
+    assert_eq!(
+        criteria[2].id.as_str(),
+        "proteon-dssp-vs-pydssp-ci-criterion-2"
+    );
 }
 
 #[test]
@@ -259,4 +326,104 @@ fn dssp_claim_translates_with_pydssp_as_inferred_comparison() {
 
     assert_eq!(attested.value.id.as_str(), "proteon-dssp-vs-pydssp-ci");
     assert_eq!(attested.value.kind, ClaimKind::Comparison); // pydssp oracle
+}
+
+// --- Evidence + last_verified translation ---
+
+#[test]
+fn ci_claim_with_null_last_verified_has_empty_reruns() {
+    let manifest = parse_manifest_file(PROTEON_SASA_CI_YAML).unwrap();
+    let mc = &manifest.claims[0];
+    let criteria = translate_tolerances(mc).unwrap();
+    let ctx = ctx("proteon/evident/claims/sasa.yaml");
+    let evidence = translate_evidence(&ctx, mc, &criteria).unwrap();
+
+    assert_eq!(evidence.id.as_str(), "ev-proteon-sasa-vs-biopython-ci");
+    assert_eq!(evidence.for_claim.as_str(), "proteon-sasa-vs-biopython-ci");
+
+    // CI tier without populated last_verified → empty reruns.
+    match &evidence.extraction {
+        Derivation::Verified { reruns, method, ran_by } => {
+            assert!(reruns.is_empty(), "expected empty reruns, got {reruns:?}");
+            assert!(method.command.contains("pytest"));
+            assert_eq!(ran_by.kind, IdentityKind::Automated); // performer, not judge
+            assert_eq!(ran_by.name, "unspecified-runner");
+        }
+        other => panic!("expected Verified, got {other:?}"),
+    }
+
+    // CI tier → Moderate support strength, Moderate confidence.
+    match (&evidence.supports.value, &evidence.supports.derivation) {
+        (
+            SupportRelation::Supports { strength: Strength::Moderate },
+            Derivation::Judged { by, confidence, .. },
+        ) => {
+            assert_eq!(*confidence, Confidence::Moderate);
+            // Invariant 9: judge is Human even when provenance is "automatic".
+            assert_eq!(by.kind, IdentityKind::Human);
+            assert_eq!(by.name, "unspecified");
+            let prov = by.details.iter().find(|d| d.key == "manifest_provenance");
+            assert_eq!(prov.map(|d| d.value.as_str()), Some("automatic"));
+        }
+        other => panic!("unexpected supports shape: {other:?}"),
+    }
+}
+
+#[test]
+fn release_claim_with_populated_last_verified_emits_rerun() {
+    let manifest = parse_manifest_file(PROTEON_SASA_RELEASE_YAML).unwrap();
+    let mc = &manifest.claims[0];
+    let criteria = translate_tolerances(mc).unwrap();
+    let ctx = ctx("proteon/evident/claims/sasa.yaml");
+    let evidence = translate_evidence(&ctx, mc, &criteria).unwrap();
+
+    // Release tier → Strong support, High confidence, provenance: human → Human judge.
+    match (&evidence.supports.value, &evidence.supports.derivation) {
+        (
+            SupportRelation::Supports { strength: Strength::Strong },
+            Derivation::Judged { by, confidence, .. },
+        ) => {
+            assert_eq!(*confidence, Confidence::High);
+            let prov = by.details.iter().find(|d| d.key == "manifest_provenance");
+            assert_eq!(prov.map(|d| d.value.as_str()), Some("human"));
+        }
+        other => panic!("unexpected supports shape: {other:?}"),
+    }
+
+    // last_verified is fully populated → one Rerun.
+    let Derivation::Verified { reruns, .. } = &evidence.extraction else {
+        panic!("expected Verified");
+    };
+    assert_eq!(reruns.len(), 1);
+    let rerun = &reruns[0];
+    assert_eq!(rerun.at, "2026-05-11");
+    assert_eq!(rerun.outcome, ReproductionOutcome::Matched);
+    assert_eq!(
+        rerun.corpus_sha.as_deref(),
+        Some("b319c47c59871ed3990f81fb025c6ae90abba6adcff0b91ff7f118e41c730a53")
+    );
+
+    // Observation binds to the first criterion id (shipping convention:
+    // last_verified.value is the primary scalar metric).
+    assert_eq!(rerun.observed.len(), 1);
+    let obs = &rerun.observed[0];
+    assert_eq!(
+        obs.criterion.as_str(),
+        "proteon-sasa-vs-biopython-release-1k-pdbs-criterion-0"
+    );
+    assert_eq!(obs.value, 0.0017);
+}
+
+#[test]
+fn evidence_locator_wraps_manifest_artifact_string() {
+    let manifest = parse_manifest_file(PROTEON_SASA_RELEASE_YAML).unwrap();
+    let mc = &manifest.claims[0];
+    let criteria = translate_tolerances(mc).unwrap();
+    let ctx = ctx("proteon/evident/claims/sasa.yaml");
+    let evidence = translate_evidence(&ctx, mc, &criteria).unwrap();
+
+    match &evidence.locator {
+        Locator::Artifact(s) => assert_eq!(s, "validation/results.json"),
+        other => panic!("expected Locator::Artifact, got {other:?}"),
+    }
 }
