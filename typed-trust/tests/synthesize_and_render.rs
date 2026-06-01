@@ -327,6 +327,50 @@ fn synthesize_unbacked_substantive_challenge_does_not_move_status() {
 }
 
 #[test]
+fn synthesize_procedural_challenge_targeting_evidence_moves_status() {
+    // Codex review #3 (round 3): procedural challenges naturally
+    // target Evidence ids (ArtifactUnavailable, HashMismatch,
+    // CommandFailure). target_touches_report must recognize these
+    // when the targeted Evidence is part of the report's evidence
+    // set — otherwise the status calculation silently drops these
+    // events and the report renders Current with no challenge listed.
+    let (claim, criteria, evidence) = translate_to_pieces(PROTEON_SASA_RELEASE_YAML);
+    let ev_id = evidence.id.clone();
+
+    let challenge = ReviewEvent {
+        id: EventId::new("rev-artifact-missing"),
+        target: Target::Evidence(ev_id),
+        by: Identity {
+            kind: IdentityKind::Automated,
+            name: "release-verifier".into(),
+            details: vec![],
+        },
+        protocol: Some("release-integrity-check".into()),
+        rationale: "validation/results.json not found in release archive.".into(),
+        at: "2026-06-01T00:00:00Z".into(),
+        kind: ReviewKind::Challenge {
+            category: ChallengeCategory::ArtifactUnavailable,
+            backed_by: None,
+        },
+    };
+
+    let report = synthesize(
+        claim.id,
+        criteria,
+        &[evidence],
+        std::slice::from_ref(&challenge),
+        &[],
+        "2026-06-01T00:00:00Z".into(),
+    );
+
+    assert_eq!(report.status, RenderStatus::Contested);
+    assert_eq!(
+        report.challenges,
+        vec![EventId::new("rev-artifact-missing")]
+    );
+}
+
+#[test]
 fn synthesize_procedural_challenge_moves_status_without_backing() {
     // HashMismatch is in the closed procedural list → moves status
     // even without backing (invariant 6).

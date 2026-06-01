@@ -64,6 +64,7 @@ pub fn synthesize(
     let status = compute_render_status(
         &claim,
         &result_criteria,
+        evidence,
         review_events,
         backing_reports,
     );
@@ -71,7 +72,7 @@ pub fn synthesize(
     let challenges: Vec<EventId> = review_events
         .iter()
         .filter(|e| matches!(&e.kind, ReviewKind::Challenge { .. }))
-        .filter(|e| target_touches_report(&e.target, &claim, &result_criteria))
+        .filter(|e| target_touches_report(&e.target, &claim, &result_criteria, evidence))
         .map(|e| e.id.clone())
         .collect();
 
@@ -212,13 +213,14 @@ fn apply_op(op: ComparisonOp, observed: f64, threshold: f64) -> bool {
 fn compute_render_status(
     claim_id: &ClaimId,
     criteria: &[Criterion],
+    evidence: &[Evidence],
     events: &[ReviewEvent],
     backing_reports: &[TrustReport],
 ) -> RenderStatus {
     // Supersede first.
     if events.iter().any(|e| {
         matches!(&e.kind, ReviewKind::Supersede { .. })
-            && target_touches_report(&e.target, claim_id, criteria)
+            && target_touches_report(&e.target, claim_id, criteria, evidence)
     }) {
         return RenderStatus::Superseded;
     }
@@ -240,7 +242,7 @@ fn compute_render_status(
                 .map(|bid| backing_report_sustains(bid, backing_reports))
                 .unwrap_or(false);
             (proc_can_move || backed_can_move)
-                && target_touches_report(&e.target, claim_id, criteria)
+                && target_touches_report(&e.target, claim_id, criteria, evidence)
         }
         _ => false,
     });
@@ -298,21 +300,30 @@ pub(crate) fn is_procedural_category(cat: &ChallengeCategory) -> bool {
 }
 
 /// Whether a [`Target`] points at this report (its Claim, a Criterion
-/// in it, or a CriterionResult).
-fn target_touches_report(target: &Target, claim_id: &ClaimId, criteria: &[Criterion]) -> bool {
+/// in it, or an Evidence / SupportRelation / Provenance used by it).
+fn target_touches_report(
+    target: &Target,
+    claim_id: &ClaimId,
+    criteria: &[Criterion],
+    evidence: &[Evidence],
+) -> bool {
     match target {
         Target::Claim(c) => c == claim_id,
         Target::Criterion(cid) => criteria.iter().any(|c| &c.id == cid),
-        Target::CriterionResult { criterion, .. } => {
-            criteria.iter().any(|c| &c.id == criterion)
+        // Procedural challenges like ArtifactUnavailable / HashMismatch /
+        // CommandFailure naturally target Evidence or SupportRelation
+        // ids, not the claim or criterion. They must move status when
+        // they apply to this report's evidence.
+        Target::Evidence(eid) | Target::SupportRelation(eid) => {
+            evidence.iter().any(|e| &e.id == eid)
         }
-        // TrustReport-targeted events cannot be matched until TrustReport
-        // carries its own ReportId. Returning `true` here was a bug —
-        // when callers pass shared review-event slices while synthesizing
-        // multiple reports, every report would falsely consider any
-        // Target::TrustReport(_) event as targeting it. Conservative
-        // fallback: don't match. The full fix is to add an `id: ReportId`
-        // field to TrustReport so reports can disambiguate.
+        // CriterionResult and TrustReport targets are snapshot-bound
+        // and require a ReportId on TrustReport to disambiguate. Until
+        // that lands, treat them as not matching — conservative
+        // fallback prevents an old event for the same stable criterion
+        // id (or any TrustReport id) from contesting every later report
+        // when callers batch through a shared event slice.
+        Target::CriterionResult { .. } => false,
         Target::TrustReport(_) => false,
         _ => false,
     }

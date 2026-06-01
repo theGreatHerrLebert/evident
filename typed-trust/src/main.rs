@@ -64,23 +64,27 @@ fn main() -> ExitCode {
     };
 
     let now: Timestamp = "1970-01-01T00:00:00Z".into();
-    let ctx = TranslationContext {
-        now: now.clone(),
-        manifest_path: path.clone(),
-    };
 
     let mut reports: Vec<serde_json::Value> = Vec::new();
     let mut skipped: Vec<SkipReason> = Vec::new();
 
-    for (idx, mc) in claims.iter().enumerate() {
+    for cw in claims.iter() {
+        let mc = &cw.claim;
         if let Some(ref f) = filter {
             if mc.id != *f {
                 continue;
             }
         }
-        let span = format!("claims[{idx}]");
+        // Per-claim TranslationContext so the resulting SourceSpan
+        // points at the originating manifest file (for `include:`
+        // top-level manifests, that's the included file, not the
+        // top-level evident.yaml).
+        let ctx = TranslationContext {
+            now: now.clone(),
+            manifest_path: cw.source_path.clone(),
+        };
 
-        if let Err(e) = translate_claim(&ctx, mc, &span) {
+        if let Err(e) = translate_claim(&ctx, mc, &cw.span) {
             skipped.push(SkipReason {
                 id: mc.id.clone(),
                 reason: format!("{e}"),
@@ -175,11 +179,23 @@ fn usage() {
     eprintln!("merged in before translation.");
 }
 
+/// A manifest claim paired with the file it actually came from. When
+/// the top-level manifest uses `include:`, claims from included files
+/// keep the include file's path as their `source_path` and the
+/// per-file index as their `span` — so the resulting `SourceSpan`
+/// points at the real authored location instead of the top-level
+/// manifest's merged index. Preserves the audit trail.
+struct ClaimWithSource {
+    claim: ManifestClaim,
+    source_path: String,
+    span: String,
+}
+
 /// Read a manifest YAML and resolve any `include:` entries (paths
 /// relative to the manifest's directory). Returns the merged claim
 /// list. Per workflow/SCHEMA.md, includes are flat (no chained
 /// includes), so we resolve one level only.
-fn load_claims(path_str: &str) -> Result<Vec<ManifestClaim>, String> {
+fn load_claims(path_str: &str) -> Result<Vec<ClaimWithSource>, String> {
     let path = PathBuf::from(path_str);
     let yaml = fs::read_to_string(&path)
         .map_err(|e| format!("error reading {}: {e}", path.display()))?;
@@ -187,7 +203,14 @@ fn load_claims(path_str: &str) -> Result<Vec<ManifestClaim>, String> {
     let manifest = parse_manifest_file(&yaml)
         .map_err(|e| format!("error parsing {}: {e}", path.display()))?;
 
-    let mut all_claims = manifest.claims;
+    let mut out: Vec<ClaimWithSource> = Vec::new();
+    for (idx, c) in manifest.claims.into_iter().enumerate() {
+        out.push(ClaimWithSource {
+            claim: c,
+            source_path: path_str.to_string(),
+            span: format!("claims[{idx}]"),
+        });
+    }
 
     for inc in extract_includes(&yaml) {
         let resolved = path
@@ -198,10 +221,17 @@ fn load_claims(path_str: &str) -> Result<Vec<ManifestClaim>, String> {
             .map_err(|e| format!("error reading include {}: {e}", resolved.display()))?;
         let inc_manifest = parse_manifest_file(&inc_yaml)
             .map_err(|e| format!("error parsing include {}: {e}", resolved.display()))?;
-        all_claims.extend(inc_manifest.claims);
+        let inc_path_str = resolved.to_string_lossy().into_owned();
+        for (idx, c) in inc_manifest.claims.into_iter().enumerate() {
+            out.push(ClaimWithSource {
+                claim: c,
+                source_path: inc_path_str.clone(),
+                span: format!("claims[{idx}]"),
+            });
+        }
     }
 
-    Ok(all_claims)
+    Ok(out)
 }
 
 /// Parse the top-level YAML by hand to extract `include:` paths.
