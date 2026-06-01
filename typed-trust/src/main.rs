@@ -107,6 +107,7 @@ fn main() -> ExitCode {
             criteria,
             &evidence,
             &[],
+            &[],
             now.clone(),
         );
 

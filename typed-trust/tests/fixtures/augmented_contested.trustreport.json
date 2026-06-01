@@ -1,5 +1,12 @@
 {
   "_graph": {
+    "backing_reports": [
+      {
+        "claim": "backing-claim-id",
+        "criteria": [],
+        "status": "current"
+      }
+    ],
     "review_events": [
       {
         "at": "2026-06-01T00:00:00Z",

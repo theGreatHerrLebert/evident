@@ -82,11 +82,15 @@ fn default_kind() -> String {
     "measurement".into()
 }
 
+/// Mirrors the shipping schema's tolerance entry. Per `workflow/SCHEMA.md`:
+/// `metric`, `op`, `value` are all-or-nothing — either supply all three
+/// for a structured tolerance, or supply none and use only `prose` (the
+/// research-tier deferred-spec case). `prose` is always required.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ManifestTolerance {
-    pub metric: String,
-    pub op: String,
-    pub value: f64,
+    pub metric: Option<String>,
+    pub op: Option<String>,
+    pub value: Option<f64>,
     pub output: Option<String>,
     pub prose: String,
 }
@@ -116,6 +120,10 @@ pub enum TranslateError {
     OutOfScope { id: String, kind: String },
     /// An unknown comparison operator in `tolerances[].op`.
     UnknownOp { id: String, op: String },
+    /// A tolerance entry has some but not all of `metric`/`op`/`value`.
+    /// The shipping schema requires all three together (structured) or
+    /// none (prose-only); mixing them is a manifest error.
+    PartialTolerance { id: String },
 }
 
 impl std::fmt::Display for TranslateError {
@@ -129,6 +137,11 @@ impl std::fmt::Display for TranslateError {
             TranslateError::UnknownOp { id, op } => {
                 write!(f, "claim {id}: unknown comparison op {op:?}")
             }
+            TranslateError::PartialTolerance { id } => write!(
+                f,
+                "claim {id}: tolerance has some but not all of metric/op/value; \
+                 shipping schema requires all-or-nothing"
+            ),
         }
     }
 }
@@ -199,10 +212,19 @@ pub fn translate_claim(
 /// [`Criterion`] once synthesis decides a result. The id is generated
 /// at translate time so [`MetricObservation`] in a [`Rerun`] can bind
 /// to it deterministically.
+///
+/// `tolerance` is `None` when the manifest tolerance is prose-only
+/// (research-tier deferred-spec — `metric`/`op`/`value` all absent,
+/// only `prose` carried). Synthesis treats such criteria as
+/// `NotAssessed { reason: "no structured tolerance ..." }`. The
+/// `prose` text is preserved on the Criterion via its name.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TranslatedCriterion {
     pub id: CriterionId,
-    pub tolerance: Tolerance,
+    pub tolerance: Option<Tolerance>,
+    /// Always present — `prose` is required by the shipping schema
+    /// even when the structured triple is absent.
+    pub prose: String,
 }
 
 /// Translate all `tolerances` entries into [`TranslatedCriterion`]
@@ -232,7 +254,11 @@ pub fn translate_tolerances(
         .map(|(idx, t)| {
             let id = CriterionId::new(format!("{}-criterion-{}", mc.id, idx));
             let tolerance = translate_tolerance(t, &single_oracle, &mc.id)?;
-            Ok(TranslatedCriterion { id, tolerance })
+            Ok(TranslatedCriterion {
+                id,
+                tolerance,
+                prose: t.prose.trim().to_string(),
+            })
         })
         .collect()
 }
@@ -241,15 +267,23 @@ fn translate_tolerance(
     mt: &ManifestTolerance,
     single_oracle: &Option<String>,
     claim_id: &str,
-) -> Result<Tolerance, TranslateError> {
-    Ok(Tolerance {
-        metric: mt.metric.clone(),
-        op: parse_op(&mt.op, claim_id)?,
-        value: mt.value,
-        output: mt.output.clone(),
-        against: single_oracle.clone(),
-        prose: mt.prose.trim().to_string(),
-    })
+) -> Result<Option<Tolerance>, TranslateError> {
+    // Per workflow/SCHEMA.md, metric/op/value are all-or-nothing.
+    let triple = (mt.metric.as_ref(), mt.op.as_ref(), mt.value);
+    match triple {
+        (None, None, None) => Ok(None), // prose-only — valid at research tier
+        (Some(metric), Some(op), Some(value)) => Ok(Some(Tolerance {
+            metric: metric.clone(),
+            op: parse_op(op, claim_id)?,
+            value,
+            output: mt.output.clone(),
+            against: single_oracle.clone(),
+            prose: mt.prose.trim().to_string(),
+        })),
+        _ => Err(TranslateError::PartialTolerance {
+            id: claim_id.into(),
+        }),
+    }
 }
 
 /// Translate the per-claim `evidence` block into an [`Evidence`].

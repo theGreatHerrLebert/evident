@@ -68,7 +68,8 @@ fn augment_criterion(crit_json: &mut Value, input: &RenderInput) {
     let crit_id = CriterionId::new(crit_id_str);
 
     let observed = latest_observation_for(&crit_id, input.evidence);
-    let crit_status = compute_criterion_status(&crit_id, input.related_events);
+    let crit_status =
+        compute_criterion_status(&crit_id, input.related_events, input.backing_reports);
     let contested_by: Vec<String> = input
         .related_events
         .iter()
@@ -118,19 +119,33 @@ fn latest_observation_for(criterion_id: &CriterionId, evidence: &[Evidence]) -> 
     best.map(|(_, v)| v)
 }
 
-fn compute_criterion_status(criterion_id: &CriterionId, events: &[ReviewEvent]) -> RenderStatus {
+fn compute_criterion_status(
+    criterion_id: &CriterionId,
+    events: &[ReviewEvent],
+    backing_reports: &[crate::report::TrustReport],
+) -> RenderStatus {
     if events.iter().any(|e| {
         matches!(&e.kind, ReviewKind::Supersede { .. })
             && event_targets_criterion(&e.target, criterion_id)
     }) {
         return RenderStatus::Superseded;
     }
+    // Same §8 sustain rule as synthesize::compute_render_status: a
+    // backing claim id only sustains if the matching backing report
+    // synthesizes to Current.
     if events.iter().any(|e| match &e.kind {
         ReviewKind::Challenge {
             category,
             backed_by,
         } => {
-            (is_procedural_category(category) || backed_by.is_some())
+            let proc_can_move = is_procedural_category(category);
+            let backed_can_move = backed_by.as_ref().is_some_and(|bid| {
+                backing_reports
+                    .iter()
+                    .find(|r| &r.claim == bid)
+                    .is_some_and(|r| r.status == RenderStatus::Current)
+            });
+            (proc_can_move || backed_can_move)
                 && event_targets_criterion(&e.target, criterion_id)
         }
         _ => false,

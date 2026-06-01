@@ -38,11 +38,21 @@ use crate::translate::TranslatedCriterion;
 ///
 /// `challenges` in the output is the list of EventIds whose target
 /// touches the report (Claim, Criterion, or CriterionResult).
+/// `backing_reports` carries already-synthesized reports for any
+/// claims referenced via `Challenge { backed_by: Some(...) }`. They
+/// are consulted to decide whether a substantive challenge actually
+/// sustains: a backing report whose `status == Current` sustains the
+/// challenge; any other status (Contested, Superseded), or no backing
+/// report at all, leaves the challenge unsustained and the original
+/// report is NOT moved to Contested. This is the invariant 6 / §8
+/// behavior; passing `&[]` means "no challenge can sustain via
+/// backing," only procedural challenges can move status.
 pub fn synthesize(
     claim: ClaimId,
     criteria: Vec<TranslatedCriterion>,
     evidence: &[Evidence],
     review_events: &[ReviewEvent],
+    backing_reports: &[TrustReport],
     at: Timestamp,
 ) -> TrustReport {
     let synth = synthesizer_identity();
@@ -51,7 +61,12 @@ pub fn synthesize(
         .map(|tc| build_criterion(tc, evidence, &synth, &at))
         .collect();
 
-    let status = compute_render_status(&claim, &result_criteria, review_events);
+    let status = compute_render_status(
+        &claim,
+        &result_criteria,
+        review_events,
+        backing_reports,
+    );
 
     let challenges: Vec<EventId> = review_events
         .iter()
@@ -76,23 +91,46 @@ fn build_criterion(
     synth: &Identity,
     at: &Timestamp,
 ) -> Criterion {
-    let name = name_for_tolerance(&tc.tolerance);
-    let result = synthesize_result(&tc.id, &tc.tolerance, evidence, synth, at);
+    let name = name_for_translated_criterion(&tc);
+    let result = synthesize_result(&tc.id, tc.tolerance.as_ref(), evidence, synth, at);
     Criterion {
         id: tc.id,
         name,
-        tolerance: Some(tc.tolerance),
+        tolerance: tc.tolerance,
         result,
     }
 }
 
 fn synthesize_result(
     criterion_id: &CriterionId,
-    tol: &Tolerance,
+    tol: Option<&Tolerance>,
     evidence: &[Evidence],
     synth: &Identity,
     at: &Timestamp,
 ) -> Attested<CriterionResult> {
+    // Prose-only tolerance: no structured threshold to apply. Always
+    // NotAssessed with a documented reason.
+    let Some(tol) = tol else {
+        return Attested {
+            value: CriterionResult::NotAssessed {
+                reason: "no structured tolerance (prose-only)".into(),
+            },
+            derivation: Derivation::Verified {
+                method: ToolInvocation {
+                    command: "rule:NoStructuredTolerance".into(),
+                    tool_version: format!(
+                        "typed-trust-synth {}",
+                        env!("CARGO_PKG_VERSION")
+                    ),
+                    env: vec![],
+                },
+                ran_by: synth.clone(),
+                reruns: vec![],
+            },
+            at: at.clone(),
+        };
+    };
+
     let latest = latest_observation_for(criterion_id, evidence);
 
     let (value, rule) = match latest {
@@ -175,6 +213,7 @@ fn compute_render_status(
     claim_id: &ClaimId,
     criteria: &[Criterion],
     events: &[ReviewEvent],
+    backing_reports: &[TrustReport],
 ) -> RenderStatus {
     // Supersede first.
     if events.iter().any(|e| {
@@ -184,22 +223,44 @@ fn compute_render_status(
         return RenderStatus::Superseded;
     }
 
-    // Then substantive challenges.
-    let has_substantive_challenge = events.iter().any(|e| match &e.kind {
+    // Then substantive challenges. The challenge moves render status if:
+    // - the category is procedural (closed list); or
+    // - backed_by points at a backing report that synthesizes to Current
+    //   (i.e., the backing claim's criteria pass on their own merits).
+    // A backed_by claim id with no matching backing report, or a backing
+    // report with status != Current, does NOT sustain the challenge.
+    let has_sustained_challenge = events.iter().any(|e| match &e.kind {
         ReviewKind::Challenge {
             category,
             backed_by,
         } => {
-            let can_move = is_procedural_category(category) || backed_by.is_some();
-            can_move && target_touches_report(&e.target, claim_id, criteria)
+            let proc_can_move = is_procedural_category(category);
+            let backed_can_move = backed_by
+                .as_ref()
+                .map(|bid| backing_report_sustains(bid, backing_reports))
+                .unwrap_or(false);
+            (proc_can_move || backed_can_move)
+                && target_touches_report(&e.target, claim_id, criteria)
         }
         _ => false,
     });
-    if has_substantive_challenge {
+    if has_sustained_challenge {
         RenderStatus::Contested
     } else {
         RenderStatus::Current
     }
+}
+
+/// A backing claim sustains a challenge iff its TrustReport
+/// synthesizes to a `Current` status — meaning the backing claim's
+/// own criteria pass on their own merits and no challenges against IT
+/// were sustained. `Contested` or `Superseded` backing reports do not
+/// sustain (a contested objection cannot itself move parent currency).
+fn backing_report_sustains(backing_id: &ClaimId, backing_reports: &[TrustReport]) -> bool {
+    backing_reports
+        .iter()
+        .find(|r| &r.claim == backing_id)
+        .is_some_and(|r| r.status == RenderStatus::Current)
 }
 
 /// Closed list of procedural categories that may move render status
@@ -224,8 +285,28 @@ fn target_touches_report(target: &Target, claim_id: &ClaimId, criteria: &[Criter
         Target::CriterionResult { criterion, .. } => {
             criteria.iter().any(|c| &c.id == criterion)
         }
-        Target::TrustReport(_) => true,
+        // TrustReport-targeted events cannot be matched until TrustReport
+        // carries its own ReportId. Returning `true` here was a bug —
+        // when callers pass shared review-event slices while synthesizing
+        // multiple reports, every report would falsely consider any
+        // Target::TrustReport(_) event as targeting it. Conservative
+        // fallback: don't match. The full fix is to add an `id: ReportId`
+        // field to TrustReport so reports can disambiguate.
+        Target::TrustReport(_) => false,
         _ => false,
+    }
+}
+
+fn name_for_translated_criterion(tc: &TranslatedCriterion) -> String {
+    match tc.tolerance.as_ref() {
+        Some(tol) => name_for_tolerance(tol),
+        None => {
+            // Prose-only — surface the first line of the prose so the
+            // criterion has a usable label even without a structured
+            // threshold.
+            let first_line = tc.prose.lines().next().unwrap_or("(prose-only)");
+            format!("(prose-only) {first_line}")
+        }
     }
 }
 
@@ -327,15 +408,11 @@ fn walk_backing(
     // Clone the events to recurse later; synthesize consumes criteria.
     let events = inputs.review_events.clone();
 
-    let report = synthesize(
-        claim_id.clone(),
-        inputs.criteria,
-        &inputs.evidence,
-        &events,
-        at.to_string(),
-    );
-    backing.push(report);
-
+    // Backing reports are computed depth-first: a backing claim's own
+    // backing reports must be known before its TrustReport can be
+    // synthesized correctly (per the §8 sustain rule). Recurse first,
+    // then synthesize with the accumulated backing.
+    let backing_start = backing.len();
     for event in &events {
         if let ReviewKind::Challenge {
             backed_by: Some(b),
@@ -345,4 +422,15 @@ fn walk_backing(
             walk_backing(b, lookup, visited, backing, at, depth + 1, max_depth);
         }
     }
+    let nested_backing: Vec<TrustReport> = backing[backing_start..].to_vec();
+
+    let report = synthesize(
+        claim_id.clone(),
+        inputs.criteria,
+        &inputs.evidence,
+        &events,
+        &nested_backing,
+        at.to_string(),
+    );
+    backing.push(report);
 }

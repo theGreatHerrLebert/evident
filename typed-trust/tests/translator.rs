@@ -213,7 +213,7 @@ fn translates_single_oracle_tolerance_populates_against() {
     let criteria = translate_tolerances(&manifest.claims[0]).unwrap();
 
     assert_eq!(criteria.len(), 1);
-    let t = &criteria[0].tolerance;
+    let t = criteria[0].tolerance.as_ref().unwrap();
     assert_eq!(t.metric, "relative_error");
     assert_eq!(t.op, ComparisonOp::Lt);
     assert_eq!(t.value, 0.02);
@@ -255,23 +255,30 @@ fn translates_dssp_tolerances_including_eq_operator() {
 
     assert_eq!(criteria.len(), 3);
 
+    let t0 = criteria[0].tolerance.as_ref().unwrap();
+    let t1 = criteria[1].tolerance.as_ref().unwrap();
+    let t2 = criteria[2].tolerance.as_ref().unwrap();
+
     // First tolerance: absolute_error == 0 on residue_count.
-    assert_eq!(criteria[0].tolerance.op, ComparisonOp::Eq);
-    assert_eq!(criteria[0].tolerance.value, 0.0);
-    assert_eq!(criteria[0].tolerance.output.as_deref(), Some("residue_count"));
-    assert_eq!(criteria[0].tolerance.metric, "absolute_error");
+    assert_eq!(t0.op, ComparisonOp::Eq);
+    assert_eq!(t0.value, 0.0);
+    assert_eq!(t0.output.as_deref(), Some("residue_count"));
+    assert_eq!(t0.metric, "absolute_error");
 
     // Second: pass_rate >= 0.95.
-    assert_eq!(criteria[1].tolerance.op, ComparisonOp::GtEq);
-    assert_eq!(criteria[1].tolerance.metric, "pass_rate");
+    assert_eq!(t1.op, ComparisonOp::GtEq);
+    assert_eq!(t1.metric, "pass_rate");
 
     // Third: absolute_error < 0.10.
-    assert_eq!(criteria[2].tolerance.op, ComparisonOp::Lt);
-    assert_eq!(criteria[2].tolerance.output.as_deref(), Some("helix_fraction"));
+    assert_eq!(t2.op, ComparisonOp::Lt);
+    assert_eq!(t2.output.as_deref(), Some("helix_fraction"));
 
     // Single-oracle case (pydssp) → all three get against=Some("pydssp").
     for c in &criteria {
-        assert_eq!(c.tolerance.against.as_deref(), Some("pydssp"));
+        assert_eq!(
+            c.tolerance.as_ref().unwrap().against.as_deref(),
+            Some("pydssp")
+        );
     }
 
     // CriterionIds are stable, ordered by tolerance index.
@@ -315,6 +322,89 @@ claims:
             assert_eq!(op, "≈");
         }
         other => panic!("expected UnknownOp, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_prose_only_tolerance_and_produces_not_assessed() {
+    // Codex review #1 + workflow/SCHEMA.md: at research tier a
+    // tolerance may carry only `prose` (metric/op/value all absent).
+    // The translator must accept this and produce a TranslatedCriterion
+    // with tolerance: None; the synthesizer must render NotAssessed.
+    let yaml = r#"
+claims:
+  - id: research-tier-prose-only
+    title: Research-tier prose-only tolerance
+    kind: measurement
+    case: x.md
+    source: ..
+    tier: research
+    claim: deferred-spec
+    tolerances:
+      - prose: |
+          We will quantify alignment quality once we have a
+          ground-truth corpus. Until then, the tolerance is the
+          maintainer's discretion.
+    evidence:
+      oracle: [internal]
+      command: pytest tests/oracle/test_dssp_oracle.py -v
+      artifact: console
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let criteria = translate_tolerances(&manifest.claims[0]).unwrap();
+
+    assert_eq!(criteria.len(), 1);
+    assert!(criteria[0].tolerance.is_none());
+    assert!(criteria[0].prose.contains("quantify alignment quality"));
+
+    // Verify the same claim flows through synthesize() to a
+    // NotAssessed criterion result.
+    let ctx = ctx("research/manifest.yaml");
+    let _claim = translate_claim(&ctx, &manifest.claims[0], "claims[0]").unwrap();
+    let evidence: Vec<Evidence> =
+        translate_evidence(&ctx, &manifest.claims[0], &criteria)
+            .into_iter()
+            .collect();
+    let report = synthesize(
+        ClaimId::new("research-tier-prose-only"),
+        criteria,
+        &evidence,
+        &[],
+        &[],
+        "2026-06-01T00:00:00Z".into(),
+    );
+    let r = &report.criteria[0].result.value;
+    assert!(matches!(r, CriterionResult::NotAssessed { .. }), "got {r:?}");
+}
+
+#[test]
+fn rejects_partial_tolerance_with_some_but_not_all_of_metric_op_value() {
+    // metric and op present but value absent — schema violation.
+    let yaml = r#"
+claims:
+  - id: partial-tolerance-claim
+    title: bad
+    kind: measurement
+    case: x.md
+    source: ..
+    tier: ci
+    claim: text
+    tolerances:
+      - metric: relative_error
+        op: "<"
+        prose: missing value field
+    evidence:
+      oracle: [Foo]
+      command: x
+      artifact: y
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let result = translate_tolerances(&manifest.claims[0]);
+    match result {
+        Err(TranslateError::PartialTolerance { id }) => {
+            assert_eq!(id, "partial-tolerance-claim");
+        }
+        other => panic!("expected PartialTolerance, got {other:?}"),
     }
 }
 

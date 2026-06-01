@@ -113,6 +113,7 @@ fn synthesize_pass_when_observed_value_meets_tolerance() {
         criteria,
         &[evidence],
         &[],
+        &[],
         "2026-06-01T00:00:00Z".into(),
     );
 
@@ -130,6 +131,7 @@ fn synthesize_fail_when_observed_value_exceeds_tolerance() {
         claim.id,
         criteria,
         &[evidence],
+        &[],
         &[],
         "2026-06-01T00:00:00Z".into(),
     );
@@ -155,6 +157,7 @@ fn synthesize_not_assessed_when_evidence_has_no_observations() {
         criteria,
         &[evidence],
         &[],
+        &[],
         "2026-06-01T00:00:00Z".into(),
     );
 
@@ -167,8 +170,9 @@ fn synthesize_contested_when_substantive_challenge_targets_criterion() {
     let (claim, criteria, evidence) = translate_to_pieces(PROTEON_SASA_RELEASE_YAML);
     let crit_id = criteria[0].id.clone();
 
-    // A substantive challenge with backing claim → Currency moves to
-    // Contested per invariant 6.
+    // A substantive challenge backed by a SUSTAINED claim (Current status)
+    // → Currency moves to Contested per invariant 6.
+    let backing_id = ClaimId::new("backing-claim");
     let challenge = ReviewEvent {
         id: EventId::new("rev-challenge-1"),
         target: Target::Criterion(crit_id),
@@ -182,8 +186,18 @@ fn synthesize_contested_when_substantive_challenge_targets_criterion() {
         at: "2026-06-01T00:00:00Z".into(),
         kind: ReviewKind::Challenge {
             category: ChallengeCategory::WeakStatistics,
-            backed_by: Some(ClaimId::new("backing-claim")),
+            backed_by: Some(backing_id.clone()),
         },
+    };
+
+    // A backing report whose status is Current sustains the challenge.
+    let backing_report = TrustReport {
+        claim: backing_id,
+        status: RenderStatus::Current,
+        criteria: vec![],
+        challenges: vec![],
+        gaps: vec![],
+        aggregate: None,
     };
 
     let report = synthesize(
@@ -191,11 +205,95 @@ fn synthesize_contested_when_substantive_challenge_targets_criterion() {
         criteria,
         &[evidence],
         &[challenge.clone()],
+        std::slice::from_ref(&backing_report),
         "2026-06-01T00:00:00Z".into(),
     );
 
     assert_eq!(report.status, RenderStatus::Contested);
     assert_eq!(report.challenges, vec![EventId::new("rev-challenge-1")]);
+}
+
+#[test]
+fn synthesize_substantive_challenge_with_missing_backing_does_not_contest() {
+    // Codex review #2 / invariant 6: if the backed_by claim has no
+    // matching backing report (or the report is not Current), the
+    // challenge does NOT sustain and status stays Current.
+    let (claim, criteria, evidence) = translate_to_pieces(PROTEON_SASA_RELEASE_YAML);
+    let crit_id = criteria[0].id.clone();
+
+    let challenge = ReviewEvent {
+        id: EventId::new("rev-no-backing"),
+        target: Target::Criterion(crit_id),
+        by: Identity {
+            kind: IdentityKind::Human,
+            name: "reviewer".into(),
+            details: vec![],
+        },
+        protocol: Some("proteon-peer-review-v1".into()),
+        rationale: "Backing claim doesn't actually exist in our world.".into(),
+        at: "2026-06-01T00:00:00Z".into(),
+        kind: ReviewKind::Challenge {
+            category: ChallengeCategory::WeakStatistics,
+            backed_by: Some(ClaimId::new("nonexistent-backing-claim")),
+        },
+    };
+
+    let report = synthesize(
+        claim.id,
+        criteria,
+        &[evidence],
+        std::slice::from_ref(&challenge),
+        &[], // no backing reports supplied
+        "2026-06-01T00:00:00Z".into(),
+    );
+
+    assert_eq!(report.status, RenderStatus::Current);
+}
+
+#[test]
+fn synthesize_substantive_challenge_with_contested_backing_does_not_contest() {
+    // The backed_by claim's TrustReport has status != Current → the
+    // challenge does NOT sustain the parent.
+    let (claim, criteria, evidence) = translate_to_pieces(PROTEON_SASA_RELEASE_YAML);
+    let crit_id = criteria[0].id.clone();
+
+    let backing_id = ClaimId::new("contested-backing");
+    let challenge = ReviewEvent {
+        id: EventId::new("rev-contested-backing"),
+        target: Target::Criterion(crit_id),
+        by: Identity {
+            kind: IdentityKind::Human,
+            name: "reviewer".into(),
+            details: vec![],
+        },
+        protocol: Some("proteon-peer-review-v1".into()),
+        rationale: "Backing claim itself is contested.".into(),
+        at: "2026-06-01T00:00:00Z".into(),
+        kind: ReviewKind::Challenge {
+            category: ChallengeCategory::WeakStatistics,
+            backed_by: Some(backing_id.clone()),
+        },
+    };
+
+    let contested_backing = TrustReport {
+        claim: backing_id,
+        status: RenderStatus::Contested,
+        criteria: vec![],
+        challenges: vec![],
+        gaps: vec![],
+        aggregate: None,
+    };
+
+    let report = synthesize(
+        claim.id,
+        criteria,
+        &[evidence],
+        std::slice::from_ref(&challenge),
+        std::slice::from_ref(&contested_backing),
+        "2026-06-01T00:00:00Z".into(),
+    );
+
+    assert_eq!(report.status, RenderStatus::Current);
 }
 
 #[test]
@@ -227,6 +325,7 @@ fn synthesize_unbacked_substantive_challenge_does_not_move_status() {
         criteria,
         &[evidence],
         &[challenge],
+        &[],
         "2026-06-01T00:00:00Z".into(),
     );
 
@@ -262,6 +361,7 @@ fn synthesize_procedural_challenge_moves_status_without_backing() {
         criteria,
         &[evidence],
         &[challenge],
+        &[],
         "2026-06-01T00:00:00Z".into(),
     );
 
@@ -277,6 +377,7 @@ fn render_augmented_adds_observed_value_and_criterion_status() {
         claim.id,
         criteria,
         &evidence_vec,
+        &[],
         &[],
         "2026-06-01T00:00:00Z".into(),
     );
@@ -307,6 +408,7 @@ fn render_augmented_contested_includes_graph_and_contested_by() {
     let (claim, criteria, evidence) = translate_to_pieces(PROTEON_SASA_RELEASE_YAML);
     let evidence_vec = vec![evidence];
     let crit_id = criteria[0].id.clone();
+    let backing_id = ClaimId::new("backing-claim-id");
 
     let challenge = ReviewEvent {
         id: EventId::new("rev-challenge-electrostatic"),
@@ -324,8 +426,17 @@ fn render_augmented_contested_includes_graph_and_contested_by() {
         at: "2026-06-01T00:00:00Z".into(),
         kind: ReviewKind::Challenge {
             category: ChallengeCategory::WeakStatistics,
-            backed_by: Some(ClaimId::new("backing-claim-id")),
+            backed_by: Some(backing_id.clone()),
         },
+    };
+
+    let backing_report = TrustReport {
+        claim: backing_id,
+        status: RenderStatus::Current,
+        criteria: vec![],
+        challenges: vec![],
+        gaps: vec![],
+        aggregate: None,
     };
 
     let report = synthesize(
@@ -333,6 +444,7 @@ fn render_augmented_contested_includes_graph_and_contested_by() {
         criteria,
         &evidence_vec,
         std::slice::from_ref(&challenge),
+        std::slice::from_ref(&backing_report),
         "2026-06-01T00:00:00Z".into(),
     );
 
@@ -340,7 +452,7 @@ fn render_augmented_contested_includes_graph_and_contested_by() {
         report: &report,
         evidence: &evidence_vec,
         related_events: std::slice::from_ref(&challenge),
-        backing_reports: &[],
+        backing_reports: std::slice::from_ref(&backing_report),
     });
 
     // Report-level Contested.
@@ -521,7 +633,9 @@ fn compute_backing_reports_respects_max_depth() {
     let initial = challenge_targeting_any(Some(ids[0].clone()));
 
     // max_depth = 2: should synthesize claim-0 (depth 0) and claim-1
-    // (depth 1) only.
+    // (depth 1) only. Walking is depth-first now (children before
+    // parent) so the synthesized order is claim-1 then claim-0 — the
+    // set is what matters, not the order.
     let backing = compute_backing_reports(
         std::slice::from_ref(&initial),
         &lookup,
@@ -530,6 +644,9 @@ fn compute_backing_reports_respects_max_depth() {
     );
 
     assert_eq!(backing.len(), 2);
-    assert_eq!(backing[0].claim, ids[0]);
-    assert_eq!(backing[1].claim, ids[1]);
+    let visited_ids: Vec<&ClaimId> = backing.iter().map(|r| &r.claim).collect();
+    assert!(visited_ids.contains(&&ids[0]));
+    assert!(visited_ids.contains(&&ids[1]));
+    assert!(!visited_ids.contains(&&ids[2]));
+    assert!(!visited_ids.contains(&&ids[3]));
 }
