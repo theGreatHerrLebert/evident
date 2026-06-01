@@ -264,7 +264,13 @@ enum Target {
     SupportRelation(EvidenceId),
     Provenance(ProvenanceId),
     TrustReport(ReportId),
-    Criterion { report: ReportId, criterion: CriterionId },
+    Criterion(CriterionId),              // challenge against the
+                                          // tolerance / definition;
+                                          // stable across re-synthesis
+    CriterionResult {                     // challenge against a specific
+        report: ReportId,                 // result in a specific report
+        criterion: CriterionId,           // (e.g. "report says Pass but I
+    },                                    // observed Fail on fixture X")
     ReviewEvent(EventId),
 }
 
@@ -480,15 +486,24 @@ constructors, so a tool can round-trip without manual judgment.
 ## 12. Iteration trail
 
 This design is the result of three review rounds against the v0.2
-framing essay in `EVIDENT_DESIGN.md`, plus two worked fit-tests — one
-template-based, one against five real proteon claims spanning
-single-output parity, multi-output forcefield components, categorical
-DSSP classification, cross-path self-reference, and policy
-aggregation. The proteon fit-test drove the small v0.8 deltas in this
-document: `ComparisonOp::Eq` restored for integer/discrete metrics,
-`Tolerance.against` for multi-oracle binding, the §4 footnote on
-`extract_claims` class, and the §1 degraded-form rule for
-`provenance: human` without reviewers.
+framing essay in `EVIDENT_DESIGN.md`, plus three worked fit-tests —
+one template-based, one end-to-end walkthrough of a proteon
+release-tier claim plus four structural variations, and one synthetic
+challenge constructed against the proteon CHARMM19+BALL electrostatic
+tolerance to exercise the contestation machinery.
+
+Five small deltas landed from those fit-tests:
+- `ComparisonOp::Eq` restored for integer/discrete metrics (DSSP
+  residue_count parity).
+- `Tolerance.against` for multi-oracle binding (SASA vs Biopython AND
+  FreeSASA at different tolerances on the same output).
+- §4 footnote on `extract_claims` class (Verified for structured
+  manifest input, Judged for prose).
+- §1 degraded-form rule for `provenance: human` without reviewers.
+- `Target::Criterion` / `Target::CriterionResult` split — challenging
+  the tolerance definition is a different epistemic act from
+  challenging a specific result in a specific report; the former is
+  stable across re-synthesis, the latter is snapshot-bound.
 
 Working artifacts preserved alongside this document (uncommitted):
 
