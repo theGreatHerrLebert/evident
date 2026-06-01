@@ -41,10 +41,14 @@ use crate::derivation::Confidence;
 // ---------- Manifest shape ----------
 
 /// The top-level shape of an `evident.yaml` or included claim file.
-/// Only `claims` is consumed by the MVP translator; `version`,
-/// `project`, `vocabularies`, `include` are not yet used.
+/// `claims` is optional: a top-level manifest may carry only an
+/// `include:` list and no claims of its own (proteon's `evident.yaml`
+/// follows this pattern). `version`, `project`, `vocabularies`,
+/// `include` are not parsed at this layer — the CLI handles include
+/// resolution.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ManifestFile {
+    #[serde(default)]
     pub claims: Vec<ManifestClaim>,
 }
 

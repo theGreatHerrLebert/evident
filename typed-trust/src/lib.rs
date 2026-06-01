@@ -34,6 +34,7 @@ pub mod report;
 pub mod translate;
 pub mod synthesize;
 pub mod render;
+pub mod human_render;
 
 pub use ids::*;
 pub use identity::*;
@@ -47,3 +48,4 @@ pub use synthesize::{
     compute_backing_reports, synthesize, BackingClaimInputs, ClaimLookup,
 };
 pub use render::{render_augmented, RenderInput};
+pub use human_render::render_markdown;
