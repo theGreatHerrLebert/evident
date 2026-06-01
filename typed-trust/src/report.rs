@@ -56,7 +56,7 @@ pub struct Tolerance {
     pub prose: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum ComparisonOp {
     #[serde(rename = "<")]
     Lt,

@@ -32,6 +32,8 @@ pub mod review;
 pub mod provenance;
 pub mod report;
 pub mod translate;
+pub mod synthesize;
+pub mod render;
 
 pub use ids::*;
 pub use identity::*;
@@ -41,3 +43,5 @@ pub use evidence::*;
 pub use review::*;
 pub use provenance::*;
 pub use report::*;
+pub use synthesize::synthesize;
+pub use render::{render_augmented, RenderInput};
