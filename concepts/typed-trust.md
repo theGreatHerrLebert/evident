@@ -78,6 +78,15 @@ truth?") live outside the type system — a tool correlates
 - Renderers and validators key off well-known `IdentityDetail.key`
   values (`orcid`, `affiliation`, `ci_run`, `version`,
   `anonymity_reason`) when present. Unknown keys pass through.
+- **Degraded form for `provenance: human` without reviewers.** The
+  shipping schema only requires a `reviewers[]` block when
+  `provenance: peer-reviewed`. When translating a claim with
+  `provenance: human` that names no reviewer, the typed layer
+  represents this as `Identity { kind: Human, name: "unspecified",
+  details: [{ key: "manifest_provenance", value: "human" }] }`. This
+  is lossy — the typed layer cannot recover an identity the manifest
+  never carried — but it preserves the provenance signal without
+  inventing a reviewer.
 
 ---
 
@@ -174,7 +183,7 @@ discipline is project-driven, not type-enforced.
 
 | Stage | Class | Tools? | Output |
 |---|---|---|---|
-| Claim extraction | Judged | no | `Vec<Attested<Claim>>` |
+| Claim extraction | Judged¹ | no | `Vec<Attested<Claim>>` |
 | Evidence discovery | Mixed | yes | `Vec<Evidence>` |
 | Adversarial review | Judged | no | `Vec<Attested<Claim>>` + `Vec<ReviewEvent>` |
 | Provenance analysis | Verified (preferred) | yes | `ProvenanceRecord` |
@@ -182,6 +191,12 @@ discipline is project-driven, not type-enforced.
 
 A stage marked Judged produces non-reproducible interpretations
 regardless of who staffs it.
+
+¹ Claim extraction is `Verified` when the input is a structured
+manifest (the projection is a deterministic translation); `Judged`
+when the input is prose (a paper, a README) and a model or human is
+interpreting it. The class is conditional on input shape, not on
+who runs the stage.
 
 ---
 
@@ -317,13 +332,23 @@ struct Tolerance {
     metric: String,                     // free string + project vocab
     op: ComparisonOp,
     value: f64,
-    output: Option<String>,
+    output: Option<String>,             // names the output when many
+    against: Option<String>,            // names the oracle from manifest
+                                        // vocab; required when a single
+                                        // output is checked against
+                                        // multiple oracles with different
+                                        // tolerances
     prose: String,                      // required human gloss
 }
 
-enum ComparisonOp { Lt, LtEq, GtEq, Gt }
-// Eq deliberately omitted. Float equality is AbsoluteError + LtEq with
-// an explicit epsilon.
+enum ComparisonOp { Lt, LtEq, GtEq, Gt, Eq }
+// Eq is for integer / discrete metrics and for absolute_error == 0
+// exact-equality assertions (e.g., DSSP residue_count parity, where
+// a divergence indicates a HETATM or chain filter difference and is
+// asserted hard). The validator MUST warn when Eq is paired with
+// metric: relative_error on a float output — that combination is the
+// float-equality trap. Float "equality" is AbsoluteError + LtEq with
+// an explicit epsilon, not Eq.
 
 struct MetricObservation {
     criterion: CriterionId,             // binds observation to criterion
@@ -455,9 +480,17 @@ constructors, so a tool can round-trip without manual judgment.
 ## 12. Iteration trail
 
 This design is the result of three review rounds against the v0.2
-framing essay in `EVIDENT_DESIGN.md`, plus one worked fit-test against
-the proteon SASA / Biopython parity claim shape. Working artifacts
-preserved alongside this document:
+framing essay in `EVIDENT_DESIGN.md`, plus two worked fit-tests — one
+template-based, one against five real proteon claims spanning
+single-output parity, multi-output forcefield components, categorical
+DSSP classification, cross-path self-reference, and policy
+aggregation. The proteon fit-test drove the small v0.8 deltas in this
+document: `ComparisonOp::Eq` restored for integer/discrete metrics,
+`Tolerance.against` for multi-oracle binding, the §4 footnote on
+`extract_claims` class, and the §1 degraded-form rule for
+`provenance: human` without reviewers.
+
+Working artifacts preserved alongside this document (uncommitted):
 
 - `EVIDENT_DESIGN.md` — the v0.2 framing essay (origin, motivation, prose).
 - `EVIDENT_DESIGN_v0.3_DRAFT.md` and forward — the typed iteration.
@@ -465,8 +498,10 @@ preserved alongside this document:
   reviews by OpenAI Codex that drove the structural moves (the
   Claim/ReviewEvent split, the `Target` enum, the `Tolerance` type, the
   compactness pass).
-- `EVIDENT_DESIGN_v0.4_FIT_TEST.md` — worked example that surfaced the
-  three gaps closed in v0.5 (`Tolerance`, reproduction history, scope).
+- `EVIDENT_DESIGN_v0.4_FIT_TEST.md` — template-based fit-test.
+- `concepts/typed-trust-proteon-fit.md` — worked end-to-end
+  walkthrough of one proteon release-tier claim plus structural
+  findings from four other claim shapes.
 
 These are not normative. The contract is what's in this document.
 
