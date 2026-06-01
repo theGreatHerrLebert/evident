@@ -107,12 +107,14 @@ fn main() -> ExitCode {
             .into_iter()
             .collect();
 
+        // CLI has no review events, so no cycle set is needed.
         let report = synthesize(
             ClaimId::new(&mc.id),
             criteria,
             &evidence,
             &[],
             &[],
+            &std::collections::HashSet::new(),
             now.clone(),
         );
 

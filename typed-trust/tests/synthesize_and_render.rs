@@ -114,6 +114,7 @@ fn synthesize_pass_when_observed_value_meets_tolerance() {
         &[evidence],
         &[],
         &[],
+        &std::collections::HashSet::new(),
         "2026-06-01T00:00:00Z".into(),
     );
 
@@ -133,6 +134,7 @@ fn synthesize_fail_when_observed_value_exceeds_tolerance() {
         &[evidence],
         &[],
         &[],
+        &std::collections::HashSet::new(),
         "2026-06-01T00:00:00Z".into(),
     );
 
@@ -158,6 +160,7 @@ fn synthesize_not_assessed_when_evidence_has_no_observations() {
         &[evidence],
         &[],
         &[],
+        &std::collections::HashSet::new(),
         "2026-06-01T00:00:00Z".into(),
     );
 
@@ -200,6 +203,7 @@ fn synthesize_contested_when_substantive_challenge_targets_criterion() {
         &[evidence],
         &[challenge.clone()],
         std::slice::from_ref(&backing_report),
+        &std::collections::HashSet::new(),
         "2026-06-01T00:00:00Z".into(),
     );
 
@@ -238,6 +242,7 @@ fn synthesize_substantive_challenge_with_missing_backing_does_not_contest() {
         &[evidence],
         std::slice::from_ref(&challenge),
         &[], // no backing reports supplied
+        &std::collections::HashSet::new(),
         "2026-06-01T00:00:00Z".into(),
     );
 
@@ -284,6 +289,7 @@ fn synthesize_substantive_challenge_with_contested_backing_does_not_contest() {
         &[evidence],
         std::slice::from_ref(&challenge),
         std::slice::from_ref(&contested_backing),
+        &std::collections::HashSet::new(),
         "2026-06-01T00:00:00Z".into(),
     );
 
@@ -320,6 +326,7 @@ fn synthesize_unbacked_substantive_challenge_does_not_move_status() {
         &[evidence],
         &[challenge],
         &[],
+        &std::collections::HashSet::new(),
         "2026-06-01T00:00:00Z".into(),
     );
 
@@ -364,6 +371,7 @@ fn criterion_result_targeted_event_is_consistent_across_synth_and_render() {
         &evidence_vec,
         std::slice::from_ref(&event),
         &[],
+        &std::collections::HashSet::new(),
         "2026-06-01T00:00:00Z".into(),
     );
 
@@ -418,6 +426,7 @@ fn synthesize_procedural_challenge_targeting_evidence_moves_status() {
         &[evidence],
         std::slice::from_ref(&challenge),
         &[],
+        &std::collections::HashSet::new(),
         "2026-06-01T00:00:00Z".into(),
     );
 
@@ -458,6 +467,7 @@ fn synthesize_procedural_challenge_moves_status_without_backing() {
         &[evidence],
         &[challenge],
         &[],
+        &std::collections::HashSet::new(),
         "2026-06-01T00:00:00Z".into(),
     );
 
@@ -475,6 +485,7 @@ fn render_augmented_adds_observed_value_and_criterion_status() {
         &evidence_vec,
         &[],
         &[],
+        &std::collections::HashSet::new(),
         "2026-06-01T00:00:00Z".into(),
     );
 
@@ -534,6 +545,7 @@ fn render_augmented_contested_includes_graph_and_contested_by() {
         &evidence_vec,
         std::slice::from_ref(&challenge),
         std::slice::from_ref(&backing_report),
+        &std::collections::HashSet::new(),
         "2026-06-01T00:00:00Z".into(),
     );
 
@@ -802,6 +814,84 @@ fn compute_backing_reports_transitive_reach_to_cycle_is_contested() {
 }
 
 #[test]
+fn top_level_report_contested_when_backed_by_claim_reaches_cycle() {
+    // Codex round 5: per design §8 a top-level claim whose challenge
+    // graph reaches a cycle should itself be Contested. Previously the
+    // sustain check only treated Current backing reports as
+    // sustaining, so a Contested-by-cycle backing didn't move the
+    // parent — leaving the top-level Current despite reaching a cycle.
+    let (claim, criteria, evidence) = translate_to_pieces(PROTEON_SASA_RELEASE_YAML);
+    let crit_id = criteria[0].id.clone();
+
+    // X is the top-level claim's challenge target; X is itself on a
+    // cycle (X → Y → X).
+    let x = ClaimId::new("claim-X");
+    let y = ClaimId::new("claim-Y");
+
+    let top_challenge = ReviewEvent {
+        id: EventId::new("rev-top-backed-by-cycled"),
+        target: Target::Criterion(crit_id),
+        by: Identity {
+            kind: IdentityKind::Human,
+            name: "reviewer".into(),
+            details: vec![],
+        },
+        protocol: Some("p".into()),
+        rationale: "Backed by a claim that reaches a cycle.".into(),
+        at: "2026-06-01T00:00:00Z".into(),
+        kind: ReviewKind::Challenge {
+            category: ChallengeCategory::WeakStatistics,
+            backed_by: Some(x.clone()),
+        },
+    };
+
+    // Build the backing-claim graph: X → Y → X.
+    let mut claims_map = HashMap::new();
+    claims_map.insert(
+        x.clone(),
+        BackingClaimInputs {
+            criteria: vec![],
+            evidence: vec![],
+            review_events: vec![challenge_targeting_any(Some(y.clone()))],
+        },
+    );
+    claims_map.insert(
+        y.clone(),
+        BackingClaimInputs {
+            criteria: vec![],
+            evidence: vec![],
+            review_events: vec![challenge_targeting_any(Some(x.clone()))],
+        },
+    );
+    let lookup = InMemoryLookup { claims: claims_map };
+
+    // Precompute cycle set + backing reports, then synthesize the top.
+    let cycled = detect_cycle_contested(std::slice::from_ref(&top_challenge), &lookup);
+    let backing = compute_backing_reports(
+        std::slice::from_ref(&top_challenge),
+        &lookup,
+        "2026-06-01T00:00:00Z",
+        10,
+    );
+
+    let report = synthesize(
+        claim.id,
+        criteria,
+        &[evidence],
+        std::slice::from_ref(&top_challenge),
+        &backing,
+        &cycled,
+        "2026-06-01T00:00:00Z".into(),
+    );
+
+    // X and Y are cycled; the top-level reaches them through its
+    // challenge, so it inherits Contested.
+    assert!(cycled.contains(&x));
+    assert!(cycled.contains(&y));
+    assert_eq!(report.status, RenderStatus::Contested);
+}
+
+#[test]
 fn compute_backing_reports_off_cycle_branch_stays_current() {
     // Chain: ROOT → SAFE, ROOT → A, A → B → A. SAFE has no cycle on
     // its branch and no Pass criteria, so it should stay Current
@@ -925,6 +1015,7 @@ fn substantive_challenge_backed_by_failing_criteria_does_not_sustain() {
         &[evidence],
         std::slice::from_ref(&challenge),
         std::slice::from_ref(&failing_backing),
+        &std::collections::HashSet::new(),
         "2026-06-01T00:00:00Z".into(),
     );
 
@@ -971,6 +1062,7 @@ fn substantive_challenge_backed_by_empty_criteria_does_not_sustain() {
         &[evidence],
         std::slice::from_ref(&challenge),
         std::slice::from_ref(&empty_backing),
+        &std::collections::HashSet::new(),
         "2026-06-01T00:00:00Z".into(),
     );
 

@@ -43,16 +43,21 @@ use crate::translate::TranslatedCriterion;
 /// are consulted to decide whether a substantive challenge actually
 /// sustains: a backing report whose `status == Current` sustains the
 /// challenge; any other status (Contested, Superseded), or no backing
-/// report at all, leaves the challenge unsustained and the original
-/// report is NOT moved to Contested. This is the invariant 6 / §8
-/// behavior; passing `&[]` means "no challenge can sustain via
-/// backing," only procedural challenges can move status.
+/// report at all, leaves the challenge unsustained.
+///
+/// `cycle_contested` is the set of claim ids whose challenge-backing
+/// graph contains a cycle (precomputed via [`detect_cycle_contested`]).
+/// Per design §8, a challenge whose `backed_by` points into this set
+/// also moves the report to `Contested` — the parent reaches a cycle
+/// through that backing, so it inherits the contestation. Pass
+/// `&HashSet::new()` when there are no events or no cycles in scope.
 pub fn synthesize(
     claim: ClaimId,
     criteria: Vec<TranslatedCriterion>,
     evidence: &[Evidence],
     review_events: &[ReviewEvent],
     backing_reports: &[TrustReport],
+    cycle_contested: &HashSet<ClaimId>,
     at: Timestamp,
 ) -> TrustReport {
     let synth = synthesizer_identity();
@@ -67,6 +72,7 @@ pub fn synthesize(
         evidence,
         review_events,
         backing_reports,
+        cycle_contested,
     );
 
     let challenges: Vec<EventId> = review_events
@@ -216,6 +222,7 @@ fn compute_render_status(
     evidence: &[Evidence],
     events: &[ReviewEvent],
     backing_reports: &[TrustReport],
+    cycle_contested: &HashSet<ClaimId>,
 ) -> RenderStatus {
     // Supersede first.
     if events.iter().any(|e| {
@@ -228,19 +235,20 @@ fn compute_render_status(
     // Then substantive challenges. The challenge moves render status if:
     // - the category is procedural (closed list); or
     // - backed_by points at a backing report that synthesizes to Current
-    //   (i.e., the backing claim's criteria pass on their own merits).
-    // A backed_by claim id with no matching backing report, or a backing
-    // report with status != Current, does NOT sustain the challenge.
+    //   (i.e., the backing claim's criteria pass on their own merits); or
+    // - backed_by points at a claim whose challenge graph contains a
+    //   cycle (per design §8 — the parent reaches a cycle through this
+    //   backing and inherits the contestation).
     let has_sustained_challenge = events.iter().any(|e| match &e.kind {
         ReviewKind::Challenge {
             category,
             backed_by,
         } => {
             let proc_can_move = is_procedural_category(category);
-            let backed_can_move = backed_by
-                .as_ref()
-                .map(|bid| backing_report_sustains(bid, backing_reports))
-                .unwrap_or(false);
+            let backed_can_move = backed_by.as_ref().is_some_and(|bid| {
+                backing_report_sustains(bid, backing_reports)
+                    || cycle_contested.contains(bid)
+            });
             (proc_can_move || backed_can_move)
                 && target_touches_report(&e.target, claim_id, criteria, evidence)
         }
@@ -426,8 +434,8 @@ pub fn compute_backing_reports(
     backing
 }
 
-/// Pre-pass: find every claim that should be `Contested` because of
-/// a cycle in the challenge-backing graph. Per design §8 this is:
+/// Find every claim that should be `Contested` because of a cycle in
+/// the challenge-backing graph. Per design §8:
 ///
 /// > "Contested if the graph reachable from it contains a cycle in
 /// > challenge edges"
@@ -441,7 +449,11 @@ pub fn compute_backing_reports(
 /// marks every stack-resident claim from the back-edge target onward
 /// as contested-by-cycle; on the return path, any node whose child
 /// returned `true` is also contested-by-cycle.
-fn detect_cycle_contested(
+///
+/// Public so callers can pre-compute the set once and feed it to both
+/// [`compute_backing_reports`] and [`synthesize`] — keeping both
+/// sides in agreement about which claims are cycle-contested.
+pub fn detect_cycle_contested(
     initial_events: &[ReviewEvent],
     lookup: &dyn ClaimLookup,
 ) -> HashSet<ClaimId> {
@@ -563,6 +575,7 @@ fn walk_backing(
         &inputs.evidence,
         &events,
         &nested_backing,
+        cycled,
         at.to_string(),
     );
 

@@ -45,7 +45,8 @@ pub use review::*;
 pub use provenance::*;
 pub use report::*;
 pub use synthesize::{
-    compute_backing_reports, synthesize, BackingClaimInputs, ClaimLookup,
+    compute_backing_reports, detect_cycle_contested, synthesize, BackingClaimInputs,
+    ClaimLookup,
 };
 pub use render::{render_augmented, RenderInput};
 pub use human_render::render_markdown;

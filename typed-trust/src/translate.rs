@@ -133,6 +133,12 @@ pub enum TranslateError {
     /// the research-tier deferred-spec escape hatch only — CI and
     /// release claims must carry structured tolerances.
     ProseOnlyOutsideResearch { id: String, tier: String },
+    /// A `kind: measurement` claim omitted `tolerances` or provided
+    /// an empty list. The shipping schema requires non-empty
+    /// tolerances on measurement claims; without them the
+    /// synthesizer would emit a Current report with nothing
+    /// assessed.
+    MeasurementWithoutTolerances { id: String },
 }
 
 impl std::fmt::Display for TranslateError {
@@ -155,6 +161,11 @@ impl std::fmt::Display for TranslateError {
                 f,
                 "claim {id}: prose-only tolerance not allowed at tier {tier:?}; \
                  prose-only is the research-tier deferred-spec escape hatch only"
+            ),
+            TranslateError::MeasurementWithoutTolerances { id } => write!(
+                f,
+                "claim {id}: kind=measurement requires non-empty tolerances; \
+                 add tolerances or change to kind: policy / reference"
             ),
         }
     }
@@ -260,8 +271,21 @@ pub fn translate_tolerances(
     });
 
     let Some(ts) = mc.tolerances.as_ref() else {
+        // Measurement claims require non-empty tolerances per
+        // workflow/SCHEMA.md; without them the report would be Current
+        // with nothing to assess.
+        if mc.kind == "measurement" {
+            return Err(TranslateError::MeasurementWithoutTolerances {
+                id: mc.id.clone(),
+            });
+        }
         return Ok(vec![]);
     };
+    if ts.is_empty() && mc.kind == "measurement" {
+        return Err(TranslateError::MeasurementWithoutTolerances {
+            id: mc.id.clone(),
+        });
+    }
 
     ts.iter()
         .enumerate()

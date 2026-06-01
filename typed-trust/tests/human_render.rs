@@ -134,6 +134,7 @@ fn render_contested_sasa_report_as_markdown() {
         &evidence,
         std::slice::from_ref(&challenge),
         std::slice::from_ref(&backing_report),
+        &std::collections::HashSet::new(),
         "2026-06-01T12:00:00Z".into(),
     );
 

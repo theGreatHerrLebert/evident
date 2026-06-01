@@ -371,6 +371,7 @@ claims:
         &evidence,
         &[],
         &[],
+        &std::collections::HashSet::new(),
         "2026-06-01T00:00:00Z".into(),
     );
     let r = &report.criteria[0].result.value;
@@ -408,6 +409,60 @@ claims:
             assert_eq!(tier, "ci");
         }
         other => panic!("expected ProseOnlyOutsideResearch, got {other:?}"),
+    }
+}
+
+#[test]
+fn rejects_measurement_claim_without_tolerances() {
+    // Codex round 5: kind: measurement requires non-empty tolerances per
+    // workflow/SCHEMA.md. Without them, synthesize would emit a Current
+    // report with nothing to assess.
+    let yaml = r#"
+claims:
+  - id: measurement-no-tolerances
+    title: missing tolerances
+    kind: measurement
+    case: x.md
+    source: ..
+    tier: ci
+    claim: hand-waved
+    evidence:
+      oracle: [Foo]
+      command: pytest
+      artifact: console
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let result = translate_tolerances(&manifest.claims[0]);
+    match result {
+        Err(TranslateError::MeasurementWithoutTolerances { id }) => {
+            assert_eq!(id, "measurement-no-tolerances");
+        }
+        other => panic!("expected MeasurementWithoutTolerances, got {other:?}"),
+    }
+}
+
+#[test]
+fn rejects_measurement_claim_with_empty_tolerances_list() {
+    let yaml = r#"
+claims:
+  - id: measurement-empty-tolerances
+    title: empty tolerances
+    kind: measurement
+    case: x.md
+    source: ..
+    tier: ci
+    claim: text
+    tolerances: []
+    evidence:
+      oracle: [Foo]
+      command: pytest
+      artifact: console
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let result = translate_tolerances(&manifest.claims[0]);
+    match result {
+        Err(TranslateError::MeasurementWithoutTolerances { .. }) => {}
+        other => panic!("expected MeasurementWithoutTolerances, got {other:?}"),
     }
 }
 
