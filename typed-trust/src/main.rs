@@ -123,6 +123,7 @@ fn main() -> ExitCode {
             evidence: &evidence,
             related_events: &[],
             backing_reports: &[],
+        cycle_contested: &std::collections::HashSet::new(),
         });
 
         reports.push(augmented);

@@ -17,11 +17,13 @@
 //! carry them. They live in the JSON output as renderer convenience.
 //! Consumers that only want the normative graph can ignore them.
 
+use std::collections::HashSet;
+
 use serde_json::{json, Map, Value};
 
 use crate::derivation::{Derivation, Rerun};
 use crate::evidence::Evidence;
-use crate::ids::CriterionId;
+use crate::ids::{ClaimId, CriterionId};
 use crate::report::{RenderStatus, TrustReport};
 use crate::review::{ReviewEvent, ReviewKind, Target};
 use crate::synthesize::{backing_report_sustains, is_procedural_category};
@@ -39,6 +41,11 @@ pub struct RenderInput<'a> {
     /// Precomputed TrustReports for any backing claims of substantive
     /// challenges. Inlined into `_graph.backing_reports`.
     pub backing_reports: &'a [TrustReport],
+    /// Claim ids whose challenge-backing graph reaches a cycle. Same
+    /// set used by [`synthesize`](crate::synthesize), kept in sync so
+    /// the per-criterion render status agrees with the synthesized
+    /// report status.
+    pub cycle_contested: &'a HashSet<ClaimId>,
 }
 
 /// Produce the augmented JSON. The normative report is serialized first;
@@ -68,8 +75,12 @@ fn augment_criterion(crit_json: &mut Value, input: &RenderInput) {
     let crit_id = CriterionId::new(crit_id_str);
 
     let observed = latest_observation_for(&crit_id, input.evidence);
-    let crit_status =
-        compute_criterion_status(&crit_id, input.related_events, input.backing_reports);
+    let crit_status = compute_criterion_status(
+        &crit_id,
+        input.related_events,
+        input.backing_reports,
+        input.cycle_contested,
+    );
     let contested_by: Vec<String> = input
         .related_events
         .iter()
@@ -123,6 +134,7 @@ fn compute_criterion_status(
     criterion_id: &CriterionId,
     events: &[ReviewEvent],
     backing_reports: &[crate::report::TrustReport],
+    cycle_contested: &HashSet<ClaimId>,
 ) -> RenderStatus {
     if events.iter().any(|e| {
         matches!(&e.kind, ReviewKind::Supersede { .. })
@@ -130,16 +142,21 @@ fn compute_criterion_status(
     }) {
         return RenderStatus::Superseded;
     }
-    // Same §8 sustain rule as synthesize::compute_render_status.
+    // Same §8 sustain + cycle-propagation rule as
+    // synthesize::compute_render_status. Without the cycle check
+    // here, a criterion-targeted challenge backed by a cycled claim
+    // would leave the criterion `current` while the report itself
+    // renders `contested` — render would contradict synthesize.
     if events.iter().any(|e| match &e.kind {
         ReviewKind::Challenge {
             category,
             backed_by,
         } => {
             let proc_can_move = is_procedural_category(category);
-            let backed_can_move = backed_by
-                .as_ref()
-                .is_some_and(|bid| backing_report_sustains(bid, backing_reports));
+            let backed_can_move = backed_by.as_ref().is_some_and(|bid| {
+                backing_report_sustains(bid, backing_reports)
+                    || cycle_contested.contains(bid)
+            });
             (proc_can_move || backed_can_move)
                 && event_targets_criterion(&e.target, criterion_id)
         }

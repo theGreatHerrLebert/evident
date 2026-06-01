@@ -407,20 +407,23 @@ pub trait ClaimLookup {
 /// rather than silently dropping out. `max_depth` still bounds the
 /// recursion for pathologically long non-cyclic chains.
 pub fn compute_backing_reports(
-    initial_events: &[ReviewEvent],
+    root_claim: &ClaimId,
+    root_events: &[ReviewEvent],
     lookup: &dyn ClaimLookup,
     at: &str,
     max_depth: usize,
 ) -> Vec<TrustReport> {
     // First pass: identify every claim that should be Contested due
     // to a cycle in the challenge-backing graph — both direct cycle
-    // members and claims that transitively reach a cycle.
-    let cycled = detect_cycle_contested(initial_events, lookup);
+    // members and claims that transitively reach a cycle. The root
+    // claim is seeded into the DFS so root-involving cycles are
+    // detected even when the lookup doesn't contain root's inputs.
+    let cycled = detect_cycle_contested(root_claim, root_events, lookup);
 
     // Second pass: actually synthesize, marking cycled claims Contested.
     let mut backing = Vec::new();
     let mut visited: HashSet<ClaimId> = HashSet::new();
-    for event in initial_events {
+    for event in root_events {
         if let ReviewKind::Challenge {
             backed_by: Some(cid),
             ..
@@ -453,22 +456,40 @@ pub fn compute_backing_reports(
 /// Public so callers can pre-compute the set once and feed it to both
 /// [`compute_backing_reports`] and [`synthesize`] — keeping both
 /// sides in agreement about which claims are cycle-contested.
+///
+/// `root_claim` is the id of the claim whose events these are. It is
+/// seeded into the DFS stack so cycles that include the root itself
+/// (e.g. root → B → root) are detected even when the [`ClaimLookup`]
+/// does not contain inputs for the root (the trait's contract only
+/// promises backing-claim inputs).
 pub fn detect_cycle_contested(
-    initial_events: &[ReviewEvent],
+    root_claim: &ClaimId,
+    root_events: &[ReviewEvent],
     lookup: &dyn ClaimLookup,
 ) -> HashSet<ClaimId> {
     let mut contested: HashSet<ClaimId> = HashSet::new();
     let mut visited: HashSet<ClaimId> = HashSet::new();
-    let mut stack: Vec<ClaimId> = Vec::new();
+    // Seed the stack with the root so a back edge from a descendant
+    // to the root is detected as a cycle.
+    let mut stack: Vec<ClaimId> = vec![root_claim.clone()];
 
-    for event in initial_events {
+    let mut reaches_cycle = false;
+    for event in root_events {
         if let ReviewKind::Challenge {
             backed_by: Some(cid),
             ..
         } = &event.kind
         {
-            cycle_dfs(cid, lookup, &mut visited, &mut stack, &mut contested);
+            if cycle_dfs(cid, lookup, &mut visited, &mut stack, &mut contested) {
+                reaches_cycle = true;
+            }
         }
+    }
+
+    stack.pop();
+    visited.insert(root_claim.clone());
+    if reaches_cycle {
+        contested.insert(root_claim.clone());
     }
     contested
 }

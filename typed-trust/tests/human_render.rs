@@ -143,6 +143,7 @@ fn render_contested_sasa_report_as_markdown() {
         evidence: &evidence,
         related_events: std::slice::from_ref(&challenge),
         backing_reports: std::slice::from_ref(&backing_report),
+        cycle_contested: &std::collections::HashSet::new(),
     });
 
     let markdown = render_markdown(&augmented);

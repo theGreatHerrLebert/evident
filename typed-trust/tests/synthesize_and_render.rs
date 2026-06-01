@@ -380,6 +380,7 @@ fn criterion_result_targeted_event_is_consistent_across_synth_and_render() {
         evidence: &evidence_vec,
         related_events: std::slice::from_ref(&event),
         backing_reports: &[],
+        cycle_contested: &std::collections::HashSet::new(),
     });
 
     // Report-level status is Current (synthesize doesn't match
@@ -494,6 +495,7 @@ fn render_augmented_adds_observed_value_and_criterion_status() {
         evidence: &evidence_vec,
         related_events: &[],
         backing_reports: &[],
+        cycle_contested: &std::collections::HashSet::new(),
     });
 
     let crit0 = &json["criteria"][0];
@@ -554,6 +556,7 @@ fn render_augmented_contested_includes_graph_and_contested_by() {
         evidence: &evidence_vec,
         related_events: std::slice::from_ref(&challenge),
         backing_reports: std::slice::from_ref(&backing_report),
+        cycle_contested: &std::collections::HashSet::new(),
     });
 
     // Report-level Contested.
@@ -673,7 +676,7 @@ fn compute_backing_reports_returns_empty_when_no_backed_events() {
         claims: HashMap::new(),
     };
     let challenge = challenge_targeting_any(None);
-    let backing = compute_backing_reports(
+    let backing = compute_backing_reports(&ClaimId::new("test-root"),
         std::slice::from_ref(&challenge),
         &lookup,
         "2026-06-01T00:00:00Z",
@@ -690,7 +693,7 @@ fn compute_backing_reports_synthesizes_one_backing_claim() {
     let lookup = InMemoryLookup { claims };
 
     let challenge = challenge_targeting_any(Some(backing_id.clone()));
-    let backing = compute_backing_reports(
+    let backing = compute_backing_reports(&ClaimId::new("test-root"),
         std::slice::from_ref(&challenge),
         &lookup,
         "2026-06-01T00:00:00Z",
@@ -733,7 +736,7 @@ fn compute_backing_reports_detects_cycles() {
     let lookup = InMemoryLookup { claims };
 
     // Start with a challenge targeting A; A backs B; B backs A.
-    let backing = compute_backing_reports(
+    let backing = compute_backing_reports(&ClaimId::new("test-root"),
         std::slice::from_ref(&a_event),
         &lookup,
         "2026-06-01T00:00:00Z",
@@ -797,7 +800,7 @@ fn compute_backing_reports_transitive_reach_to_cycle_is_contested() {
 
     // Initial event backs X (so X is the first backing target).
     let initial = challenge_targeting_any(Some(x.clone()));
-    let backing = compute_backing_reports(
+    let backing = compute_backing_reports(&ClaimId::new("test-root"),
         std::slice::from_ref(&initial),
         &lookup,
         "2026-06-01T00:00:00Z",
@@ -811,6 +814,133 @@ fn compute_backing_reports_transitive_reach_to_cycle_is_contested() {
     assert_eq!(by_id[&x].status, RenderStatus::Contested, "X reaches cycle");
     assert_eq!(by_id[&a].status, RenderStatus::Contested, "A on cycle");
     assert_eq!(by_id[&b].status, RenderStatus::Contested, "B on cycle");
+}
+
+#[test]
+fn render_criterion_status_agrees_with_synthesize_under_cycle_contestation() {
+    // Codex round 6 finding 1: when a criterion-targeted Challenge is
+    // backed by a cycled claim, synthesize moves the report Contested
+    // via cycle_contested. The renderer must use the same set or the
+    // augmented JSON contradicts itself (report contested, criterion
+    // current).
+    let (claim, criteria, evidence) = translate_to_pieces(PROTEON_SASA_RELEASE_YAML);
+    let evidence_vec = vec![evidence];
+    let crit_id = criteria[0].id.clone();
+
+    let cycled_id = ClaimId::new("cycled-backing");
+    let other_id = ClaimId::new("cycled-backing-mate");
+
+    let challenge = ReviewEvent {
+        id: EventId::new("rev-backed-by-cycled"),
+        target: Target::Criterion(crit_id),
+        by: Identity {
+            kind: IdentityKind::Human,
+            name: "reviewer".into(),
+            details: vec![],
+        },
+        protocol: Some("p".into()),
+        rationale: "Backed by a claim that reaches a cycle.".into(),
+        at: "2026-06-01T00:00:00Z".into(),
+        kind: ReviewKind::Challenge {
+            category: ChallengeCategory::WeakStatistics,
+            backed_by: Some(cycled_id.clone()),
+        },
+    };
+
+    // Build cycled-id ↔ other-id cycle in the lookup.
+    let mut lookup_claims = HashMap::new();
+    lookup_claims.insert(
+        cycled_id.clone(),
+        BackingClaimInputs {
+            criteria: vec![],
+            evidence: vec![],
+            review_events: vec![challenge_targeting_any(Some(other_id.clone()))],
+        },
+    );
+    lookup_claims.insert(
+        other_id.clone(),
+        BackingClaimInputs {
+            criteria: vec![],
+            evidence: vec![],
+            review_events: vec![challenge_targeting_any(Some(cycled_id.clone()))],
+        },
+    );
+    let lookup = InMemoryLookup {
+        claims: lookup_claims,
+    };
+
+    let cycled = detect_cycle_contested(
+        &claim.id,
+        std::slice::from_ref(&challenge),
+        &lookup,
+    );
+    let backing = compute_backing_reports(
+        &claim.id,
+        std::slice::from_ref(&challenge),
+        &lookup,
+        "2026-06-01T00:00:00Z",
+        10,
+    );
+
+    let report = synthesize(
+        claim.id.clone(),
+        criteria,
+        &evidence_vec,
+        std::slice::from_ref(&challenge),
+        &backing,
+        &cycled,
+        "2026-06-01T00:00:00Z".into(),
+    );
+
+    let json = render_augmented(&RenderInput {
+        report: &report,
+        evidence: &evidence_vec,
+        related_events: std::slice::from_ref(&challenge),
+        backing_reports: &backing,
+        cycle_contested: &cycled,
+    });
+
+    // Report is Contested by synthesize.
+    assert_eq!(report.status, RenderStatus::Contested);
+    assert_eq!(json["status"], "contested");
+    // Criterion must agree — render now also uses the cycle set.
+    assert_eq!(json["criteria"][0]["result"]["criterion_status"], "contested");
+}
+
+#[test]
+fn root_involving_cycle_detected_when_lookup_lacks_root() {
+    // Codex round 6 finding 2: a cycle that includes the root claim
+    // (root → B → root) must be detected even when the ClaimLookup
+    // only contains backing-claim inputs and not the root's. The DFS
+    // is now seeded with the root claim on the stack so the back edge
+    // from B → root is observed.
+    let root = ClaimId::new("the-root-claim");
+    let b = ClaimId::new("claim-B");
+
+    let root_event = challenge_targeting_any(Some(b.clone()));
+    let b_event_back_to_root = challenge_targeting_any(Some(root.clone()));
+
+    // Lookup contains ONLY B — not the root. This matches the
+    // ClaimLookup contract ("backing-claim inputs").
+    let mut claims_map = HashMap::new();
+    claims_map.insert(
+        b.clone(),
+        BackingClaimInputs {
+            criteria: vec![],
+            evidence: vec![],
+            review_events: vec![b_event_back_to_root],
+        },
+    );
+    let lookup = InMemoryLookup { claims: claims_map };
+
+    let cycled = detect_cycle_contested(
+        &root,
+        std::slice::from_ref(&root_event),
+        &lookup,
+    );
+
+    assert!(cycled.contains(&root), "root must be in cycle set");
+    assert!(cycled.contains(&b), "B must be in cycle set");
 }
 
 #[test]
@@ -865,9 +995,10 @@ fn top_level_report_contested_when_backed_by_claim_reaches_cycle() {
     );
     let lookup = InMemoryLookup { claims: claims_map };
 
-    // Precompute cycle set + backing reports, then synthesize the top.
-    let cycled = detect_cycle_contested(std::slice::from_ref(&top_challenge), &lookup);
+    // Precompute cycle set + backing reports with claim.id as root.
+    let cycled = detect_cycle_contested(&claim.id, std::slice::from_ref(&top_challenge), &lookup);
     let backing = compute_backing_reports(
+        &claim.id,
         std::slice::from_ref(&top_challenge),
         &lookup,
         "2026-06-01T00:00:00Z",
@@ -936,7 +1067,7 @@ fn compute_backing_reports_off_cycle_branch_stays_current() {
     let lookup = InMemoryLookup { claims };
 
     let initial = challenge_targeting_any(Some(root.clone()));
-    let backing = compute_backing_reports(
+    let backing = compute_backing_reports(&ClaimId::new("test-root"),
         std::slice::from_ref(&initial),
         &lookup,
         "2026-06-01T00:00:00Z",
@@ -1095,7 +1226,7 @@ fn compute_backing_reports_respects_max_depth() {
     // (depth 1) only. Walking is depth-first now (children before
     // parent) so the synthesized order is claim-1 then claim-0 — the
     // set is what matters, not the order.
-    let backing = compute_backing_reports(
+    let backing = compute_backing_reports(&ClaimId::new("test-root"),
         std::slice::from_ref(&initial),
         &lookup,
         "2026-06-01T00:00:00Z",
