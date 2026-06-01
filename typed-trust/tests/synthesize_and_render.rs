@@ -190,15 +190,9 @@ fn synthesize_contested_when_substantive_challenge_targets_criterion() {
         },
     };
 
-    // A backing report whose status is Current sustains the challenge.
-    let backing_report = TrustReport {
-        claim: backing_id,
-        status: RenderStatus::Current,
-        criteria: vec![],
-        challenges: vec![],
-        gaps: vec![],
-        aggregate: None,
-    };
+    // A backing report whose status is Current AND has Pass criteria
+    // sustains the challenge per the §8 "passing-criteria result" rule.
+    let backing_report = make_passing_backing(backing_id);
 
     let report = synthesize(
         claim.id,
@@ -430,14 +424,7 @@ fn render_augmented_contested_includes_graph_and_contested_by() {
         },
     };
 
-    let backing_report = TrustReport {
-        claim: backing_id,
-        status: RenderStatus::Current,
-        criteria: vec![],
-        challenges: vec![],
-        gaps: vec![],
-        aggregate: None,
-    };
+    let backing_report = make_passing_backing(backing_id);
 
     let report = synthesize(
         claim.id,
@@ -487,6 +474,42 @@ fn write_fixture(filename: &str, body: &str) {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     let _ = fs::create_dir_all(&dir);
     fs::write(dir.join(filename), body).expect("write fixture");
+}
+
+/// A backing TrustReport that satisfies the sustain rule: status
+/// Current AND at least one criterion AND all criteria are Pass.
+fn make_passing_backing(claim_id: ClaimId) -> TrustReport {
+    let crit_id = CriterionId::new(format!("{}-crit-0", claim_id.as_str()));
+    let synth_runner = Identity {
+        kind: IdentityKind::Automated,
+        name: "evident-synthesizer".into(),
+        details: vec![],
+    };
+    TrustReport {
+        claim: claim_id,
+        status: RenderStatus::Current,
+        criteria: vec![Criterion {
+            id: crit_id,
+            name: "backing claim's own criterion".into(),
+            tolerance: None,
+            result: Attested {
+                value: CriterionResult::Pass,
+                derivation: Derivation::Verified {
+                    method: ToolInvocation {
+                        command: "rule:Pass".into(),
+                        tool_version: "test-fixture".into(),
+                        env: vec![],
+                    },
+                    ran_by: synth_runner,
+                    reruns: vec![],
+                },
+                at: "2026-06-01T00:00:00Z".into(),
+            },
+        }],
+        challenges: vec![],
+        gaps: vec![],
+        aggregate: None,
+    }
 }
 
 // ---------- Recursive backing-report synthesis ----------
@@ -608,6 +631,129 @@ fn compute_backing_reports_detects_cycles() {
     let ids: Vec<&ClaimId> = backing.iter().map(|r| &r.claim).collect();
     assert!(ids.contains(&&b));
     assert!(ids.contains(&&a));
+
+    // Per design §8 ("Contested if the graph reachable from it contains
+    // a cycle in challenge edges"), every cycled claim must be surfaced
+    // as Contested. A cycle cannot be resolved deterministically.
+    for r in &backing {
+        assert_eq!(r.status, RenderStatus::Contested, "claim {:?}", r.claim);
+    }
+}
+
+#[test]
+fn substantive_challenge_backed_by_failing_criteria_does_not_sustain() {
+    // Per codex review #2 (round 2) and design §8 "passing-criteria
+    // result": a backing report with status=Current but Fail criteria
+    // does NOT sustain the parent challenge.
+    let (claim, criteria, evidence) = translate_to_pieces(PROTEON_SASA_RELEASE_YAML);
+    let crit_id = criteria[0].id.clone();
+    let backing_id = ClaimId::new("failing-criteria-backing");
+
+    let challenge = ReviewEvent {
+        id: EventId::new("rev-fail-backing"),
+        target: Target::Criterion(crit_id),
+        by: Identity {
+            kind: IdentityKind::Human,
+            name: "reviewer".into(),
+            details: vec![],
+        },
+        protocol: Some("proteon-peer-review-v1".into()),
+        rationale: "Backing claim's own criteria fail.".into(),
+        at: "2026-06-01T00:00:00Z".into(),
+        kind: ReviewKind::Challenge {
+            category: ChallengeCategory::WeakStatistics,
+            backed_by: Some(backing_id.clone()),
+        },
+    };
+
+    // Backing report: status=Current but criterion result is Fail.
+    let synth_runner = Identity {
+        kind: IdentityKind::Automated,
+        name: "evident-synthesizer".into(),
+        details: vec![],
+    };
+    let failing_backing = TrustReport {
+        claim: backing_id,
+        status: RenderStatus::Current,
+        criteria: vec![Criterion {
+            id: CriterionId::new("backing-crit-0"),
+            name: "backing's failing criterion".into(),
+            tolerance: None,
+            result: Attested {
+                value: CriterionResult::Fail,
+                derivation: Derivation::Verified {
+                    method: ToolInvocation {
+                        command: "rule:Fail".into(),
+                        tool_version: "test".into(),
+                        env: vec![],
+                    },
+                    ran_by: synth_runner,
+                    reruns: vec![],
+                },
+                at: "2026-06-01T00:00:00Z".into(),
+            },
+        }],
+        challenges: vec![],
+        gaps: vec![],
+        aggregate: None,
+    };
+
+    let report = synthesize(
+        claim.id,
+        criteria,
+        &[evidence],
+        std::slice::from_ref(&challenge),
+        std::slice::from_ref(&failing_backing),
+        "2026-06-01T00:00:00Z".into(),
+    );
+
+    assert_eq!(report.status, RenderStatus::Current);
+}
+
+#[test]
+fn substantive_challenge_backed_by_empty_criteria_does_not_sustain() {
+    // An empty-criteria backing report (no evaluable proposition) does
+    // not sustain. status=Current alone is not enough.
+    let (claim, criteria, evidence) = translate_to_pieces(PROTEON_SASA_RELEASE_YAML);
+    let crit_id = criteria[0].id.clone();
+    let backing_id = ClaimId::new("empty-criteria-backing");
+
+    let challenge = ReviewEvent {
+        id: EventId::new("rev-empty-backing"),
+        target: Target::Criterion(crit_id),
+        by: Identity {
+            kind: IdentityKind::Human,
+            name: "reviewer".into(),
+            details: vec![],
+        },
+        protocol: Some("proteon-peer-review-v1".into()),
+        rationale: "Backing claim has no criteria.".into(),
+        at: "2026-06-01T00:00:00Z".into(),
+        kind: ReviewKind::Challenge {
+            category: ChallengeCategory::WeakStatistics,
+            backed_by: Some(backing_id.clone()),
+        },
+    };
+
+    let empty_backing = TrustReport {
+        claim: backing_id,
+        status: RenderStatus::Current,
+        criteria: vec![],
+        challenges: vec![],
+        gaps: vec![],
+        aggregate: None,
+    };
+
+    let report = synthesize(
+        claim.id,
+        criteria,
+        &[evidence],
+        std::slice::from_ref(&challenge),
+        std::slice::from_ref(&empty_backing),
+        "2026-06-01T00:00:00Z".into(),
+    );
+
+    assert_eq!(report.status, RenderStatus::Current);
 }
 
 #[test]

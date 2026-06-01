@@ -3,7 +3,31 @@
     "backing_reports": [
       {
         "claim": "backing-claim-id",
-        "criteria": [],
+        "criteria": [
+          {
+            "id": "backing-claim-id-crit-0",
+            "name": "backing claim's own criterion",
+            "result": {
+              "at": "2026-06-01T00:00:00Z",
+              "derivation": {
+                "data": {
+                  "method": {
+                    "command": "rule:Pass",
+                    "tool_version": "test-fixture"
+                  },
+                  "ran_by": {
+                    "kind": "automated",
+                    "name": "evident-synthesizer"
+                  }
+                },
+                "type": "verified"
+              },
+              "value": {
+                "type": "pass"
+              }
+            }
+          }
+        ],
         "status": "current"
       }
     ],

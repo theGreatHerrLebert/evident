@@ -24,7 +24,7 @@ use crate::evidence::Evidence;
 use crate::ids::CriterionId;
 use crate::report::{RenderStatus, TrustReport};
 use crate::review::{ReviewEvent, ReviewKind, Target};
-use crate::synthesize::is_procedural_category;
+use crate::synthesize::{backing_report_sustains, is_procedural_category};
 
 /// Inputs to the render-aux layer. Borrows so a caller that already
 /// has the report + evidence + events doesn't have to clone.
@@ -130,21 +130,16 @@ fn compute_criterion_status(
     }) {
         return RenderStatus::Superseded;
     }
-    // Same §8 sustain rule as synthesize::compute_render_status: a
-    // backing claim id only sustains if the matching backing report
-    // synthesizes to Current.
+    // Same §8 sustain rule as synthesize::compute_render_status.
     if events.iter().any(|e| match &e.kind {
         ReviewKind::Challenge {
             category,
             backed_by,
         } => {
             let proc_can_move = is_procedural_category(category);
-            let backed_can_move = backed_by.as_ref().is_some_and(|bid| {
-                backing_reports
-                    .iter()
-                    .find(|r| &r.claim == bid)
-                    .is_some_and(|r| r.status == RenderStatus::Current)
-            });
+            let backed_can_move = backed_by
+                .as_ref()
+                .is_some_and(|bid| backing_report_sustains(bid, backing_reports));
             (proc_can_move || backed_can_move)
                 && event_targets_criterion(&e.target, criterion_id)
         }

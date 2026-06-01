@@ -255,12 +255,33 @@ fn compute_render_status(
 /// synthesizes to a `Current` status — meaning the backing claim's
 /// own criteria pass on their own merits and no challenges against IT
 /// were sustained. `Contested` or `Superseded` backing reports do not
-/// sustain (a contested objection cannot itself move parent currency).
-fn backing_report_sustains(backing_id: &ClaimId, backing_reports: &[TrustReport]) -> bool {
+/// sustain.
+///
+/// Per design §8, the rule is that the backing claim's TrustReport
+/// "synthesizes to a passing-criteria result." That is strictly
+/// stronger than `status == Current`: a claim with no challenges but
+/// `Fail`/`NotAssessed` criteria is also `Current`, but its criteria
+/// did not pass. A sustain check therefore requires BOTH:
+/// - `status == Current` (not contested/superseded), AND
+/// - at least one criterion exists, AND
+/// - every criterion's result is `Pass`.
+///
+/// An empty-criteria backing report ("no evaluable proposition") does
+/// not sustain.
+pub(crate) fn backing_report_sustains(
+    backing_id: &ClaimId,
+    backing_reports: &[TrustReport],
+) -> bool {
     backing_reports
         .iter()
         .find(|r| &r.claim == backing_id)
-        .is_some_and(|r| r.status == RenderStatus::Current)
+        .is_some_and(|r| {
+            r.status == RenderStatus::Current
+                && !r.criteria.is_empty()
+                && r.criteria
+                    .iter()
+                    .all(|c| matches!(c.result.value, CriterionResult::Pass))
+        })
 }
 
 /// Closed list of procedural categories that may move render status
@@ -359,20 +380,50 @@ pub trait ClaimLookup {
 /// backing claim via `lookup`, recursively synthesize it, and collect
 /// the resulting TrustReports.
 ///
-/// Cycle detection: each ClaimId is visited at most once. The recursion
-/// is bounded by `max_depth` regardless — a Challenge graph with no
-/// cycles but long chains gets clipped at the limit. The design doc
-/// (§10) recommends a tri-valued Currency on cycles; this implementation
-/// simply stops walking, which is a safe approximation: cycles produce
-/// fewer backing reports, not infinite loops.
+/// Cycle handling: a first pass via [`detect_cycle_members`] identifies
+/// claim ids that lie on a cycle in the challenge-backing graph. During
+/// synthesis, those claims' TrustReports get `status: Contested` per
+/// design §8 ("Contested if the graph reachable from it contains a
+/// cycle in challenge edges") — the cycle is surfaced as Contested
+/// rather than silently dropping out. `max_depth` still bounds the
+/// recursion for pathologically long non-cyclic chains.
 pub fn compute_backing_reports(
     initial_events: &[ReviewEvent],
     lookup: &dyn ClaimLookup,
     at: &str,
     max_depth: usize,
 ) -> Vec<TrustReport> {
+    // First pass: identify all claim ids that lie on a cycle.
+    let cycled = detect_cycle_members(initial_events, lookup);
+
+    // Second pass: actually synthesize, marking cycled claims Contested.
     let mut backing = Vec::new();
     let mut visited: HashSet<ClaimId> = HashSet::new();
+    for event in initial_events {
+        if let ReviewKind::Challenge {
+            backed_by: Some(cid),
+            ..
+        } = &event.kind
+        {
+            walk_backing(
+                cid, lookup, &cycled, &mut visited, &mut backing, at, 0, max_depth,
+            );
+        }
+    }
+    backing
+}
+
+/// Pre-pass cycle detection on the challenge-backing graph. Returns the
+/// set of claim ids that participate in any cycle. Uses recursion-stack
+/// DFS — a back edge to a claim on the current stack means every claim
+/// from that point on the stack lies in a cycle.
+fn detect_cycle_members(
+    initial_events: &[ReviewEvent],
+    lookup: &dyn ClaimLookup,
+) -> HashSet<ClaimId> {
+    let mut cycled: HashSet<ClaimId> = HashSet::new();
+    let mut visited: HashSet<ClaimId> = HashSet::new();
+    let mut stack: Vec<ClaimId> = Vec::new();
 
     for event in initial_events {
         if let ReviewKind::Challenge {
@@ -380,16 +431,53 @@ pub fn compute_backing_reports(
             ..
         } = &event.kind
         {
-            walk_backing(cid, lookup, &mut visited, &mut backing, at, 0, max_depth);
+            cycle_dfs(cid, lookup, &mut visited, &mut stack, &mut cycled);
+        }
+    }
+    cycled
+}
+
+fn cycle_dfs(
+    claim_id: &ClaimId,
+    lookup: &dyn ClaimLookup,
+    visited: &mut HashSet<ClaimId>,
+    stack: &mut Vec<ClaimId>,
+    cycled: &mut HashSet<ClaimId>,
+) {
+    // Back edge to current stack → cycle. Mark every claim from the
+    // back-edge target to the current top of the stack.
+    if let Some(idx) = stack.iter().position(|c| c == claim_id) {
+        for c in &stack[idx..] {
+            cycled.insert(c.clone());
+        }
+        return;
+    }
+    if visited.contains(claim_id) {
+        return;
+    }
+    visited.insert(claim_id.clone());
+    stack.push(claim_id.clone());
+
+    if let Some(inputs) = lookup.lookup(claim_id) {
+        for event in &inputs.review_events {
+            if let ReviewKind::Challenge {
+                backed_by: Some(b),
+                ..
+            } = &event.kind
+            {
+                cycle_dfs(b, lookup, visited, stack, cycled);
+            }
         }
     }
 
-    backing
+    stack.pop();
 }
 
+#[allow(clippy::too_many_arguments)]
 fn walk_backing(
     claim_id: &ClaimId,
     lookup: &dyn ClaimLookup,
+    cycled: &HashSet<ClaimId>,
     visited: &mut HashSet<ClaimId>,
     backing: &mut Vec<TrustReport>,
     at: &str,
@@ -405,13 +493,10 @@ fn walk_backing(
         return;
     };
 
-    // Clone the events to recurse later; synthesize consumes criteria.
     let events = inputs.review_events.clone();
 
-    // Backing reports are computed depth-first: a backing claim's own
-    // backing reports must be known before its TrustReport can be
-    // synthesized correctly (per the §8 sustain rule). Recurse first,
-    // then synthesize with the accumulated backing.
+    // Recurse first (depth-first) so a backing claim's nested backings
+    // are known before its TrustReport is synthesized.
     let backing_start = backing.len();
     for event in &events {
         if let ReviewKind::Challenge {
@@ -419,12 +504,21 @@ fn walk_backing(
             ..
         } = &event.kind
         {
-            walk_backing(b, lookup, visited, backing, at, depth + 1, max_depth);
+            walk_backing(
+                b,
+                lookup,
+                cycled,
+                visited,
+                backing,
+                at,
+                depth + 1,
+                max_depth,
+            );
         }
     }
     let nested_backing: Vec<TrustReport> = backing[backing_start..].to_vec();
 
-    let report = synthesize(
+    let mut report = synthesize(
         claim_id.clone(),
         inputs.criteria,
         &inputs.evidence,
@@ -432,5 +526,14 @@ fn walk_backing(
         &nested_backing,
         at.to_string(),
     );
+
+    // Apply the cycle rule: any claim that lies on a cycle in the
+    // challenge-backing graph is surfaced as Contested, overriding the
+    // pure §8 sustain rollup. Cycles cannot be resolved deterministically
+    // and the reader needs to know.
+    if cycled.contains(claim_id) {
+        report.status = RenderStatus::Contested;
+    }
+
     backing.push(report);
 }
