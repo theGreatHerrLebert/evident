@@ -9,14 +9,16 @@
 
 /// Who or what acted. Provenance for Verified/Absent, load-bearing
 /// for Judged.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Identity {
     pub kind: IdentityKind,
     pub name: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub details: Vec<IdentityDetail>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum IdentityKind {
     Human,
     Model,
@@ -29,7 +31,7 @@ pub enum IdentityKind {
 /// `affiliation`, `ci_run`, `version`, `anonymity_reason`,
 /// `manifest_provenance`) are recognized by renderers; unknown keys
 /// pass through.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct IdentityDetail {
     pub key: String,
     pub value: String,

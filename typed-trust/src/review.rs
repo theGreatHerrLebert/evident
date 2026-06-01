@@ -9,20 +9,22 @@ use crate::ids::{
 };
 use crate::identity::Identity;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ReviewEvent {
     pub id: EventId,
     pub target: Target,
     pub by: Identity,
     /// Required at release tier for Endorse/Dissent/Challenge events
     /// (invariant 10). Validator-enforced.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub protocol: Option<String>,
     pub rationale: String,
     pub at: Timestamp,
     pub kind: ReviewKind,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum ReviewKind {
     Endorse,
     Dissent,
@@ -35,6 +37,7 @@ pub enum ReviewKind {
     /// procedural variants.
     Challenge {
         category: ChallengeCategory,
+        #[serde(skip_serializing_if = "Option::is_none")]
         backed_by: Option<ClaimId>,
     },
 }
@@ -43,7 +46,8 @@ pub enum ReviewKind {
 /// `Criterion(CriterionId)` is for challenging the tolerance /
 /// definition (stable across re-synthesis); `CriterionResult` is for
 /// challenging a specific synthesized result.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum Target {
     Claim(ClaimId),
     ClaimAttestation(AttestedId),
@@ -61,7 +65,8 @@ pub enum Target {
     ReviewEvent(EventId),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum ChallengeCategory {
     // Substantive — REQUIRE backing Claim to move status.
     MissingControl,

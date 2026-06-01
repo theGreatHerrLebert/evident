@@ -7,7 +7,7 @@
 use crate::derivation::{Attested, Derivation, Locator};
 use crate::ids::{ClaimId, EvidenceId};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Evidence {
     pub id: EvidenceId,
     pub for_claim: ClaimId,
@@ -19,7 +19,8 @@ pub struct Evidence {
     pub supports: Attested<SupportRelation>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EvidenceKind {
     Figure,
     Table,
@@ -31,7 +32,8 @@ pub enum EvidenceKind {
     ProvenanceTrail,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum SupportRelation {
     Supports { strength: Strength },
     Undermines { strength: Strength },
@@ -39,7 +41,8 @@ pub enum SupportRelation {
     Insufficient,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Strength {
     Weak,
     Moderate,

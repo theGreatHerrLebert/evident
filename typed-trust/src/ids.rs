@@ -7,7 +7,8 @@
 macro_rules! id_type {
     ($name:ident, $doc:literal) => {
         #[doc = $doc]
-        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize)]
+        #[serde(transparent)]
         pub struct $name(pub String);
 
         impl $name {
