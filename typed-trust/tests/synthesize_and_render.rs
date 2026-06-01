@@ -327,6 +327,64 @@ fn synthesize_unbacked_substantive_challenge_does_not_move_status() {
 }
 
 #[test]
+fn criterion_result_targeted_event_is_consistent_across_synth_and_render() {
+    // Codex round 4: render previously matched Target::CriterionResult
+    // by criterion id alone while synthesize treated it as
+    // non-matching, producing a contested criterion in a Current
+    // report. Both sides now refuse to match CriterionResult until
+    // TrustReport carries a ReportId; the report and its criteria
+    // must agree on contestation status.
+    let (claim, criteria, evidence) = translate_to_pieces(PROTEON_SASA_RELEASE_YAML);
+    let evidence_vec = vec![evidence];
+    let crit_id = criteria[0].id.clone();
+
+    let event = ReviewEvent {
+        id: EventId::new("rev-criterion-result-snapshot"),
+        target: Target::CriterionResult {
+            report: ReportId::new("some-snapshot"),
+            criterion: crit_id,
+        },
+        by: Identity {
+            kind: IdentityKind::Human,
+            name: "reviewer".into(),
+            details: vec![],
+        },
+        protocol: Some("p".into()),
+        rationale: "Snapshot-bound objection.".into(),
+        at: "2026-06-01T00:00:00Z".into(),
+        kind: ReviewKind::Challenge {
+            category: ChallengeCategory::WeakStatistics,
+            backed_by: None,
+        },
+    };
+
+    let report = synthesize(
+        claim.id.clone(),
+        criteria,
+        &evidence_vec,
+        std::slice::from_ref(&event),
+        &[],
+        "2026-06-01T00:00:00Z".into(),
+    );
+
+    let json = render_augmented(&RenderInput {
+        report: &report,
+        evidence: &evidence_vec,
+        related_events: std::slice::from_ref(&event),
+        backing_reports: &[],
+    });
+
+    // Report-level status is Current (synthesize doesn't match
+    // CriterionResult).
+    assert_eq!(report.status, RenderStatus::Current);
+    assert_eq!(json["status"], "current");
+
+    // Criterion status must agree — render also doesn't match.
+    assert_eq!(json["criteria"][0]["result"]["criterion_status"], "current");
+    assert!(json["criteria"][0]["result"].get("contested_by").is_none());
+}
+
+#[test]
 fn synthesize_procedural_challenge_targeting_evidence_moves_status() {
     // Codex review #3 (round 3): procedural challenges naturally
     // target Evidence ids (ArtifactUnavailable, HashMismatch,

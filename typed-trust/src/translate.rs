@@ -128,6 +128,11 @@ pub enum TranslateError {
     /// The shipping schema requires all three together (structured) or
     /// none (prose-only); mixing them is a manifest error.
     PartialTolerance { id: String },
+    /// A prose-only tolerance (metric/op/value all absent) appeared at
+    /// a non-research tier. The shipping schema frames prose-only as
+    /// the research-tier deferred-spec escape hatch only — CI and
+    /// release claims must carry structured tolerances.
+    ProseOnlyOutsideResearch { id: String, tier: String },
 }
 
 impl std::fmt::Display for TranslateError {
@@ -145,6 +150,11 @@ impl std::fmt::Display for TranslateError {
                 f,
                 "claim {id}: tolerance has some but not all of metric/op/value; \
                  shipping schema requires all-or-nothing"
+            ),
+            TranslateError::ProseOnlyOutsideResearch { id, tier } => write!(
+                f,
+                "claim {id}: prose-only tolerance not allowed at tier {tier:?}; \
+                 prose-only is the research-tier deferred-spec escape hatch only"
             ),
         }
     }
@@ -257,7 +267,7 @@ pub fn translate_tolerances(
         .enumerate()
         .map(|(idx, t)| {
             let id = CriterionId::new(format!("{}-criterion-{}", mc.id, idx));
-            let tolerance = translate_tolerance(t, &single_oracle, &mc.id)?;
+            let tolerance = translate_tolerance(t, &single_oracle, &mc.id, &mc.tier)?;
             Ok(TranslatedCriterion {
                 id,
                 tolerance,
@@ -271,11 +281,25 @@ fn translate_tolerance(
     mt: &ManifestTolerance,
     single_oracle: &Option<String>,
     claim_id: &str,
+    tier: &str,
 ) -> Result<Option<Tolerance>, TranslateError> {
     // Per workflow/SCHEMA.md, metric/op/value are all-or-nothing.
     let triple = (mt.metric.as_ref(), mt.op.as_ref(), mt.value);
     match triple {
-        (None, None, None) => Ok(None), // prose-only — valid at research tier
+        // Prose-only — valid only at research tier as the deferred-spec
+        // escape hatch. CI and release claims must carry structured
+        // tolerances; allowing them to translate would let
+        // under-specified claims pass through as Current.
+        (None, None, None) => {
+            if tier == "research" {
+                Ok(None)
+            } else {
+                Err(TranslateError::ProseOnlyOutsideResearch {
+                    id: claim_id.into(),
+                    tier: tier.into(),
+                })
+            }
+        }
         (Some(metric), Some(op), Some(value)) => Ok(Some(Tolerance {
             metric: metric.clone(),
             op: parse_op(op, claim_id)?,

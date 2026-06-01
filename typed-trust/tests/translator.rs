@@ -378,6 +378,69 @@ claims:
 }
 
 #[test]
+fn rejects_prose_only_tolerance_at_ci_tier() {
+    // Codex round 4: prose-only is the research-tier deferred-spec
+    // escape hatch only. CI/release manifests with prose-only must
+    // fail translation, not silently translate to NotAssessed +
+    // Current.
+    let yaml = r#"
+claims:
+  - id: ci-prose-only-bad
+    title: CI claim with prose-only tolerance
+    kind: measurement
+    case: x.md
+    source: ..
+    tier: ci
+    claim: text
+    tolerances:
+      - prose: |
+          We have not yet decided what to measure here.
+    evidence:
+      oracle: [Foo]
+      command: pytest tests/oracle
+      artifact: console
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let result = translate_tolerances(&manifest.claims[0]);
+    match result {
+        Err(TranslateError::ProseOnlyOutsideResearch { id, tier }) => {
+            assert_eq!(id, "ci-prose-only-bad");
+            assert_eq!(tier, "ci");
+        }
+        other => panic!("expected ProseOnlyOutsideResearch, got {other:?}"),
+    }
+}
+
+#[test]
+fn rejects_prose_only_tolerance_at_release_tier() {
+    let yaml = r#"
+claims:
+  - id: release-prose-only-bad
+    title: Release claim with prose-only tolerance
+    kind: measurement
+    case: x.md
+    source: ..
+    tier: release
+    claim: text
+    tolerances:
+      - prose: |
+          We have not yet decided what to measure here.
+    evidence:
+      oracle: [Foo]
+      command: pytest tests/oracle
+      artifact: console
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let result = translate_tolerances(&manifest.claims[0]);
+    match result {
+        Err(TranslateError::ProseOnlyOutsideResearch { tier, .. }) => {
+            assert_eq!(tier, "release");
+        }
+        other => panic!("expected ProseOnlyOutsideResearch, got {other:?}"),
+    }
+}
+
+#[test]
 fn rejects_partial_tolerance_with_some_but_not_all_of_metric_op_value() {
     // metric and op present but value absent — schema violation.
     let yaml = r#"

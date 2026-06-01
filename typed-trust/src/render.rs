@@ -153,7 +153,15 @@ fn compute_criterion_status(
 fn event_targets_criterion(target: &Target, criterion_id: &CriterionId) -> bool {
     match target {
         Target::Criterion(c) => c == criterion_id,
-        Target::CriterionResult { criterion, .. } => criterion == criterion_id,
+        // Target::CriterionResult is snapshot-bound (tied to a specific
+        // ReportId) and TrustReport doesn't yet carry its own id, so
+        // matching by criterion alone would cross-contaminate reports
+        // when callers batch events through a shared slice. The
+        // synthesize side returns false for the same reason; this
+        // mirrors that to keep render and synthesize consistent — a
+        // contested criterion should always coincide with a contested
+        // report.
+        Target::CriterionResult { .. } => false,
         _ => false,
     }
 }
