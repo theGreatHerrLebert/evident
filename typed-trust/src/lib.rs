@@ -43,5 +43,7 @@ pub use evidence::*;
 pub use review::*;
 pub use provenance::*;
 pub use report::*;
-pub use synthesize::synthesize;
+pub use synthesize::{
+    compute_backing_reports, synthesize, BackingClaimInputs, ClaimLookup,
+};
 pub use render::{render_augmented, RenderInput};

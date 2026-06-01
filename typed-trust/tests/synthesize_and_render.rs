@@ -376,3 +376,160 @@ fn write_fixture(filename: &str, body: &str) {
     let _ = fs::create_dir_all(&dir);
     fs::write(dir.join(filename), body).expect("write fixture");
 }
+
+// ---------- Recursive backing-report synthesis ----------
+
+use std::collections::HashMap;
+
+struct InMemoryLookup {
+    claims: HashMap<ClaimId, BackingClaimInputs>,
+}
+
+impl ClaimLookup for InMemoryLookup {
+    fn lookup(&self, claim_id: &ClaimId) -> Option<BackingClaimInputs> {
+        self.claims.get(claim_id).cloned()
+    }
+}
+
+fn empty_inputs() -> BackingClaimInputs {
+    BackingClaimInputs {
+        criteria: vec![],
+        evidence: vec![],
+        review_events: vec![],
+    }
+}
+
+fn challenge_targeting_any(backed_by: Option<ClaimId>) -> ReviewEvent {
+    ReviewEvent {
+        id: EventId::new("rev-x"),
+        target: Target::Claim(ClaimId::new("dummy-target")),
+        by: Identity {
+            kind: IdentityKind::Human,
+            name: "reviewer".into(),
+            details: vec![],
+        },
+        protocol: Some("p".into()),
+        rationale: "r".into(),
+        at: "2026-06-01T00:00:00Z".into(),
+        kind: ReviewKind::Challenge {
+            category: ChallengeCategory::WeakStatistics,
+            backed_by,
+        },
+    }
+}
+
+#[test]
+fn compute_backing_reports_returns_empty_when_no_backed_events() {
+    let lookup = InMemoryLookup {
+        claims: HashMap::new(),
+    };
+    let challenge = challenge_targeting_any(None);
+    let backing = compute_backing_reports(
+        std::slice::from_ref(&challenge),
+        &lookup,
+        "2026-06-01T00:00:00Z",
+        5,
+    );
+    assert!(backing.is_empty());
+}
+
+#[test]
+fn compute_backing_reports_synthesizes_one_backing_claim() {
+    let backing_id = ClaimId::new("backing-claim-1");
+    let mut claims = HashMap::new();
+    claims.insert(backing_id.clone(), empty_inputs());
+    let lookup = InMemoryLookup { claims };
+
+    let challenge = challenge_targeting_any(Some(backing_id.clone()));
+    let backing = compute_backing_reports(
+        std::slice::from_ref(&challenge),
+        &lookup,
+        "2026-06-01T00:00:00Z",
+        5,
+    );
+
+    assert_eq!(backing.len(), 1);
+    assert_eq!(backing[0].claim, backing_id);
+    // No criteria, no events on the backing claim → empty Current report.
+    assert_eq!(backing[0].status, RenderStatus::Current);
+    assert!(backing[0].criteria.is_empty());
+}
+
+#[test]
+fn compute_backing_reports_detects_cycles() {
+    // claim-A is backed by claim-B; claim-B is backed by claim-A.
+    let a = ClaimId::new("claim-A");
+    let b = ClaimId::new("claim-B");
+
+    let a_event = challenge_targeting_any(Some(b.clone()));
+    let b_event = challenge_targeting_any(Some(a.clone()));
+
+    let mut claims = HashMap::new();
+    claims.insert(
+        a.clone(),
+        BackingClaimInputs {
+            criteria: vec![],
+            evidence: vec![],
+            review_events: vec![a_event.clone()],
+        },
+    );
+    claims.insert(
+        b.clone(),
+        BackingClaimInputs {
+            criteria: vec![],
+            evidence: vec![],
+            review_events: vec![b_event],
+        },
+    );
+    let lookup = InMemoryLookup { claims };
+
+    // Start with a challenge targeting A; A backs B; B backs A.
+    let backing = compute_backing_reports(
+        std::slice::from_ref(&a_event),
+        &lookup,
+        "2026-06-01T00:00:00Z",
+        10,
+    );
+
+    // Each claim visited at most once.
+    assert_eq!(backing.len(), 2);
+    let ids: Vec<&ClaimId> = backing.iter().map(|r| &r.claim).collect();
+    assert!(ids.contains(&&b));
+    assert!(ids.contains(&&a));
+}
+
+#[test]
+fn compute_backing_reports_respects_max_depth() {
+    // Chain: claim-0 → claim-1 → claim-2 → claim-3 (no cycles).
+    let ids: Vec<ClaimId> = (0..4).map(|i| ClaimId::new(format!("claim-{i}"))).collect();
+    let mut claims = HashMap::new();
+    for i in 0..3 {
+        let event = challenge_targeting_any(Some(ids[i + 1].clone()));
+        claims.insert(
+            ids[i].clone(),
+            BackingClaimInputs {
+                criteria: vec![],
+                evidence: vec![],
+                review_events: vec![event],
+            },
+        );
+    }
+    claims.insert(ids[3].clone(), empty_inputs());
+    let lookup = InMemoryLookup { claims };
+
+    // Initial event points at claim-0, which begins the chain.
+    let initial = challenge_targeting_any(Some(ids[0].clone()));
+
+    // max_depth = 2: should synthesize claim-0 (depth 0) and claim-1
+    // (depth 1) only.
+    let backing = compute_backing_reports(
+        std::slice::from_ref(&initial),
+        &lookup,
+        "2026-06-01T00:00:00Z",
+        2,
+    );
+
+    assert_eq!(backing.len(), 2);
+    assert_eq!(backing[0].claim, ids[0]);
+    assert_eq!(backing[1].claim, ids[1]);
+}

@@ -7,6 +7,8 @@
 //! observed values against tolerances, applies the §8 rule for
 //! render status, and assembles the report.
 
+use std::collections::HashSet;
+
 use crate::derivation::{Attested, Derivation, Rerun, ToolInvocation};
 use crate::identity::{Identity, IdentityKind};
 use crate::evidence::Evidence;
@@ -252,5 +254,95 @@ fn synthesizer_identity() -> Identity {
         kind: IdentityKind::Automated,
         name: "evident-synthesizer".into(),
         details: vec![],
+    }
+}
+
+// ---------- Recursive backing-report synthesis ----------
+
+/// The inputs synthesize() needs for one backing claim.
+#[derive(Debug, Clone)]
+pub struct BackingClaimInputs {
+    pub criteria: Vec<TranslatedCriterion>,
+    pub evidence: Vec<Evidence>,
+    pub review_events: Vec<ReviewEvent>,
+}
+
+/// Source of backing-claim inputs. A caller provides this — could be
+/// a HashMap, a manifest reader, a network lookup. The trait keeps the
+/// recursion logic independent of how claims are persisted.
+pub trait ClaimLookup {
+    fn lookup(&self, claim_id: &ClaimId) -> Option<BackingClaimInputs>;
+}
+
+/// Walk Challenge events for `backed_by: Some(...)`, look up each
+/// backing claim via `lookup`, recursively synthesize it, and collect
+/// the resulting TrustReports.
+///
+/// Cycle detection: each ClaimId is visited at most once. The recursion
+/// is bounded by `max_depth` regardless — a Challenge graph with no
+/// cycles but long chains gets clipped at the limit. The design doc
+/// (§10) recommends a tri-valued Currency on cycles; this implementation
+/// simply stops walking, which is a safe approximation: cycles produce
+/// fewer backing reports, not infinite loops.
+pub fn compute_backing_reports(
+    initial_events: &[ReviewEvent],
+    lookup: &dyn ClaimLookup,
+    at: &str,
+    max_depth: usize,
+) -> Vec<TrustReport> {
+    let mut backing = Vec::new();
+    let mut visited: HashSet<ClaimId> = HashSet::new();
+
+    for event in initial_events {
+        if let ReviewKind::Challenge {
+            backed_by: Some(cid),
+            ..
+        } = &event.kind
+        {
+            walk_backing(cid, lookup, &mut visited, &mut backing, at, 0, max_depth);
+        }
+    }
+
+    backing
+}
+
+fn walk_backing(
+    claim_id: &ClaimId,
+    lookup: &dyn ClaimLookup,
+    visited: &mut HashSet<ClaimId>,
+    backing: &mut Vec<TrustReport>,
+    at: &str,
+    depth: usize,
+    max_depth: usize,
+) {
+    if depth >= max_depth || visited.contains(claim_id) {
+        return;
+    }
+    visited.insert(claim_id.clone());
+
+    let Some(inputs) = lookup.lookup(claim_id) else {
+        return;
+    };
+
+    // Clone the events to recurse later; synthesize consumes criteria.
+    let events = inputs.review_events.clone();
+
+    let report = synthesize(
+        claim_id.clone(),
+        inputs.criteria,
+        &inputs.evidence,
+        &events,
+        at.to_string(),
+    );
+    backing.push(report);
+
+    for event in &events {
+        if let ReviewKind::Challenge {
+            backed_by: Some(b),
+            ..
+        } = &event.kind
+        {
+            walk_backing(b, lookup, visited, backing, at, depth + 1, max_depth);
+        }
     }
 }
