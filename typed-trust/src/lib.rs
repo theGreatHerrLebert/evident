@@ -31,6 +31,7 @@ pub mod evidence;
 pub mod review;
 pub mod provenance;
 pub mod report;
+pub mod translate;
 
 pub use ids::*;
 pub use identity::*;

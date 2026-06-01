@@ -6,6 +6,8 @@ description = "Typed Trust — Rust scaffold for concepts/typed-trust.md"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_yaml_ng = "0.10"
 
 [lints.rust]
 unused = "warn"
