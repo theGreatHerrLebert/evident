@@ -1,0 +1,11 @@
+[package]
+name = "typed-trust"
+version = "0.1.0"
+edition = "2021"
+description = "Typed Trust — Rust scaffold for concepts/typed-trust.md"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+
+[lints.rust]
+unused = "warn"
