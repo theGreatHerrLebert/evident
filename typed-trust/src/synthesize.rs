@@ -393,8 +393,10 @@ pub fn compute_backing_reports(
     at: &str,
     max_depth: usize,
 ) -> Vec<TrustReport> {
-    // First pass: identify all claim ids that lie on a cycle.
-    let cycled = detect_cycle_members(initial_events, lookup);
+    // First pass: identify every claim that should be Contested due
+    // to a cycle in the challenge-backing graph — both direct cycle
+    // members and claims that transitively reach a cycle.
+    let cycled = detect_cycle_contested(initial_events, lookup);
 
     // Second pass: actually synthesize, marking cycled claims Contested.
     let mut backing = Vec::new();
@@ -413,15 +415,26 @@ pub fn compute_backing_reports(
     backing
 }
 
-/// Pre-pass cycle detection on the challenge-backing graph. Returns the
-/// set of claim ids that participate in any cycle. Uses recursion-stack
-/// DFS — a back edge to a claim on the current stack means every claim
-/// from that point on the stack lies in a cycle.
-fn detect_cycle_members(
+/// Pre-pass: find every claim that should be `Contested` because of
+/// a cycle in the challenge-backing graph. Per design §8 this is:
+///
+/// > "Contested if the graph reachable from it contains a cycle in
+/// > challenge edges"
+///
+/// Returns the union of:
+/// 1. Claims that lie directly on a cycle (back-edge detection).
+/// 2. Claims that *transitively reach* a cycle through challenge
+///    edges (post-order propagation).
+///
+/// The recursion-stack DFS handles both in one pass: a back edge
+/// marks every stack-resident claim from the back-edge target onward
+/// as contested-by-cycle; on the return path, any node whose child
+/// returned `true` is also contested-by-cycle.
+fn detect_cycle_contested(
     initial_events: &[ReviewEvent],
     lookup: &dyn ClaimLookup,
 ) -> HashSet<ClaimId> {
-    let mut cycled: HashSet<ClaimId> = HashSet::new();
+    let mut contested: HashSet<ClaimId> = HashSet::new();
     let mut visited: HashSet<ClaimId> = HashSet::new();
     let mut stack: Vec<ClaimId> = Vec::new();
 
@@ -431,33 +444,37 @@ fn detect_cycle_members(
             ..
         } = &event.kind
         {
-            cycle_dfs(cid, lookup, &mut visited, &mut stack, &mut cycled);
+            cycle_dfs(cid, lookup, &mut visited, &mut stack, &mut contested);
         }
     }
-    cycled
+    contested
 }
 
+/// Returns `true` if this claim is contested-by-cycle — either it's
+/// on a cycle itself, or it transitively reaches a cycle.
 fn cycle_dfs(
     claim_id: &ClaimId,
     lookup: &dyn ClaimLookup,
     visited: &mut HashSet<ClaimId>,
     stack: &mut Vec<ClaimId>,
-    cycled: &mut HashSet<ClaimId>,
-) {
+    contested: &mut HashSet<ClaimId>,
+) -> bool {
     // Back edge to current stack → cycle. Mark every claim from the
-    // back-edge target to the current top of the stack.
+    // back-edge target to the current top of the stack as on the cycle.
     if let Some(idx) = stack.iter().position(|c| c == claim_id) {
         for c in &stack[idx..] {
-            cycled.insert(c.clone());
+            contested.insert(c.clone());
         }
-        return;
+        return true;
     }
+    // Already fully processed in a prior traversal — return the result
+    // we computed then.
     if visited.contains(claim_id) {
-        return;
+        return contested.contains(claim_id);
     }
-    visited.insert(claim_id.clone());
     stack.push(claim_id.clone());
 
+    let mut reaches_cycle = false;
     if let Some(inputs) = lookup.lookup(claim_id) {
         for event in &inputs.review_events {
             if let ReviewKind::Challenge {
@@ -465,12 +482,23 @@ fn cycle_dfs(
                 ..
             } = &event.kind
             {
-                cycle_dfs(b, lookup, visited, stack, cycled);
+                if cycle_dfs(b, lookup, visited, stack, contested) {
+                    reaches_cycle = true;
+                }
             }
         }
     }
 
     stack.pop();
+    visited.insert(claim_id.clone());
+
+    // If this node reaches a cycle via a child, mark it contested too
+    // (transitive reach).
+    if reaches_cycle {
+        contested.insert(claim_id.clone());
+    }
+
+    contested.contains(claim_id)
 }
 
 #[allow(clippy::too_many_arguments)]

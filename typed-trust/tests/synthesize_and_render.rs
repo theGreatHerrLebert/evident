@@ -641,6 +641,125 @@ fn compute_backing_reports_detects_cycles() {
 }
 
 #[test]
+fn compute_backing_reports_transitive_reach_to_cycle_is_contested() {
+    // initial → X → A → B → A. A and B are on the cycle, X
+    // transitively reaches it. Per design §8 "Contested if the graph
+    // reachable from it contains a cycle in challenge edges" — X
+    // should also be Contested even though it is not in the cycle.
+    let x = ClaimId::new("claim-X");
+    let a = ClaimId::new("claim-A");
+    let b = ClaimId::new("claim-B");
+
+    let x_to_a = challenge_targeting_any(Some(a.clone()));
+    let a_to_b = challenge_targeting_any(Some(b.clone()));
+    let b_to_a = challenge_targeting_any(Some(a.clone())); // back edge
+
+    let mut claims = HashMap::new();
+    claims.insert(
+        x.clone(),
+        BackingClaimInputs {
+            criteria: vec![],
+            evidence: vec![],
+            review_events: vec![x_to_a],
+        },
+    );
+    claims.insert(
+        a.clone(),
+        BackingClaimInputs {
+            criteria: vec![],
+            evidence: vec![],
+            review_events: vec![a_to_b],
+        },
+    );
+    claims.insert(
+        b.clone(),
+        BackingClaimInputs {
+            criteria: vec![],
+            evidence: vec![],
+            review_events: vec![b_to_a],
+        },
+    );
+    let lookup = InMemoryLookup { claims };
+
+    // Initial event backs X (so X is the first backing target).
+    let initial = challenge_targeting_any(Some(x.clone()));
+    let backing = compute_backing_reports(
+        std::slice::from_ref(&initial),
+        &lookup,
+        "2026-06-01T00:00:00Z",
+        10,
+    );
+
+    let by_id: HashMap<&ClaimId, &TrustReport> =
+        backing.iter().map(|r| (&r.claim, r)).collect();
+
+    assert_eq!(by_id.len(), 3, "expected X, A, B in backing");
+    assert_eq!(by_id[&x].status, RenderStatus::Contested, "X reaches cycle");
+    assert_eq!(by_id[&a].status, RenderStatus::Contested, "A on cycle");
+    assert_eq!(by_id[&b].status, RenderStatus::Contested, "B on cycle");
+}
+
+#[test]
+fn compute_backing_reports_off_cycle_branch_stays_current() {
+    // Chain: ROOT → SAFE, ROOT → A, A → B → A. SAFE has no cycle on
+    // its branch and no Pass criteria, so it should stay Current
+    // (no challenges against it). A and B are cycle members; ROOT
+    // reaches a cycle via the A branch and is contested.
+    let root = ClaimId::new("claim-ROOT");
+    let safe = ClaimId::new("claim-SAFE");
+    let a = ClaimId::new("claim-A");
+    let b = ClaimId::new("claim-B");
+
+    let root_to_safe = challenge_targeting_any(Some(safe.clone()));
+    let root_to_a = challenge_targeting_any(Some(a.clone()));
+    let a_to_b = challenge_targeting_any(Some(b.clone()));
+    let b_to_a = challenge_targeting_any(Some(a.clone()));
+
+    let mut claims = HashMap::new();
+    claims.insert(
+        root.clone(),
+        BackingClaimInputs {
+            criteria: vec![],
+            evidence: vec![],
+            review_events: vec![root_to_safe, root_to_a.clone()],
+        },
+    );
+    claims.insert(safe.clone(), empty_inputs());
+    claims.insert(
+        a.clone(),
+        BackingClaimInputs {
+            criteria: vec![],
+            evidence: vec![],
+            review_events: vec![a_to_b],
+        },
+    );
+    claims.insert(
+        b.clone(),
+        BackingClaimInputs {
+            criteria: vec![],
+            evidence: vec![],
+            review_events: vec![b_to_a],
+        },
+    );
+    let lookup = InMemoryLookup { claims };
+
+    let initial = challenge_targeting_any(Some(root.clone()));
+    let backing = compute_backing_reports(
+        std::slice::from_ref(&initial),
+        &lookup,
+        "2026-06-01T00:00:00Z",
+        10,
+    );
+
+    let by_id: HashMap<&ClaimId, &TrustReport> =
+        backing.iter().map(|r| (&r.claim, r)).collect();
+    assert_eq!(by_id[&root].status, RenderStatus::Contested, "ROOT reaches cycle");
+    assert_eq!(by_id[&a].status, RenderStatus::Contested, "A on cycle");
+    assert_eq!(by_id[&b].status, RenderStatus::Contested, "B on cycle");
+    assert_eq!(by_id[&safe].status, RenderStatus::Current, "SAFE off-cycle");
+}
+
+#[test]
 fn substantive_challenge_backed_by_failing_criteria_does_not_sustain() {
     // Per codex review #2 (round 2) and design §8 "passing-criteria
     // result": a backing report with status=Current but Fail criteria
