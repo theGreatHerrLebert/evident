@@ -569,7 +569,6 @@ fn walk_backing(
 
     // Recurse first (depth-first) so a backing claim's nested backings
     // are known before its TrustReport is synthesized.
-    let backing_start = backing.len();
     for event in &events {
         if let ReviewKind::Challenge {
             backed_by: Some(b),
@@ -588,7 +587,28 @@ fn walk_backing(
             );
         }
     }
-    let nested_backing: Vec<TrustReport> = backing[backing_start..].to_vec();
+
+    // Collect the reports for the claim ids THIS claim's events directly
+    // back. Pull from the global `backing` vec — not just what was
+    // appended in this call — because a shared backing claim may have
+    // been synthesized in an earlier sibling branch and skipped on
+    // re-entry due to the global `visited` set. Without this lookup the
+    // sustain check would fail to find a sibling-synthesized backing.
+    let nested_ids: Vec<ClaimId> = events
+        .iter()
+        .filter_map(|e| match &e.kind {
+            ReviewKind::Challenge {
+                backed_by: Some(b),
+                ..
+            } => Some(b.clone()),
+            _ => None,
+        })
+        .collect();
+    let nested_backing: Vec<TrustReport> = backing
+        .iter()
+        .filter(|r| nested_ids.contains(&r.claim))
+        .cloned()
+        .collect();
 
     let mut report = synthesize(
         claim_id.clone(),

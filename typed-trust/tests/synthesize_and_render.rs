@@ -100,7 +100,7 @@ fn translate_to_pieces(yaml: &str) -> (Claim, Vec<typed_trust::translate::Transl
     let mc = &manifest.claims[0];
     let claim_attested = translate_claim(&ctx(), mc, "claims[0]").unwrap();
     let criteria = translate_tolerances(mc).unwrap();
-    let evidence = translate_evidence(&ctx(), mc, &criteria).unwrap();
+    let evidence = translate_evidence(&ctx(), mc, &criteria).unwrap().unwrap();
     (claim_attested.value, criteria, evidence)
 }
 
@@ -905,6 +905,220 @@ fn render_criterion_status_agrees_with_synthesize_under_cycle_contestation() {
     assert_eq!(json["status"], "contested");
     // Criterion must agree — render now also uses the cycle set.
     assert_eq!(json["criteria"][0]["result"]["criterion_status"], "contested");
+}
+
+#[test]
+fn shared_backing_claim_is_reused_across_sibling_branches() {
+    // Codex round 7 finding 1: when sibling backings share a nested
+    // backing claim, walk_backing's `visited` set skips the second
+    // recursion, but the second sibling still needs to see the
+    // already-synthesized shared report in its nested_backing so its
+    // sustain check finds it. Otherwise the sibling stays Current
+    // when it should sustain via the shared backing.
+    let root = ClaimId::new("root");
+    let b = ClaimId::new("claim-B");
+    let c = ClaimId::new("claim-C");
+    let d = ClaimId::new("claim-D");
+
+    let root_to_b = challenge_targeting_any(Some(b.clone()));
+    let root_to_c = challenge_targeting_any(Some(c.clone()));
+    let b_to_d = challenge_targeting_any(Some(d.clone()));
+    let c_to_d = challenge_targeting_any(Some(d.clone()));
+
+    // D is a passing backing claim (Current + Pass criteria).
+    let d_inputs = BackingClaimInputs {
+        criteria: vec![],
+        evidence: vec![],
+        review_events: vec![],
+    };
+    // B and C each have one Challenge backed by D.
+    let b_inputs = BackingClaimInputs {
+        criteria: vec![],
+        evidence: vec![],
+        review_events: vec![b_to_d],
+    };
+    let c_inputs = BackingClaimInputs {
+        criteria: vec![],
+        evidence: vec![],
+        review_events: vec![c_to_d],
+    };
+
+    let mut claims_map = HashMap::new();
+    claims_map.insert(b.clone(), b_inputs);
+    claims_map.insert(c.clone(), c_inputs);
+    claims_map.insert(d.clone(), d_inputs);
+    let lookup = InMemoryLookup { claims: claims_map };
+
+    let backing = compute_backing_reports(
+        &root,
+        &[root_to_b, root_to_c],
+        &lookup,
+        "2026-06-01T00:00:00Z",
+        10,
+    );
+
+    // D, B, C all appear.
+    let by_id: HashMap<&ClaimId, &TrustReport> =
+        backing.iter().map(|r| (&r.claim, r)).collect();
+    assert!(by_id.contains_key(&b), "B must be synthesized");
+    assert!(by_id.contains_key(&c), "C must be synthesized");
+    assert!(by_id.contains_key(&d), "D must be synthesized");
+    assert_eq!(by_id.len(), 3, "exactly three reports");
+
+    // D has no criteria (no challenges and no evidence). It is Current
+    // but does not sustain any parent challenge (empty criteria fails
+    // backing_report_sustains). What matters for THIS test is that
+    // both B AND C see D's report in their nested_backing. We can't
+    // directly inspect that here, but the second sibling's behavior
+    // would diverge from the first under the bug.
+    //
+    // To make the test diagnostic, give D a passing criterion so its
+    // sustain holds and verify both B and C are Contested.
+}
+
+#[test]
+fn shared_passing_backing_contests_both_sibling_branches() {
+    // Sharper variant: D has a Pass criterion. B and C both back D
+    // and both should be Contested.
+    use typed_trust::Attested;
+
+    let root = ClaimId::new("root");
+    let b = ClaimId::new("claim-B");
+    let c = ClaimId::new("claim-C");
+    let d = ClaimId::new("claim-D-passes");
+
+    // Construct challenges whose target matches the holding claim so
+    // target_touches_report passes — without that, even a sustained
+    // backing wouldn't move status.
+    let challenge_against = |target_claim: ClaimId, id: &str, backing: ClaimId| ReviewEvent {
+        id: EventId::new(id),
+        target: Target::Claim(target_claim),
+        by: Identity {
+            kind: IdentityKind::Human,
+            name: "reviewer".into(),
+            details: vec![],
+        },
+        protocol: Some("p".into()),
+        rationale: "r".into(),
+        at: "2026-06-01T00:00:00Z".into(),
+        kind: ReviewKind::Challenge {
+            category: ChallengeCategory::WeakStatistics,
+            backed_by: Some(backing),
+        },
+    };
+    let root_to_b = challenge_against(root.clone(), "rev-root-to-b", b.clone());
+    let root_to_c = challenge_against(root.clone(), "rev-root-to-c", c.clone());
+    let b_to_d = challenge_against(b.clone(), "rev-b-to-d", d.clone());
+    let c_to_d = challenge_against(c.clone(), "rev-c-to-d", d.clone());
+
+    // D synthesizes to Current + Pass. We can get that by giving D a
+    // single Pass criterion via its inputs — synthesize generates the
+    // criterion from a tolerance. Use a tolerance + a matching
+    // observation in evidence.
+    let crit_id = CriterionId::new("d-criterion-0");
+    let synth_runner = Identity {
+        kind: IdentityKind::Automated,
+        name: "synth".into(),
+        details: vec![],
+    };
+    let d_evidence = Evidence {
+        id: EvidenceId::new("ev-d"),
+        for_claim: d.clone(),
+        kind: EvidenceKind::Benchmark,
+        locator: Locator::Artifact("x".into()),
+        extraction: Derivation::Verified {
+            method: ToolInvocation {
+                command: "x".into(),
+                tool_version: "x".into(),
+                env: vec![],
+            },
+            ran_by: synth_runner.clone(),
+            reruns: vec![Rerun {
+                at: "2026-06-01T00:00:00Z".into(),
+                by: synth_runner.clone(),
+                observed: vec![MetricObservation {
+                    criterion: crit_id.clone(),
+                    value: 0.001,
+                    unit: None,
+                }],
+                corpus_sha: None,
+                outcome: ReproductionOutcome::Matched,
+            }],
+        },
+        supports: Attested {
+            value: SupportRelation::Supports {
+                strength: Strength::Strong,
+            },
+            derivation: Derivation::Judged {
+                by: Identity {
+                    kind: IdentityKind::Human,
+                    name: "u".into(),
+                    details: vec![],
+                },
+                protocol: Some("p".into()),
+                rationale: "r".into(),
+                confidence: Confidence::High,
+            },
+            at: "2026-06-01T00:00:00Z".into(),
+        },
+    };
+    let d_inputs = BackingClaimInputs {
+        criteria: vec![typed_trust::translate::TranslatedCriterion {
+            id: crit_id.clone(),
+            tolerance: Some(Tolerance {
+                metric: "relative_error".into(),
+                op: ComparisonOp::Lt,
+                value: 0.01,
+                output: None,
+                against: None,
+                prose: "rel < 0.01".into(),
+            }),
+            prose: "rel < 0.01".into(),
+        }],
+        evidence: vec![d_evidence],
+        review_events: vec![],
+    };
+    let b_inputs = BackingClaimInputs {
+        criteria: vec![],
+        evidence: vec![],
+        review_events: vec![b_to_d],
+    };
+    let c_inputs = BackingClaimInputs {
+        criteria: vec![],
+        evidence: vec![],
+        review_events: vec![c_to_d],
+    };
+
+    let mut claims_map = HashMap::new();
+    claims_map.insert(b.clone(), b_inputs);
+    claims_map.insert(c.clone(), c_inputs);
+    claims_map.insert(d.clone(), d_inputs);
+    let lookup = InMemoryLookup { claims: claims_map };
+
+    let backing = compute_backing_reports(
+        &root,
+        &[root_to_b, root_to_c],
+        &lookup,
+        "2026-06-01T00:00:00Z",
+        10,
+    );
+
+    let by_id: HashMap<&ClaimId, &TrustReport> =
+        backing.iter().map(|r| (&r.claim, r)).collect();
+
+    // D is the leaf — passes its own criterion, status Current.
+    assert_eq!(by_id[&d].status, RenderStatus::Current);
+    assert_eq!(
+        by_id[&d].criteria[0].result.value,
+        CriterionResult::Pass
+    );
+
+    // B and C must BOTH be Contested — D's report sustains the
+    // challenge in both branches. Without the shared-backing fix, the
+    // second sibling (C) misses D in its nested_backing and stays
+    // Current.
+    assert_eq!(by_id[&b].status, RenderStatus::Contested, "B contested");
+    assert_eq!(by_id[&c].status, RenderStatus::Contested, "C contested");
 }
 
 #[test]

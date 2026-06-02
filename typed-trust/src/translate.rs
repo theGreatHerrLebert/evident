@@ -139,6 +139,11 @@ pub enum TranslateError {
     /// synthesizer would emit a Current report with nothing
     /// assessed.
     MeasurementWithoutTolerances { id: String },
+    /// A `kind: measurement` claim omitted the `evidence` block. The
+    /// shipping schema requires evidence on measurement claims;
+    /// without it the report would render Current with NotAssessed
+    /// criteria — an unevidenced measurement looking accepted.
+    MeasurementWithoutEvidence { id: String },
 }
 
 impl std::fmt::Display for TranslateError {
@@ -166,6 +171,11 @@ impl std::fmt::Display for TranslateError {
                 f,
                 "claim {id}: kind=measurement requires non-empty tolerances; \
                  add tolerances or change to kind: policy / reference"
+            ),
+            TranslateError::MeasurementWithoutEvidence { id } => write!(
+                f,
+                "claim {id}: kind=measurement requires an evidence block; \
+                 add evidence or change to kind: policy / reference"
             ),
         }
     }
@@ -368,8 +378,19 @@ pub fn translate_evidence(
     ctx: &TranslationContext,
     mc: &ManifestClaim,
     criteria: &[TranslatedCriterion],
-) -> Option<Evidence> {
-    let me = mc.evidence.as_ref()?;
+) -> Result<Option<Evidence>, TranslateError> {
+    let Some(me) = mc.evidence.as_ref() else {
+        // Per workflow/SCHEMA.md, evidence is required for measurement
+        // claims. Without it the report would render Current with
+        // NotAssessed criteria — making an unevidenced measurement
+        // claim look accepted.
+        if mc.kind == "measurement" {
+            return Err(TranslateError::MeasurementWithoutEvidence {
+                id: mc.id.clone(),
+            });
+        }
+        return Ok(None);
+    };
     let runner = unspecified_runner_identity(mc.provenance.as_deref());
     let first_criterion = criteria.first().map(|c| c.id.clone());
     let reruns = translate_last_verified(
@@ -378,7 +399,7 @@ pub fn translate_evidence(
         &runner,
     );
 
-    Some(Evidence {
+    Ok(Some(Evidence {
         id: EvidenceId::new(format!("ev-{}", mc.id)),
         for_claim: ClaimId::new(&mc.id),
         kind: EvidenceKind::Benchmark,
@@ -407,7 +428,7 @@ pub fn translate_evidence(
             },
             at: ctx.now.clone(),
         },
-    })
+    }))
 }
 
 /// Translate the `last_verified` block into a `Vec<Rerun>`. Returns an

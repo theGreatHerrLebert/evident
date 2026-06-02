@@ -59,7 +59,7 @@ fn render_contested_sasa_report_as_markdown() {
         manifest_path: "proteon/evident/claims/sasa.yaml".into(),
     };
     let criteria = translate_tolerances(mc).unwrap();
-    let evidence: Vec<Evidence> = translate_evidence(&ctx, mc, &criteria)
+    let evidence: Vec<Evidence> = translate_evidence(&ctx, mc, &criteria).unwrap()
         .into_iter()
         .collect();
     let crit_id = criteria[0].id.clone();

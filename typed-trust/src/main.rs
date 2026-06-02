@@ -103,9 +103,16 @@ fn main() -> ExitCode {
             }
         };
 
-        let evidence: Vec<Evidence> = translate_evidence(&ctx, mc, &criteria)
-            .into_iter()
-            .collect();
+        let evidence: Vec<Evidence> = match translate_evidence(&ctx, mc, &criteria) {
+            Ok(opt) => opt.into_iter().collect(),
+            Err(e) => {
+                skipped.push(SkipReason {
+                    id: mc.id.clone(),
+                    reason: format!("{e}"),
+                });
+                continue;
+            }
+        };
 
         // CLI has no review events, so no cycle set is needed.
         let report = synthesize(

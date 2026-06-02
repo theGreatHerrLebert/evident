@@ -362,7 +362,7 @@ claims:
     let ctx = ctx("research/manifest.yaml");
     let _claim = translate_claim(&ctx, &manifest.claims[0], "claims[0]").unwrap();
     let evidence: Vec<Evidence> =
-        translate_evidence(&ctx, &manifest.claims[0], &criteria)
+        translate_evidence(&ctx, &manifest.claims[0], &criteria).unwrap()
             .into_iter()
             .collect();
     let report = synthesize(
@@ -438,6 +438,39 @@ claims:
             assert_eq!(id, "measurement-no-tolerances");
         }
         other => panic!("expected MeasurementWithoutTolerances, got {other:?}"),
+    }
+}
+
+#[test]
+fn rejects_measurement_claim_without_evidence_block() {
+    // Codex round 7: kind: measurement requires an evidence block per
+    // workflow/SCHEMA.md. Without it, synthesize would emit a Current
+    // report with NotAssessed criteria — an unevidenced measurement
+    // looking accepted.
+    let yaml = r#"
+claims:
+  - id: measurement-no-evidence
+    title: missing evidence
+    kind: measurement
+    case: x.md
+    source: ..
+    tier: ci
+    claim: text
+    tolerances:
+      - metric: relative_error
+        op: "<"
+        value: 0.01
+        prose: rel err < 1%
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let criteria = translate_tolerances(&manifest.claims[0]).unwrap();
+    let ctx = ctx("manifest.yaml");
+    let result = translate_evidence(&ctx, &manifest.claims[0], &criteria);
+    match result {
+        Err(TranslateError::MeasurementWithoutEvidence { id }) => {
+            assert_eq!(id, "measurement-no-evidence");
+        }
+        other => panic!("expected MeasurementWithoutEvidence, got {other:?}"),
     }
 }
 
@@ -544,7 +577,7 @@ fn ci_claim_with_null_last_verified_has_empty_reruns() {
     let mc = &manifest.claims[0];
     let criteria = translate_tolerances(mc).unwrap();
     let ctx = ctx("proteon/evident/claims/sasa.yaml");
-    let evidence = translate_evidence(&ctx, mc, &criteria).unwrap();
+    let evidence = translate_evidence(&ctx, mc, &criteria).unwrap().unwrap();
 
     assert_eq!(evidence.id.as_str(), "ev-proteon-sasa-vs-biopython-ci");
     assert_eq!(evidence.for_claim.as_str(), "proteon-sasa-vs-biopython-ci");
@@ -583,7 +616,7 @@ fn release_claim_with_populated_last_verified_emits_rerun() {
     let mc = &manifest.claims[0];
     let criteria = translate_tolerances(mc).unwrap();
     let ctx = ctx("proteon/evident/claims/sasa.yaml");
-    let evidence = translate_evidence(&ctx, mc, &criteria).unwrap();
+    let evidence = translate_evidence(&ctx, mc, &criteria).unwrap().unwrap();
 
     // Release tier → Strong support, High confidence, provenance: human → Human judge.
     match (&evidence.supports.value, &evidence.supports.derivation) {
@@ -628,7 +661,7 @@ fn evidence_locator_wraps_manifest_artifact_string() {
     let mc = &manifest.claims[0];
     let criteria = translate_tolerances(mc).unwrap();
     let ctx = ctx("proteon/evident/claims/sasa.yaml");
-    let evidence = translate_evidence(&ctx, mc, &criteria).unwrap();
+    let evidence = translate_evidence(&ctx, mc, &criteria).unwrap().unwrap();
 
     match &evidence.locator {
         Locator::Artifact(s) => assert_eq!(s, "validation/results.json"),
