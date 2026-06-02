@@ -1084,24 +1084,44 @@ def review_extracted(
     """
     if curation_log_path is None:
         curation_log_path = manifest_path.parent / "curation_log.yaml"
-    result = review_walkthrough.walk_manifest(
-        manifest_path=manifest_path,
-        curator=curator,
-        artifact_id=artifact_id,
-        cited_md_path=cited_md_path,
-        sidecar_path=sidecar_path,
-    )
+    # Codex F-WALK-CR2 (P1): a Ctrl-C from the curator inside a
+    # click prompt raises click.exceptions.Abort. Without trapping
+    # it, prior accept/drop edits are on disk but the curation log
+    # isn't written — silent state loss. Trap and write whatever
+    # partial state we have, then re-raise as a UsageError so the
+    # exit code stays non-zero.
+    try:
+        result = review_walkthrough.walk_manifest(
+            manifest_path=manifest_path,
+            curator=curator,
+            curation_log_path=curation_log_path,
+            artifact_id=artifact_id,
+            cited_md_path=cited_md_path,
+            sidecar_path=sidecar_path,
+        )
+    except (click.exceptions.Abort, KeyboardInterrupt):
+        click.echo(
+            "\nwalkthrough aborted; prior decisions are preserved "
+            "in the manifest + sidecar. Re-run review-extracted "
+            "to continue.",
+            err=True,
+        )
+        sys.exit(130)  # standard exit code for SIGINT-ish abort
     review_walkthrough.write_curation_log(result, curation_log_path)
     n_accept = sum(1 for r in result.records if r.decision == "accept")
     n_drop = sum(1 for r in result.records if r.decision == "drop")
     n_skip = sum(1 for r in result.records if r.decision == "skip")
+    n_unreviewed = sum(
+        1 for r in result.records if r.decision == "unreviewed"
+    )
     n_already = sum(
         1 for r in result.records if r.decision == "already_curated"
     )
     click.echo(
         f"reviewed {len(result.records)} claim(s): "
         f"{n_accept} accepted, {n_drop} dropped, "
-        f"{n_skip} skipped, {n_already} already curated"
+        f"{n_skip} skipped, {n_unreviewed} unreviewed, "
+        f"{n_already} already curated"
     )
     click.echo(
         f"curation log: {curation_log_path}\n"

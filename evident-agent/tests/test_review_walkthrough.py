@@ -240,9 +240,13 @@ def test_walkthrough_skip_leaves_manifest_unchanged(tmp_path: Path):
     assert manifest_path.read_text() == pre
 
 
-def test_walkthrough_quit_breaks_early_and_records_remainder_as_unseen(
+def test_walkthrough_quit_breaks_early_and_records_remainder_as_unreviewed(
     tmp_path: Path,
 ):
+    """Codex F-WALK-CR3 P2: claims that never got walked because
+    of an early quit must appear in the records as `unreviewed`
+    so the aggregator's len(extracted_claims) denominator stays
+    correct."""
     manifest_path = _sample_manifest(tmp_path)
     decision, tier, text = _scripted(
         ["accept", "quit"], ["ci"], ["rationale a"]
@@ -255,12 +259,11 @@ def test_walkthrough_quit_breaks_early_and_records_remainder_as_unseen(
         prompt_text=text,
     )
     assert result.quit_early
-    # Only the first claim got a real decision; the quit produces
-    # a skip record for the second claim, and the third never
-    # entered the loop.
     decisions = [r.decision for r in result.records]
-    assert decisions == ["accept", "skip"]
+    # claim-a accepted; claim-b quit-skip; claim-c unreviewed.
+    assert decisions == ["accept", "skip", "unreviewed"]
     assert result.records[1].notes == "walkthrough quit early"
+    assert result.records[2].notes and "quit early" in result.records[2].notes
 
 
 # ---------------------------------------------------------------------
@@ -345,14 +348,16 @@ def test_render_curation_log_matches_experiment_template_shape(tmp_path: Path):
         prompt_text=text,
     )
     log = rw.render_curation_log(result)
-    # Top-level fields.
+    # Top-level fields aligned with the experiment template
+    # (codex F-WALK-CR2 P2).
     assert log["artifact_id"] == "extracted/test-paper"
     assert log["curator"] == "Jane"
-    assert "extraction" in log
-    assert "curation" in log
-    assert log["extraction"]["accepted"] == 1
-    assert log["extraction"]["dropped"] == 1
-    assert log["extraction"]["skipped"] == 1
+    assert log["extraction"]["run_at"] == "2026-05-01T10:00:00Z"
+    assert log["extraction"]["extractor_model"] == "claude-opus-4-7"
+    assert log["extraction"]["extracted_claims_count"] == 3
+    assert log["curation"]["accepted_count"] == 1
+    assert log["curation"]["dropped_count"] == 1
+    assert log["curation"]["skipped_count"] == 1
     assert isinstance(log["curation"]["minutes_total"], float)
     # Per-claim shape.
     extracted = log["extracted_claims"]
@@ -400,6 +405,151 @@ def test_display_includes_cited_md_section_when_present(tmp_path: Path):
     display = rw._format_claim_for_display(claim_a, anchor)
     assert "Claim id:    claim-a" in display
     assert "rmsd less than 0.5" in display
+
+
+def test_walkthrough_preserves_prior_accept_records_on_rerun(tmp_path: Path):
+    """Codex F-WALK-CR1 P1 (load-bearing): a rerun must NOT erase
+    prior accept records. The cumulative curation log accumulates
+    across runs."""
+    manifest_path = _sample_manifest(tmp_path)
+    log_path = tmp_path / "curation_log.yaml"
+
+    # Run 1: accept claim-a, skip rest.
+    decision, tier, text = _scripted(
+        ["accept", "skip", "skip"], ["ci"], ["initial rationale"]
+    )
+    r1 = rw.walk_manifest(
+        manifest_path=manifest_path,
+        curator="Jane",
+        curation_log_path=log_path,
+        prompt_decision=decision,
+        prompt_tier=tier,
+        prompt_text=text,
+    )
+    rw.write_curation_log(r1, log_path)
+
+    # Run 2: claim-a already promoted; claim-b/c get walked.
+    decision, tier, text = _scripted(
+        ["drop", "skip"], [], []
+    )
+    r2 = rw.walk_manifest(
+        manifest_path=manifest_path,
+        curator="Jane",
+        curation_log_path=log_path,
+        prompt_decision=decision,
+        prompt_tier=tier,
+        prompt_text=text,
+    )
+    # claim-a's accept survives.
+    by_id = {r.extracted_id: r for r in r2.records}
+    assert by_id["claim-a"].decision == "accept"
+    assert by_id["claim-a"].rationale == "initial rationale"
+    assert by_id["claim-b"].decision == "drop"
+    assert by_id["claim-c"].decision == "skip"
+
+
+def test_walkthrough_preserves_prior_drop_records_on_rerun(tmp_path: Path):
+    """Codex F-WALK-CR1 P1: dropped claims aren't in the manifest
+    anymore, but the curation log must still reflect that the
+    curator dropped them. Without this, the experiment's drop
+    tally would be lost on rerun."""
+    manifest_path = _sample_manifest(tmp_path)
+    log_path = tmp_path / "curation_log.yaml"
+
+    # Run 1: drop claim-a, skip rest.
+    decision, tier, text = _scripted(
+        ["drop", "skip", "skip"], [], []
+    )
+    r1 = rw.walk_manifest(
+        manifest_path=manifest_path,
+        curator="Jane",
+        curation_log_path=log_path,
+        prompt_decision=decision,
+        prompt_tier=tier,
+        prompt_text=text,
+    )
+    rw.write_curation_log(r1, log_path)
+
+    # Run 2: claim-a is gone from the manifest. Walkthrough must
+    # still carry its drop record into the new log.
+    decision, tier, text = _scripted(
+        ["skip", "skip"], [], []
+    )
+    r2 = rw.walk_manifest(
+        manifest_path=manifest_path,
+        curator="Jane",
+        curation_log_path=log_path,
+        prompt_decision=decision,
+        prompt_tier=tier,
+        prompt_text=text,
+    )
+    by_id = {r.extracted_id: r for r in r2.records}
+    assert "claim-a" in by_id
+    assert by_id["claim-a"].decision == "drop"
+
+
+def test_walkthrough_quit_then_resume_finishes_the_remaining_claims(
+    tmp_path: Path,
+):
+    """Curator quits mid-walkthrough; second run picks up the
+    unreviewed claims and finishes them."""
+    manifest_path = _sample_manifest(tmp_path)
+    log_path = tmp_path / "curation_log.yaml"
+
+    decision, tier, text = _scripted(
+        ["accept", "quit"], ["ci"], ["first run rationale"]
+    )
+    r1 = rw.walk_manifest(
+        manifest_path=manifest_path,
+        curator="Jane",
+        curation_log_path=log_path,
+        prompt_decision=decision,
+        prompt_tier=tier,
+        prompt_text=text,
+    )
+    rw.write_curation_log(r1, log_path)
+
+    # claim-a was accepted; claim-b was the active quit-skip;
+    # claim-c was never reached. Run 2 must walk claim-b and
+    # claim-c.
+    decision, tier, text = _scripted(
+        ["drop", "skip"], [], []
+    )
+    r2 = rw.walk_manifest(
+        manifest_path=manifest_path,
+        curator="Jane",
+        curation_log_path=log_path,
+        prompt_decision=decision,
+        prompt_tier=tier,
+        prompt_text=text,
+    )
+    by_id = {r.extracted_id: r for r in r2.records}
+    assert by_id["claim-a"].decision == "accept"
+    assert by_id["claim-b"].decision == "drop"
+    assert by_id["claim-c"].decision == "skip"
+
+
+def test_walkthrough_omits_extracted_at_when_claims_disagree(tmp_path: Path):
+    """Codex note: first-claim-wins is misleading when claims come
+    from different extraction runs. When manifest claims disagree
+    on extracted_at, the curation log records None for run_at."""
+    manifest_path = _sample_manifest(tmp_path)
+    manifest = yaml.safe_load(manifest_path.read_text())
+    manifest["claims"][1]["provenance"]["extractor"]["extracted_at"] = (
+        "2026-05-15T10:00:00Z"
+    )
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False))
+    decision, tier, text = _scripted(
+        ["skip", "skip", "skip"], [], []
+    )
+    result = rw.walk_manifest(
+        manifest_path=manifest_path,
+        curator="Jane",
+        prompt_decision=decision,
+        prompt_tier=tier,
+        prompt_text=text,
+    )
+    assert result.extraction_started_at == ""
 
 
 def test_walkthrough_tolerates_missing_cited_md(tmp_path: Path):
