@@ -1023,3 +1023,225 @@ claims:
         );
     }
 }
+
+// ----------------------------------------------------------------------
+// Phase 5 PR2: structured provenance + source_context
+//
+// The legacy schema treated `provenance` as a single string:
+//   provenance: automatic | human | peer-reviewed
+//
+// Phase 5 needs to express extracted-from-paper / extracted-from-repo
+// claims, which carry additional fields (source_id, source_sha,
+// source_context, extractor, curator). The PR2 contract:
+//
+//   provenance: <legacy_string>          # still accepted, unchanged behaviour
+//   # OR
+//   provenance:
+//     kind: extracted-from-paper | extracted-from-repo | <legacy>
+//     source_id: <opaque string>
+//     source_sha: <hex>
+//     source_context: repo_authored | copied_external_text | unknown
+//     extractor:
+//       model: <name>
+//       model_version: <date or version>
+//       extracted_at: <iso timestamp>
+//     curator: <free-form, null at extraction time>
+//
+// The translate layer normalises both forms into ManifestProvenance.
+// Legacy callers (judge_identity_for_provenance) consume the
+// effective kind string via a helper so the existing flow is
+// unchanged.
+// ----------------------------------------------------------------------
+
+#[test]
+fn legacy_string_provenance_still_parses() {
+    // The CI fixture uses `provenance: automatic` (legacy string form).
+    // PR2 must not break it.
+    let manifest = parse_manifest_file(PROTEON_SASA_CI_YAML).unwrap();
+    let mc = &manifest.claims[0];
+    let provenance = mc.provenance.as_ref().expect("legacy provenance set");
+    assert_eq!(provenance.effective_kind(), "automatic");
+    assert!(provenance.source_context().is_none());
+    assert!(provenance.source_id().is_none());
+}
+
+#[test]
+fn structured_provenance_with_source_context_parses() {
+    let yaml = r#"
+claims:
+  - id: extracted-repo-claim
+    title: extracted repo claim with copied marketing text
+    kind: measurement
+    tier: research
+    case: source/cited.md#claim-1
+    source: ..
+    claim: copied marketing
+    tolerances:
+      - metric: throughput
+        op: ">"
+        value: 1000.0
+        prose: |
+          README says "handles >1000 requests/sec" but text appears
+          verbatim on vendor's marketing site
+    evidence:
+      oracle: [Repo-README]
+      command: "no-replay-path"
+      artifact: source/cited.md#claim-1
+      replay_status: unavailable_artifacts
+      replay_reason: instructions_missing
+    provenance:
+      kind: extracted-from-repo
+      source_id: github:org/repo@deadbeef
+      source_sha: 0123456789abcdef
+      source_context: copied_external_text
+      extractor:
+        model: claude-opus-4-7
+        model_version: "20260601"
+        extracted_at: "2026-09-14T10:00:00Z"
+      curator: null
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let provenance = mc.provenance.as_ref().expect("structured provenance set");
+
+    assert_eq!(provenance.effective_kind(), "extracted-from-repo");
+    assert_eq!(provenance.source_context(), Some("copied_external_text"));
+    assert_eq!(provenance.source_id(), Some("github:org/repo@deadbeef"));
+    assert_eq!(provenance.source_sha(), Some("0123456789abcdef"));
+    assert_eq!(
+        provenance.extractor_model(),
+        Some("claude-opus-4-7")
+    );
+}
+
+#[test]
+fn structured_provenance_without_optional_fields_parses() {
+    // The minimum structured form: just `kind`. All other fields
+    // optional. Lets a manifest declare extracted-from-paper without
+    // committing to a particular extractor model or sha.
+    let yaml = r#"
+claims:
+  - id: minimal-structured-provenance
+    title: minimal structured provenance
+    kind: measurement
+    tier: research
+    case: source/cited.md#claim-1
+    source: ..
+    claim: minimal structured provenance
+    tolerances:
+      - metric: x
+        op: "<"
+        value: 1.0
+        prose: minimal
+    evidence:
+      oracle: [Manual]
+      command: "no-replay-path"
+      artifact: source/cited.md#claim-1
+      replay_status: unavailable_artifacts
+      replay_reason: data_unavailable
+    provenance:
+      kind: extracted-from-paper
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let provenance = mc.provenance.as_ref().unwrap();
+
+    assert_eq!(provenance.effective_kind(), "extracted-from-paper");
+    assert!(provenance.source_context().is_none());
+    assert!(provenance.source_id().is_none());
+}
+
+#[test]
+fn structured_provenance_rejects_unknown_source_context_value() {
+    let yaml = r#"
+claims:
+  - id: bad-source-context
+    title: bad source context
+    kind: measurement
+    tier: research
+    case: src.md
+    source: ..
+    claim: bad source context
+    tolerances:
+      - metric: x
+        op: "<"
+        value: 1.0
+        prose: bad
+    evidence:
+      oracle: [Manual]
+      command: "no-replay-path"
+      artifact: src.md
+      replay_status: unavailable_artifacts
+      replay_reason: data_unavailable
+    provenance:
+      kind: extracted-from-paper
+      source_context: completely_made_up
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let criteria = translate_tolerances(mc).unwrap();
+    let ctx = ctx("any.yaml");
+
+    // The provenance struct parses, but the source_context value is
+    // not one of the allowed strings. translate_evidence validates
+    // it before lowering into the typed representation.
+    let err = translate_evidence(&ctx, mc, &criteria).unwrap_err();
+
+    match err {
+        TranslateError::InvalidSourceContext { id, value } => {
+            assert_eq!(id, "bad-source-context");
+            assert_eq!(value, "completely_made_up");
+        }
+        other => panic!("expected InvalidSourceContext, got {other:?}"),
+    }
+}
+
+#[test]
+fn structured_provenance_kind_routes_through_judge_identity() {
+    // Existing translate_evidence path uses provenance.kind to pick
+    // the judge identity. Structured form must route the same way.
+    let yaml = r#"
+claims:
+  - id: structured-routes-judge
+    title: structured routes judge
+    kind: measurement
+    tier: research
+    case: src.md
+    source: ..
+    claim: structured routes judge
+    tolerances:
+      - metric: x
+        op: "<"
+        value: 1.0
+        prose: example
+    evidence:
+      oracle: [Manual]
+      command: "no-replay-path"
+      artifact: src.md
+      replay_status: unavailable_artifacts
+      replay_reason: data_unavailable
+    provenance:
+      kind: extracted-from-paper
+      source_context: unknown
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let criteria = translate_tolerances(mc).unwrap();
+    let ctx = ctx("any.yaml");
+    let evidence = translate_evidence(&ctx, mc, &criteria).unwrap().unwrap();
+
+    // The supports derivation's judge identity should carry the
+    // provenance kind, just like the legacy "automatic" path did.
+    if let Derivation::Judged { by, .. } = &evidence.supports.derivation {
+        assert_eq!(by.kind, IdentityKind::Human);
+        // Identity carries the effective provenance kind in its detail
+        // pairs.
+        let has_kind = by
+            .details
+            .iter()
+            .any(|d| d.key == "manifest_provenance" && d.value == "extracted-from-paper");
+        assert!(has_kind, "judge identity missing provenance kind: {by:?}");
+    } else {
+        panic!("expected Judged derivation, got {:?}", evidence.supports.derivation);
+    }
+}
