@@ -352,6 +352,13 @@ def reject_if_hallucinated_criterion(
     )
     # Drop the literal token "criterion" itself if the regex captured it.
     flagged = [tok for tok in flagged if tok.lower() != "criterion"]
+    # Identifier-shaped means containing an underscore, dot, or dash —
+    # criterion ids in this codebase are snake_case (metric names like
+    # `median_relative_error`) or kebab-case ids. Backticked single
+    # English words (e.g., `unsupported`, `failure`) are prose
+    # emphasis, not criterion references; filter them out to avoid
+    # false-positive rejections of otherwise valid dissents.
+    flagged = [tok for tok in flagged if _re.search(r"[_.\-]", tok)]
 
     claim_set = set(claim_criteria)
     bogus = [tok for tok in flagged if tok not in claim_set]

@@ -215,15 +215,21 @@ def build_request(
 ) -> dict[str, Any]:
     """Build the full Anthropic ``messages.create`` keyword payload.
 
-    Forces tool use via ``tool_choice``; sets ``temperature=0`` so the
-    only non-determinism is server-side. ``max_tokens`` caps the
+    Forces tool use via ``tool_choice``. ``max_tokens`` caps the
     rationale length — 1024 is enough for a careful citation, not
     enough for an essay.
+
+    Earlier reasoning-class models accepted ``temperature: 0``; newer
+    ones (e.g. claude-opus-4-7) reject ``temperature`` entirely
+    ("temperature is deprecated for this model"). Per-call
+    determinism is captured by the recorded sidecar fixture replay,
+    not the API parameter, so this layer omits ``temperature``
+    across the board. Force-tool-use plus the strict input_schema
+    already do most of the work of constraining the output.
     """
     return {
         "model": model,
         "max_tokens": max_tokens,
-        "temperature": 0,
         "system": SYSTEM_FRAMING,
         "tools": [TOOL_DEFINITION],
         "tool_choice": {"type": "tool", "name": "submit_review"},

@@ -270,6 +270,18 @@ def _resolve_commit(source_dir: Path) -> Optional[str]:
     help="Skip the API call; only build the prompt (for testing / record).",
 )
 @click.option(
+    "--record",
+    "record_path",
+    default=None,
+    type=click.Path(path_type=Path),
+    help=(
+        "Capture each successful API response as a fixture entry "
+        "({id, tool_input, digest}) under this path. One file per "
+        "claim id: <record_path>/<claim_id>.json. Used to bootstrap "
+        "deferred CI fixtures from a real model run."
+    ),
+)
+@click.option(
     "--render",
     default=None,
     type=click.Choice(["json", "md", "html", "mermaid"]),
@@ -289,6 +301,7 @@ def review(
     review_sidecar_path: Optional[Path],
     last_verified_sidecar_path: Optional[Path],
     no_api: bool,
+    record_path: Optional[Path],
     render: Optional[str],
     typed_trust_binary: Optional[str],
 ) -> None:
@@ -443,6 +456,18 @@ def review(
                 + (f" backing={backing_id}" if backing_id else " (procedural, no backing)")
             )
 
+        # --record: capture the model's full submit_review payload as a
+        # fixture for the deferred CI tests. One file per claim id so
+        # subsequent record runs of other claims append cleanly.
+        if record_path is not None:
+            _write_record_fixture(
+                record_path,
+                claim_id=claim.id,
+                verdict=verdict,
+                digest_rendered=digest_obj.render(),
+            )
+            click.echo(f"  recorded: {record_path / (claim.id + '.json')}")
+
         new_entries.append(entry)
 
     if not new_entries:
@@ -518,6 +543,47 @@ def _claim_yaml_block(claim_raw: dict) -> str:
     import yaml
 
     return yaml.safe_dump(claim_raw, sort_keys=False)
+
+
+def _write_record_fixture(
+    record_dir: Path,
+    *,
+    claim_id: str,
+    verdict: "review_mod.ReviewVerdict",
+    digest_rendered: str,
+) -> None:
+    """Materialize a fixture entry in the shape the deferred CI tests
+    expect: ``{id, tool_input, digest}``. ``tool_input`` is
+    reconstructed from the validated ReviewVerdict — equivalent for
+    round-trip purposes, since the test replays through the same
+    validator pipeline.
+    """
+    import json
+
+    record_dir.mkdir(parents=True, exist_ok=True)
+    tool_input: dict[str, object] = {
+        "verdict": verdict.verdict,
+        "checks": dict(verdict.checks),
+        "observed_value": verdict.observed_value,
+        "tolerance": verdict.tolerance,
+        "failure_reason": verdict.failure_reason,
+        "rationale": verdict.rationale,
+    }
+    if verdict.verdict == "challenge":
+        ch: dict[str, object] = {"category": verdict.challenge_category}
+        if verdict.challenge_target_criterion_id is not None:
+            ch["target_criterion_id"] = verdict.challenge_target_criterion_id
+        if verdict.challenge_violation is not None:
+            ch["violation"] = dict(verdict.challenge_violation)
+        tool_input["challenge"] = ch
+
+    fixture = {
+        "id": verdict.request_id or "msg_recorded",
+        "tool_input": tool_input,
+        "digest": digest_rendered,
+    }
+    out_path = record_dir / f"{claim_id}.json"
+    out_path.write_text(json.dumps(fixture, indent=2, sort_keys=False) + "\n")
 
 
 if __name__ == "__main__":

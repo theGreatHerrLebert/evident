@@ -1,0 +1,27 @@
+version: 0.1
+project: ball-electrostatic-adversarial
+claims:
+  - id: ball-electrostatic-synthetic-challenge
+    kind: measurement
+    tier: ci
+    source: .
+    title: BALL electrostatic energy stays within 2 percent of reference
+    claim: |
+      The BALL electrostatic energy on the BPTI test corpus matches the
+      reference Tinker calculation within 2 percent relative error,
+      measured as |ball_energy - tinker_energy| / |tinker_energy|.
+    tolerances:
+      - metric: electrostatic_relative_error
+        op: "<"
+        value: 0.02
+        prose: |
+          Relative error on electrostatic energy must stay strictly below
+          2 percent across all structures in the corpus.
+    evidence:
+      oracle: [BALL, Tinker]
+      command: "pytest tests/ball/test_electrostatic.py::test_corpus -v"
+      artifact: results.json
+    last_verified:
+      commit: "fixturecommit"
+      date: "2026-06-02"
+      value: null

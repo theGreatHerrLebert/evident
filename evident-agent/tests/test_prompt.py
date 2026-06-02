@@ -103,10 +103,14 @@ def test_build_messages_is_single_user_turn() -> None:
     assert msgs[0]["role"] == "user"
 
 
-def test_build_request_forces_tool_use_and_zero_temperature() -> None:
+def test_build_request_forces_tool_use_and_omits_temperature() -> None:
+    """Newer reasoning-class models (e.g., claude-opus-4-7) reject
+    ``temperature`` outright; per-call determinism is provided by
+    forced tool_use plus the strict input_schema, not by the
+    ``temperature`` parameter."""
     req = build_request(model="claude-opus-4-7", claim_yaml="c", digest_rendered="d")
     assert req["model"] == "claude-opus-4-7"
-    assert req["temperature"] == 0
+    assert "temperature" not in req
     assert req["tool_choice"] == {"type": "tool", "name": "submit_review"}
     assert req["tools"][0] == TOOL_DEFINITION
     assert req["system"] == SYSTEM_FRAMING

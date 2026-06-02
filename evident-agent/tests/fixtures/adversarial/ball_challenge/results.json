@@ -1,0 +1,30 @@
+{
+  "n_structures": 12,
+  "elapsed_s": 47.3,
+  "summary": {
+    "electrostatic_relative_error": {
+      "min": 0.012,
+      "max": 0.083,
+      "median": 0.031,
+      "mean": 0.034
+    }
+  },
+  "per_structure": [
+    {"pdb": "1bpi", "ball_energy": -312.4, "tinker_energy": -317.9, "electrostatic_relative_error": 0.0173},
+    {"pdb": "5pti", "ball_energy": -298.2, "tinker_energy": -290.1, "electrostatic_relative_error": 0.0279},
+    {"pdb": "1aap", "ball_energy": -451.7, "tinker_energy": -442.6, "electrostatic_relative_error": 0.0206},
+    {"pdb": "6pti", "ball_energy": -288.4, "tinker_energy": -313.8, "electrostatic_relative_error": 0.0810},
+    {"pdb": "9pti", "ball_energy": -276.1, "tinker_energy": -287.0, "electrostatic_relative_error": 0.0380},
+    {"pdb": "1bzx", "ball_energy": -344.9, "tinker_energy": -334.2, "electrostatic_relative_error": 0.0320},
+    {"pdb": "3btk", "ball_energy": -329.1, "tinker_energy": -304.3, "electrostatic_relative_error": 0.0815},
+    {"pdb": "1pit", "ball_energy": -310.2, "tinker_energy": -303.5, "electrostatic_relative_error": 0.0221},
+    {"pdb": "8pti", "ball_energy": -302.0, "tinker_energy": -298.4, "electrostatic_relative_error": 0.0121},
+    {"pdb": "7pti", "ball_energy": -316.5, "tinker_energy": -322.0, "electrostatic_relative_error": 0.0171},
+    {"pdb": "2bnh", "ball_energy": -290.8, "tinker_energy": -302.5, "electrostatic_relative_error": 0.0387},
+    {"pdb": "4pti", "ball_energy": -331.6, "tinker_energy": -319.7, "electrostatic_relative_error": 0.0372}
+  ],
+  "notes": [
+    "Three structures (6pti, 3btk, and 1aap) breach the 2 percent bound; the rest are within tolerance.",
+    "The headline summary line buries 6pti at 8.1 percent and 3btk at 8.15 percent — neither was flagged in CI."
+  ]
+}
