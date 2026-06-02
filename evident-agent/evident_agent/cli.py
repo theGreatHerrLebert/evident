@@ -121,9 +121,10 @@ def replay(
 
     for i, claim in enumerate(selected, start=1):
         click.echo(f"[{i}/{len(selected)}] {claim.id}")
-        resolved_source = source_dir or (
-            claim.source_path.parent / (claim.raw.get("source") or ".")
-        ).resolve()
+        # Per workflow/SCHEMA.md, claim.source resolves relative to the
+        # TOP manifest directory, not the include file's directory.
+        # ClaimRecord.source_dir() encapsulates that resolution.
+        resolved_source = source_dir or claim.source_dir()
 
         # Stage 1: execute
         if no_execute:

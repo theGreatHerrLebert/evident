@@ -35,6 +35,11 @@ use typed_trust::*;
 struct SkipReason {
     id: String,
     reason: String,
+    /// `true` when the skip indicates a manifest error (an unparseable
+    /// or invalid measurement claim) rather than a deliberate scope
+    /// boundary. Any fatal skip makes the CLI exit non-zero so CI gates
+    /// don't silently pass on broken inputs.
+    fatal: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -110,9 +115,13 @@ fn main() -> ExitCode {
         };
 
         if let Err(e) = translate_claim(&ctx, mc, &cw.span) {
+            // OutOfScope is a deliberate scope boundary (policy /
+            // reference claims); any other error is a manifest bug.
+            let fatal = !matches!(e, typed_trust::translate::TranslateError::OutOfScope { .. });
             skipped.push(SkipReason {
                 id: mc.id.clone(),
                 reason: format!("{e}"),
+                fatal,
             });
             continue;
         }
@@ -120,9 +129,14 @@ fn main() -> ExitCode {
         let criteria = match translate_tolerances(mc) {
             Ok(c) => c,
             Err(e) => {
+                // All translate_tolerances errors at this point are
+                // measurement-claim manifest bugs (UnknownOp,
+                // PartialTolerance, ProseOnlyOutsideResearch,
+                // MeasurementWithoutTolerances).
                 skipped.push(SkipReason {
                     id: mc.id.clone(),
                     reason: format!("{e}"),
+                    fatal: true,
                 });
                 continue;
             }
@@ -131,9 +145,11 @@ fn main() -> ExitCode {
         let evidence: Vec<Evidence> = match translate_evidence(&ctx, mc, &criteria) {
             Ok(opt) => opt.into_iter().collect(),
             Err(e) => {
+                // MeasurementWithoutEvidence is a manifest bug.
                 skipped.push(SkipReason {
                     id: mc.id.clone(),
                     reason: format!("{e}"),
+                    fatal: true,
                 });
                 continue;
             }
@@ -161,11 +177,27 @@ fn main() -> ExitCode {
         reports.push(augmented);
     }
 
-    match format {
+    let any_fatal = skipped.iter().any(|s| s.fatal);
+    if any_fatal {
+        eprintln!(
+            "error: {} manifest claim(s) failed translation; see `skipped` in the output",
+            skipped.iter().filter(|s| s.fatal).count()
+        );
+    }
+
+    let render_result = match format {
         Format::Json => emit_json(path, &now, &reports, &skipped),
         Format::Markdown => emit_markdown(path, &reports, &skipped),
         Format::Html => emit_html(path, &reports, &skipped),
         Format::Mermaid => emit_mermaid(&reports),
+    };
+
+    // Translation failures override a successful render. CI gates
+    // should NOT treat a broken manifest as a passing report.
+    if any_fatal {
+        ExitCode::FAILURE
+    } else {
+        render_result
     }
 }
 

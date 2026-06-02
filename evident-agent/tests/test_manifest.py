@@ -35,7 +35,9 @@ def test_load_inline_claims(tmp_path: Path) -> None:
     ids = [c.id for c in claims]
     assert "claim-A" in ids
     assert "claim-B" in ids
-    assert all(c.source_path == m for c in claims)
+    assert all(c.source_path == m.resolve() for c in claims)
+    # For inline claims, source_path == top_manifest_path.
+    assert all(c.top_manifest_path == m.resolve() for c in claims)
 
 
 def test_load_with_includes(tmp_path: Path) -> None:
@@ -61,9 +63,55 @@ def test_load_with_includes(tmp_path: Path) -> None:
     claims = load_claims(top)
     ids = [c.id for c in claims]
     assert "claim-X" in ids
-    # Source path for X should be the included file, not the top-level.
+    # Source path for X should be the included file (for SourceSpan).
     x = next(c for c in claims if c.id == "claim-X")
-    assert x.source_path == included
+    assert x.source_path == included.resolve()
+    # But the TOP manifest path is the entry-point, not the included file.
+    assert x.top_manifest_path == top.resolve()
+
+
+def test_source_dir_resolves_from_top_manifest_not_include(tmp_path: Path) -> None:
+    """Per workflow/SCHEMA.md, claim.source is relative to the top
+    manifest dir. For ``proteon/evident/evident.yaml`` including
+    ``claims/foo.yaml`` with ``source: ..``, the source dir is
+    ``proteon/``, not ``proteon/evident/`` (which is what
+    include_file.parent / '..' would give).
+    """
+    # Layout mirrors proteon's: top_dir/manifest.yaml + top_dir/claims/x.yaml
+    # with claim.source = "..", expecting top_dir/.. as the source.
+    top_dir = tmp_path / "evident"
+    top_dir.mkdir()
+    repo_root = tmp_path  # the parent of top_dir
+    (repo_root / "repo_marker").write_text("yes")
+
+    _write_manifest(
+        top_dir / "claims" / "x.yaml",
+        """
+        claims:
+          - id: claim-X
+            kind: measurement
+            source: ..
+        """,
+    )
+    top = _write_manifest(
+        top_dir / "evident.yaml",
+        """
+        version: 0.1
+        project: test
+        include:
+          - claims/x.yaml
+        """,
+    )
+
+    claims = load_claims(top)
+    x = next(c for c in claims if c.id == "claim-X")
+
+    # Correct resolution: evident.yaml's parent / ".." == tmp_path.
+    # Wrong resolution (what the bug did): claims/x.yaml's parent / ".."
+    # == top_dir (the manifest dir).
+    expected = (top_dir / "..").resolve()
+    assert x.source_dir() == expected
+    assert (x.source_dir() / "repo_marker").is_file()
 
 
 def test_filter_by_id(tmp_path: Path) -> None:
