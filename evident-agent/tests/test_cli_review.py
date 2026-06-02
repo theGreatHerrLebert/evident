@@ -100,6 +100,57 @@ def test_review_unmatched_claim_filter_exits_nonzero(tmp_path: Path) -> None:
     assert result.exit_code != 0
 
 
+def test_last_verified_commit_reaches_the_digest_header(tmp_path: Path) -> None:
+    """Codex F-CR1 regression: the model must see the commit hash
+    from the last_verified sidecar so the reproducible_chain check
+    can pass. Without this overlay, the digest header has
+    ``commit: null`` and an Endorse becomes hallucination.
+
+    We assert by reading the digest line printed by --no-api: the
+    ``format=…`` summary line proves the digest was built, and a
+    second --no-api flag would suppress sidecar writes — but the
+    digest header in the rendered output should now include the
+    commit. We trigger the same code path and verify the digest
+    rendered text contains the commit hex.
+    """
+    manifest = _write_claim_artifact(tmp_path)
+    last_verified = tmp_path / "last_verified.json"
+    last_verified.write_text(
+        json.dumps(
+            {
+                "claim-A": {
+                    "commit": "deadbeefcafe1234",
+                    "date": "2026-06-02",
+                    "value": 0.008,
+                }
+            }
+        )
+    )
+
+    # Build a digest the same way the CLI would and assert commit
+    # propagates. Going via the public surface (evidence.make_digest)
+    # so the test catches future regressions in the digest pipeline.
+    from evident_agent import evidence as evidence_mod
+    from evident_agent import sidecar as sidecar_mod
+    from evident_agent.cli import _resolve_commit_for_claim
+
+    entries = sidecar_mod.read(last_verified)
+    assert "claim-A" in entries
+    commit = _resolve_commit_for_claim(
+        {"last_verified": None}, entries.get("claim-A")
+    )
+    assert commit == "deadbeefcafe1234"
+
+    digest = evidence_mod.make_digest(
+        tmp_path / "source" / "out.json",
+        "relative_error",
+        source_dir=tmp_path / "source",
+        commit=commit,
+    )
+    rendered = digest.render()
+    assert "deadbeefcafe1234" in rendered
+
+
 def test_review_skips_claim_with_no_evidence_artifact(tmp_path: Path) -> None:
     """A claim that lacks evidence.artifact is logged as a skip
     without raising."""

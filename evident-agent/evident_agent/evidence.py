@@ -47,8 +47,16 @@ class Digest:
     truncated: bool = False
 
     def render(self) -> str:
-        """Render the digest as the text block the model sees."""
-        header_line = json.dumps(self.header, sort_keys=True)
+        """Render the digest as the text block the model sees.
+
+        Crucially, the rendered header includes ``truncated`` so the
+        model can apply the framing's truncation rule ("Dissent if
+        truncated and metric absent"). Per-extractor ``self.header``
+        omits ``truncated`` to keep the extractor surface narrow;
+        render() merges the dataclass flag in.
+        """
+        merged = {**self.header, "truncated": self.truncated}
+        header_line = json.dumps(merged, sort_keys=True)
         return f"<digest header=\"{header_line}\">\n{self.body}\n</digest>"
 
 

@@ -157,3 +157,28 @@ def test_missing_artifact_returns_missing_digest(tmp_path: Path) -> None:
     d = extract_json(nope, "relative_error")
     assert d.header.get("missing") is True
     assert d.header["metric_present"] == "unknown"
+
+
+# ---------- F-CR3: truncated flag in rendered output ----------
+
+def test_truncated_flag_appears_in_rendered_digest(tmp_path: Path) -> None:
+    """Codex F-CR3 regression: the model must see ``truncated: true``
+    in the rendered header so it can apply the framing's truncation
+    rule.
+    """
+    artifact = tmp_path / "out.bin"
+    artifact.write_text("x" * (MAX_BODY_BYTES + 1000))
+    d = extract_fallback(artifact, None)
+    assert d.truncated is True
+    rendered = d.render()
+    assert '"truncated": true' in rendered.lower() or '"truncated":true' in rendered.lower()
+
+
+def test_non_truncated_digest_renders_truncated_false() -> None:
+    d = Digest(
+        header={"format": "json", "metric_present": "pass"},
+        body="{}",
+        truncated=False,
+    )
+    rendered = d.render()
+    assert '"truncated": false' in rendered.lower()

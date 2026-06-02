@@ -279,6 +279,44 @@ def test_failure_reason_without_criterion_reference_passes() -> None:
 
 # ---------- Sidecar conversion ----------
 
+def test_sdk_exception_is_mapped_to_review_transport_error_and_retried() -> None:
+    """Codex F-CR2 regression: a real SDK exception (timeout,
+    connection error, rate limit) must trigger the retry path and,
+    on final failure, surface as a ReviewTransportError — not the
+    raw SDK exception type.
+    """
+
+    class FakeAPIError(Exception):
+        """Stands in for anthropic.APIError in tests; the
+        ``_sdk_transport_exception_types`` helper falls back to ()
+        when the SDK isn't installed, so we monkeypatch the catch
+        list to include this stand-in.
+        """
+
+    import evident_agent.review as review_mod
+
+    original = review_mod._sdk_transport_exception_types
+    review_mod._sdk_transport_exception_types = lambda: (FakeAPIError,)
+    try:
+        client = FakeClient([FakeAPIError("network timeout"), _ok_response()])
+        v = call_review(
+            model="m", claim_yaml="c", digest_rendered="d", api_client=client
+        )
+        # Retry succeeded.
+        assert v.verdict == "endorse"
+        assert client.messages.calls == 2
+
+        # Now both attempts fail; expect ReviewTransportError, not FakeAPIError.
+        client2 = FakeClient([FakeAPIError("timeout 1"), FakeAPIError("timeout 2")])
+        with pytest.raises(ReviewTransportError, match="FakeAPIError"):
+            call_review(
+                model="m", claim_yaml="c", digest_rendered="d", api_client=client2
+            )
+        assert client2.messages.calls == 2
+    finally:
+        review_mod._sdk_transport_exception_types = original
+
+
 def test_verdict_to_sidecar_entry_preserves_fields() -> None:
     v = ReviewVerdict(
         verdict="endorse",

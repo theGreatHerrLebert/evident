@@ -308,6 +308,14 @@ def review(
         click.echo(f"no measurement claims matched (filter={claim_filter!r})", err=True)
         sys.exit(2)
 
+    # Load the last_verified sidecar (if any) so per-claim verification
+    # metadata — particularly the commit — can flow into the digest the
+    # model sees. Without this, the "reproducible_chain" check has no
+    # commit to verify against and would always default to fail/unknown.
+    last_verified_by_claim: dict[str, sidecar.LastVerifiedEntry] = {}
+    if last_verified_sidecar_path is not None and last_verified_sidecar_path.is_file():
+        last_verified_by_claim = sidecar.read(last_verified_sidecar_path)
+
     new_entries: list[review_sidecar.ReviewEventEntry] = []
     for i, claim in enumerate(selected, start=1):
         click.echo(f"[{i}/{len(selected)}] {claim.id}")
@@ -325,12 +333,19 @@ def review(
         artifact_token = artifact_rel.split()[0]
         artifact_path = source_dir / artifact_token
 
+        # Per-claim commit comes from (in order): the last_verified
+        # sidecar entry > the manifest's inline last_verified.commit
+        # > None. The digest header surfaces it so the model can
+        # verify the reproducible_chain check.
+        commit = _resolve_commit_for_claim(claim.raw, last_verified_by_claim.get(claim.id))
+
         # Extract digest.
         metric = _first_tolerance_metric(claim.raw)
         digest_obj = evidence.make_digest(
             artifact_path,
             metric,
             source_dir=source_dir,
+            commit=commit,
         )
         click.echo(f"  digest: format={digest_obj.header.get('format')} metric_present={digest_obj.header.get('metric_present')} truncated={digest_obj.truncated}")
 
@@ -406,6 +421,23 @@ def review(
             click.echo(result.stderr, err=True)
             sys.exit(result.exit_code)
         click.echo(result.stdout, nl=False)
+
+
+def _resolve_commit_for_claim(
+    claim_raw: dict,
+    sidecar_entry: Optional[sidecar.LastVerifiedEntry],
+) -> Optional[str]:
+    """Pick the commit hash to surface in the digest header.
+
+    Precedence: sidecar entry > inline manifest last_verified.commit
+    > None. The digest header passes this to the model so it can
+    check whether the evidence chain is reproducible from a specific
+    commit (per the framing's reproducible_chain check).
+    """
+    if sidecar_entry is not None and sidecar_entry.commit:
+        return sidecar_entry.commit
+    inline = (claim_raw.get("last_verified") or {}).get("commit")
+    return inline if isinstance(inline, str) and inline else None
 
 
 def _first_tolerance_metric(claim_raw: dict) -> Optional[str]:

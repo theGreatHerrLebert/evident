@@ -110,7 +110,8 @@ def call_review(
     )
 
     response: ApiResponse
-    last_transport_error: Optional[Exception] = None
+    tool_input: Optional[dict[str, Any]] = None
+    last_transport_error: Optional[BaseException] = None
     for attempt in (1, 2):
         try:
             response = api_client.messages.create(**request)
@@ -118,11 +119,24 @@ def call_review(
             break
         except ReviewTransportError as exc:
             last_transport_error = exc
-            LOGGER.warning("review attempt %d failed transport: %s", attempt, exc)
-            if attempt == 2:
-                raise
-    else:  # pragma: no cover — unreachable
-        raise ReviewTransportError(str(last_transport_error))
+            LOGGER.warning(
+                "review attempt %d failed (schema/tool): %s", attempt, exc
+            )
+        except _sdk_transport_exception_types() as exc:
+            # Real SDK transport faults (timeouts, connection errors,
+            # transient rate limits). The plan's retry contract covers
+            # these; map them onto ReviewTransportError so the caller
+            # sees one consistent type.
+            last_transport_error = ReviewTransportError(
+                f"{type(exc).__name__}: {exc}"
+            )
+            LOGGER.warning(
+                "review attempt %d failed (sdk): %s", attempt, exc
+            )
+        if attempt == 2:
+            assert last_transport_error is not None
+            raise last_transport_error
+    assert tool_input is not None  # loop only exits with tool_input set
 
     verdict = _validate_tool_input(tool_input)
     verdict.model = model
@@ -302,6 +316,23 @@ def _default_api_client() -> Any:
             "anthropic SDK not installed; pip install anthropic, or pass --no-api"
         ) from exc
     return anthropic.Anthropic()
+
+
+def _sdk_transport_exception_types() -> tuple[type[BaseException], ...]:
+    """Return the SDK exception classes that should trigger the
+    transport-retry path. Lazy-imported because the SDK may not be
+    installed in tests / ``--no-api`` environments. When the SDK is
+    absent, return an empty tuple so the except clause matches nothing
+    (only ReviewTransportError catches in that case).
+    """
+    try:
+        import anthropic  # type: ignore[import-not-found]
+    except ImportError:
+        return ()
+    base = getattr(anthropic, "APIError", None)
+    if base is None:
+        return ()
+    return (base,)
 
 
 # ---------- Conversion for the sidecar ----------
