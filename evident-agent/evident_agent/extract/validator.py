@@ -138,17 +138,20 @@ KIND_WRONG_BINDING = "comparator_bound_to_wrong_subject"
 # ---------------------------------------------------------------------
 
 
-# Sentence boundary: any of `.;!?\n` or 2+ whitespace, BUT a `.` is
-# only a boundary if it's NOT between digits (so `0.5` stays one
-# token, while `... ours = 0.42. The baseline ...` splits cleanly).
-# We achieve this with a negative-lookbehind / -lookahead on the dot.
+# Sentence boundary: any of `.;!?\n`, 2+ whitespace, OR a markdown
+# table pipe `|`. The pipe matters for the codex-flagged
+# wrong-subject case (F-PR4-CR1b): a markdown table row like
+# `| baseline | rmsd | < 0.5 | ours | rmsd | 0.42 |` would
+# otherwise pass for `ours < 0.5` because all four tokens co-occur
+# in the unsplit row. Treating `|` as a cell boundary forces the
+# comparator and bound to be in the same cell as the subject.
+#
+# A `.` is only a boundary if it's NOT between digits (protect
+# `0.5`) and NOT followed by whitespace+digit (protect "max. 0.5",
+# "Fig. 3", "Eq. 4").
 _SENTENCE_BOUNDARIES = re.compile(
-    # Split on `.` UNLESS:
-    #   - it's between digits (protect `0.5`)
-    #   - it's followed by whitespace then a digit (protect "max. 0.5",
-    #     "Fig. 3", "Eq. 4")
     r"(?<!\d)\.(?!\d|\s+\d)"
-    r"|[;!?\n]+"
+    r"|[;!?\n|]+"
     r"|\s{2,}"
 )
 
@@ -197,6 +200,16 @@ def _opposite_direction(direction: str) -> str:
     return "gt" if direction == "lt" else "lt"
 
 
+def _is_symbolic_phrase(phrase: str) -> bool:
+    """A phrase is "symbolic" if it's a mathematical operator
+    (``<``, ``≤``, ``\\le``) rather than English prose. Symbolic
+    phrases are matched as raw substrings — they don't have
+    word-character neighbours to worry about. English phrases
+    require word boundaries so ``under`` doesn't match ``thunder``.
+    """
+    return not any(c.isalpha() for c in phrase)
+
+
 def _find_comparators_in(text: str) -> list[tuple[int, str, str]]:
     """Scan `text` for comparator phrases via longest-match-wins.
 
@@ -205,15 +218,24 @@ def _find_comparators_in(text: str) -> list[tuple[int, str, str]]:
     once a region is matched by the longest phrase, shorter
     candidates that overlap that region are skipped.
 
-    This is the cure for the "no more than" / "more than" ambiguity
-    codex flagged: by checking longest phrases first, "no more than"
-    consumes the substring before "more than" can match.
+    Codex F-PR4-CR2a fix: English-prose phrases (``under``,
+    ``above``, ``max``, ``at least``, etc.) are matched with word
+    boundaries so they don't fire inside ``thunder``,
+    ``aboveboard``, ``maximal``. Symbolic operators (``<``, ``≤``,
+    ``\\le``) keep raw substring matching since they don't have
+    word-character neighbours.
+
+    This is also the cure for the "no more than" / "more than"
+    ambiguity (codex F-CR-PR4-comparator-coverage): by checking
+    longest phrases first, "no more than" consumes the substring
+    before "more than" can match.
     """
     text_l = text.lower()
     consumed = [False] * len(text_l)
     found: list[tuple[int, str, str]] = []
     for phrase, direction in _PHRASES_BY_LENGTH:
         phrase_l = phrase.lower()
+        symbolic = _is_symbolic_phrase(phrase)
         pos = 0
         while True:
             idx = text_l.find(phrase_l, pos)
@@ -223,6 +245,14 @@ def _find_comparators_in(text: str) -> list[tuple[int, str, str]]:
             if any(consumed[idx:end]):
                 pos = idx + 1
                 continue
+            # For English phrases, require word boundaries on both
+            # sides so "under" doesn't fire inside "thunder".
+            if not symbolic:
+                before_ok = idx == 0 or not text_l[idx - 1].isalnum()
+                after_ok = end == len(text_l) or not text_l[end].isalnum()
+                if not (before_ok and after_ok):
+                    pos = idx + 1
+                    continue
             for i in range(idx, end):
                 consumed[i] = True
             found.append((idx, phrase, direction))
@@ -280,32 +310,53 @@ def _value_appears_in(text: str, value: float) -> bool:
 
 def _subject_appears_in(text: str, aliases: Iterable[str]) -> bool:
     """True if any subject alias appears in `text` (case-insensitive,
-    word-boundary safe so ``'we'`` doesn't match ``'weight'``).
+    word-boundary safe).
+
+    Codex F-PR4-CR2b fix: uses ``(?<!\\w)`` / ``(?!\\w)`` instead
+    of ``\\b`` so aliases ending or starting with non-word characters
+    (e.g. ``ABRA-2.0``) still anchor correctly.
     """
     haystack = text.lower()
     for alias in aliases:
         alias_l = alias.lower().strip()
         if not alias_l:
             continue
-        # Word boundary on both ends. For phrases like "our method"
-        # this still works because \b splits on word chars.
-        pat = r"\b" + re.escape(alias_l) + r"\b"
+        # Boundary that works even for aliases ending/starting with
+        # non-word characters. ``\b`` switches direction based on the
+        # adjacent character; the explicit non-word lookarounds are
+        # independent of the alias's last/first character class.
+        pat = r"(?<!\w)" + re.escape(alias_l) + r"(?!\w)"
         if re.search(pat, haystack):
             return True
     return False
 
 
 def _metric_token_in(text: str, metric: str) -> bool:
-    """True if the metric token appears in `text`. The metric is
-    treated as a multi-word token (e.g. ``median_rmsd``) with
-    ``_`` allowed to match either underscore or whitespace in the
-    source, so a paper saying "median RMSD" matches a manifest's
-    ``metric: median_rmsd``.
+    """True if the metric token appears in `text` as a complete word.
+
+    Codex F-PR4-CR1a fix: this used to be an unanchored substring
+    match, so ``metric: mse`` would match ``rmse`` and
+    ``median_rmsd`` would match ``medianrmsd``. Now requires:
+
+    - non-word character on both sides of the matched range, so
+      ``mse`` does NOT match inside ``rmse``;
+    - inter-word separator allows ``_``, whitespace, or ``-`` (a
+      paper might write ``median-rmsd`` or ``median RMSD``);
+    - the separator must be at least one character (it's not
+      ``\\s*`` anymore), so ``medianrmsd`` does NOT match
+      ``median_rmsd``.
     """
-    norm = metric.lower().replace("_", " ").strip()
-    if not norm:
+    norm_parts = [
+        p for p in re.split(r"[_\s-]+", metric.lower()) if p
+    ]
+    if not norm_parts:
         return False
-    pat = norm.replace(" ", r"\s*")
+    sep = r"[_\s-]+"
+    pat = (
+        r"(?<!\w)"
+        + sep.join(re.escape(p) for p in norm_parts)
+        + r"(?!\w)"
+    )
     return re.search(pat, text.lower()) is not None
 
 

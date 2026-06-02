@@ -41,6 +41,65 @@ def _typed_trust_binary() -> Path | None:
     return Path(on_path) if on_path else None
 
 
+def _typed_trust_has_promotion_validator() -> bool:
+    """Codex F-PR4 review: the tier:ci rejection test depends on
+    PR3's validate_promotion_rules wiring. If the binary is older
+    than PR3 (e.g. built off main before PR3 lands), the
+    promotion gate doesn't fire and the test would be a
+    dependency-skew failure rather than a real correctness signal.
+    Probe by asking the binary to validate an extracted+ci
+    manifest WITHOUT a sidecar: PR3-or-later exits non-zero;
+    pre-PR3 exits 0.
+    """
+    binary = _typed_trust_binary()
+    if binary is None:
+        return False
+    import tempfile
+
+    yaml_text = """version: 0.1
+project: probe
+claims:
+  - id: probe-claim
+    title: probe
+    kind: measurement
+    tier: ci
+    source: .
+    claim: probe
+    tolerances:
+      - metric: x
+        op: "<"
+        value: 1.0
+        prose: probe
+    evidence:
+      oracle: [Manual]
+      command: "no-replay-path"
+      artifact: out.txt
+      replay_status: unavailable_artifacts
+      replay_reason: code_private
+    provenance:
+      kind: extracted-from-paper
+      extractor:
+        extracted_at: "2026-09-14T10:00:00Z"
+"""
+    with tempfile.NamedTemporaryFile(
+        suffix=".yaml", mode="w", delete=False
+    ) as f:
+        f.write(yaml_text)
+        path = f.name
+    try:
+        result = subprocess.run(
+            [str(binary), path],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        return result.returncode != 0
+    except Exception:
+        return False
+    finally:
+        Path(path).unlink(missing_ok=True)
+
+
 def _example_result_for_roundtrip() -> ExtractionResult:
     return ExtractionResult(
         source_id="arxiv:2501.12345v1",
@@ -101,8 +160,12 @@ def test_extracted_manifest_passes_typed_trust_translation(tmp_path: Path):
 
 
 @pytest.mark.skipif(
-    _typed_trust_binary() is None,
-    reason="typed-trust binary not built (run `cargo build` in typed-trust/)",
+    not _typed_trust_has_promotion_validator(),
+    reason=(
+        "typed-trust binary missing the PR3 promotion validator; "
+        "this is a cross-language contract test that requires PR3+ "
+        "to be built into the binary"
+    ),
 )
 def test_extracted_manifest_at_tier_ci_is_rejected_without_promotion(tmp_path: Path):
     """Codex F-PR3 contract: an extracted-from-paper claim at tier:ci

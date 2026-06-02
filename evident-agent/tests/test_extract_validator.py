@@ -342,6 +342,189 @@ def test_op_lt_with_gt_comparator_in_span_is_rejected():
 # ---------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------
+# Codex F-PR4-CR review additions: token anchoring + table cells
+# ---------------------------------------------------------------------
+
+
+def test_metric_mse_does_not_match_inside_rmse():
+    """Codex F-PR4-CR1a: `mse` must not silently match `rmse`. The
+    metric matcher is anchored on word boundaries."""
+    tolerance = {
+        "metric": "mse",
+        "op": "<",
+        "value": 0.5,
+        "source_span": "our method's rmse is less than 0.5",
+    }
+    with pytest.raises(ValidationError) as exc:
+        validate_tolerance(
+            tolerance, subject_aliases=["our method"]
+        )
+    assert exc.value.kind == "missing_metric"
+
+
+def test_metric_median_rmsd_does_not_match_medianrmsd():
+    """Codex F-PR4-CR1a: `median_rmsd` must not match the unspaced
+    `medianrmsd`. Inter-word separator is required."""
+    tolerance = {
+        "metric": "median_rmsd",
+        "op": "<",
+        "value": 0.5,
+        "source_span": "our medianrmsd is less than 0.5",
+    }
+    with pytest.raises(ValidationError) as exc:
+        validate_tolerance(tolerance, subject_aliases=["our"])
+    assert exc.value.kind == "missing_metric"
+
+
+def test_metric_median_rmsd_matches_hyphenated_form():
+    """Counterpart to the above: `median-rmsd` (hyphenated) is a
+    legitimate form a paper might use; the matcher accepts it."""
+    tolerance = {
+        "metric": "median_rmsd",
+        "op": "<",
+        "value": 0.5,
+        "source_span": "our method's median-rmsd is less than 0.5",
+    }
+    validate_tolerance(
+        tolerance, subject_aliases=["our method"]
+    )
+
+
+def test_metric_median_rmsd_matches_double_space_form():
+    tolerance = {
+        "metric": "median_rmsd",
+        "op": "<",
+        "value": 0.5,
+        # Use single space (sentence splitter treats 2+ spaces as a
+        # boundary).
+        "source_span": "our method's median rmsd is less than 0.5",
+    }
+    validate_tolerance(
+        tolerance, subject_aliases=["our method"]
+    )
+
+
+def test_comparator_under_does_not_match_inside_thunder():
+    """Codex F-PR4-CR2a: 'under' must not silently match 'thunder'.
+    English-prose comparators require word boundaries."""
+    tolerance = {
+        "metric": "rmsd",
+        "op": "<",
+        "value": 0.5,
+        # Contains 'thunder' but no actual comparator. The 0.5 is
+        # present, the subject is present, the metric is present —
+        # only the unanchored substring match could be fooled.
+        "source_span": (
+            "thunder thunderingly: our method's rmsd is 0.5 from a "
+            "different paper's report"
+        ),
+    }
+    with pytest.raises(ValidationError) as exc:
+        validate_tolerance(
+            tolerance, subject_aliases=["our method"]
+        )
+    assert exc.value.kind in (
+        "missing_comparator",
+        "comparator_bound_to_wrong_subject",
+    )
+
+
+def test_comparator_above_does_not_match_inside_aboveboard():
+    tolerance = {
+        "metric": "throughput",
+        "op": ">",
+        "value": 1000,
+        "source_span": (
+            "the aboveboard analysis shows our throughput is 1000 "
+            "from a different report"
+        ),
+    }
+    with pytest.raises(ValidationError) as exc:
+        validate_tolerance(
+            tolerance, subject_aliases=["our"]
+        )
+    assert exc.value.kind in (
+        "missing_comparator",
+        "comparator_bound_to_wrong_subject",
+    )
+
+
+def test_comparator_max_does_not_match_inside_maximal():
+    tolerance = {
+        "metric": "rmsd",
+        "op": "<",
+        "value": 0.5,
+        "source_span": (
+            "our maximally tuned method's rmsd is 0.5 on one cherry "
+            "picked input"
+        ),
+    }
+    with pytest.raises(ValidationError) as exc:
+        validate_tolerance(
+            tolerance, subject_aliases=["our"]
+        )
+    assert exc.value.kind in (
+        "missing_comparator",
+        "comparator_bound_to_wrong_subject",
+    )
+
+
+def test_markdown_table_row_with_separate_cells_rejects_wrong_binding():
+    """Codex F-PR4-CR1b: a markdown table row containing both a
+    baseline and ours cells must NOT pass for `ours < 0.5` when
+    the `< 0.5` lives in the baseline cell.
+
+    The pipe character is treated as a cell boundary so each cell
+    is its own local context.
+    """
+    tolerance = {
+        "metric": "rmsd",
+        "op": "<",
+        "value": 0.5,
+        # Each pipe-separated cell is one local context. The < 0.5
+        # is in the baseline cell; the 'ours' alias is in a
+        # different cell. Local-binding should reject.
+        "source_span": "| baseline | rmsd | < 0.5 | ours | rmsd | 0.42 |",
+    }
+    with pytest.raises(ValidationError) as exc:
+        validate_tolerance(tolerance, subject_aliases=["ours"])
+    assert exc.value.kind == "comparator_bound_to_wrong_subject"
+
+
+def test_markdown_table_row_with_clean_binding_in_one_cell_passes():
+    """Counterpart: when the comparator, bound, metric, and subject
+    are all in the same cell, the validation passes."""
+    tolerance = {
+        "metric": "rmsd",
+        "op": "<",
+        "value": 0.5,
+        "source_span": "| our method's rmsd is less than 0.5 |",
+    }
+    validate_tolerance(
+        tolerance, subject_aliases=["our method"]
+    )
+
+
+def test_subject_alias_with_trailing_punctuation_anchors_correctly():
+    """Codex F-PR4-CR2b: subject aliases ending in non-word chars
+    (e.g. ``ABRA-2.0``) should still anchor.
+
+    The matcher uses ``(?<!\\w)`` / ``(?!\\w)`` rather than ``\\b``
+    so the boundary works regardless of the alias's last character.
+    """
+    tolerance = {
+        "metric": "rmsd",
+        "op": "<",
+        "value": 0.5,
+        "source_span": "ABRA-2.0's rmsd is less than 0.5 on the suite",
+    }
+    # Should NOT raise.
+    validate_tolerance(
+        tolerance, subject_aliases=["ABRA-2.0", "ours"]
+    )
+
+
 def test_multi_sentence_span_with_clean_sentence_passes():
     """Spans often quote multiple sentences. As long as ONE sentence
     has all four (metric, comparator, value, subject), the tolerance

@@ -60,6 +60,9 @@ both sides (e.g. ``ours 0.42 vs baseline 0.61`` or ``improves by \
 "baseline error is below 0.5; our method reports 0.42", do NOT emit \
 ``ours < 0.5`` — the comparator ``below 0.5`` is bound to the \
 *baseline*, not to your subject.
+- Extracting when the source's subject is ambiguous. If the source \
+only says "the method" or "the system" and you cannot tie that \
+phrase to the supplied artifact's named system, emit no tolerance.
 - Extracting from a different paper / repo / artifact than the one \
 supplied. Bibliography citations are out of scope.
 
