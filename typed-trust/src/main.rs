@@ -40,6 +40,8 @@ struct SkipReason {
 enum Format {
     Json,
     Markdown,
+    Html,
+    Mermaid,
 }
 
 fn main() -> ExitCode {
@@ -139,6 +141,8 @@ fn main() -> ExitCode {
     match format {
         Format::Json => emit_json(path, &now, &reports, &skipped),
         Format::Markdown => emit_markdown(path, &reports, &skipped),
+        Format::Html => emit_html(path, &reports, &skipped),
+        Format::Mermaid => emit_mermaid(&reports),
     }
 }
 
@@ -170,8 +174,12 @@ fn parse_format_value(v: &str) -> Option<Format> {
     match v {
         "json" => Some(Format::Json),
         "md" | "markdown" => Some(Format::Markdown),
+        "html" => Some(Format::Html),
+        "mermaid" => Some(Format::Mermaid),
         other => {
-            eprintln!("error: unknown --format {other:?} (expected json or md)");
+            eprintln!(
+                "error: unknown --format {other:?} (expected json, md, html, or mermaid)"
+            );
             None
         }
     }
@@ -184,6 +192,8 @@ fn usage() {
     eprintln!("applies the renderer-aux layer, and emits one of:");
     eprintln!("  --format json (default) — one JSON bundle for tools / CI gates");
     eprintln!("  --format md             — markdown rollup for humans");
+    eprintln!("  --format html           — self-contained HTML with Mermaid graph");
+    eprintln!("  --format mermaid        — just the Mermaid attestation-graph source");
     eprintln!();
     eprintln!("Manifests with a top-level `include:` list have each included file");
     eprintln!("merged in before translation.");
@@ -332,4 +342,87 @@ fn emit_markdown(
     }
 
     ExitCode::SUCCESS
+}
+
+fn emit_html(
+    path: &str,
+    reports: &[serde_json::Value],
+    skipped: &[SkipReason],
+) -> ExitCode {
+    let mut counts = (0usize, 0usize, 0usize);
+    for r in reports {
+        match r["status"].as_str() {
+            Some("current") => counts.0 += 1,
+            Some("contested") => counts.1 += 1,
+            Some("superseded") => counts.2 += 1,
+            _ => {}
+        }
+    }
+
+    println!("<!DOCTYPE html>");
+    println!("<html lang=\"en\"><head><meta charset=\"utf-8\">");
+    println!("<title>Typed Trust rollup</title>");
+    println!("<style>body{{font-family:-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;max-width:1100px;margin:2em auto;padding:0 1em;line-height:1.55;color:#2c3e50;background:#fafbfc;}}h1{{border-bottom:2px solid #2c3e50;padding-bottom:0.4em;}}h2{{margin-top:2.5em;border-bottom:1px solid #ccc;padding-bottom:0.3em;}}.rollup{{padding:1em;background:#fff;border-radius:4px;border:1px solid #dee2e6;}}.report{{margin:2em 0;padding-bottom:2em;border-bottom:1px solid #dee2e6;}}.skipped{{background:#f8f9fa;padding:1em;border-radius:4px;}}</style>");
+    println!("</head><body>");
+    println!("<h1>Typed Trust rollup</h1>");
+    println!("<div class=\"rollup\">");
+    println!("<p><strong>Manifest:</strong> <code>{}</code></p>", html_escape(path));
+    println!(
+        "<p><strong>Reports:</strong> {} ({} current, {} contested, {} superseded)</p>",
+        reports.len(),
+        counts.0,
+        counts.1,
+        counts.2
+    );
+    println!(
+        "<p><strong>Skipped:</strong> {} (out of scope or translation error)</p>",
+        skipped.len()
+    );
+    println!("</div>");
+
+    for r in reports {
+        println!("<div class=\"report\">");
+        println!("{}", typed_trust::render_html(r));
+        println!("</div>");
+    }
+
+    if !skipped.is_empty() {
+        println!("<h2>Skipped</h2>");
+        println!("<div class=\"skipped\"><ul>");
+        for s in skipped {
+            println!(
+                "<li><code>{}</code> — {}</li>",
+                html_escape(&s.id),
+                html_escape(&s.reason)
+            );
+        }
+        println!("</ul></div>");
+    }
+
+    println!("</body></html>");
+    ExitCode::SUCCESS
+}
+
+fn emit_mermaid(reports: &[serde_json::Value]) -> ExitCode {
+    // For multi-report manifests, emit one Mermaid diagram per report
+    // separated by a delimiter comment. For single-report runs the
+    // output is just the diagram.
+    for (i, r) in reports.iter().enumerate() {
+        if i > 0 {
+            println!();
+            println!(
+                "%% --- next report: {} ---",
+                r["claim"].as_str().unwrap_or("?")
+            );
+        }
+        println!("{}", typed_trust::render_mermaid_graph(r));
+    }
+    ExitCode::SUCCESS
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }

@@ -35,6 +35,8 @@ pub mod translate;
 pub mod synthesize;
 pub mod render;
 pub mod human_render;
+pub mod graph;
+pub mod html_render;
 
 pub use ids::*;
 pub use identity::*;
@@ -50,3 +52,5 @@ pub use synthesize::{
 };
 pub use render::{render_augmented, RenderInput};
 pub use human_render::render_markdown;
+pub use graph::render_mermaid_graph;
+pub use html_render::render_html;

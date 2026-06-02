@@ -1,0 +1,366 @@
+//! Self-contained HTML report rendering with an embedded Mermaid
+//! attestation graph.
+//!
+//! Produces a single HTML document with inline CSS and a Mermaid
+//! script tag pulled from a CDN, so the output can be opened directly
+//! in any modern browser without local install or build step.
+
+use serde_json::Value;
+
+use crate::graph::render_mermaid_graph;
+
+const CSS: &str = r#"
+* { box-sizing: border-box; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    max-width: 1100px;
+    margin: 2em auto;
+    padding: 0 1em;
+    line-height: 1.55;
+    color: #2c3e50;
+    background: #fafbfc;
+}
+h1 { border-bottom: 2px solid #2c3e50; padding-bottom: 0.4em; }
+h2 { margin-top: 2.5em; border-bottom: 1px solid #ccc; padding-bottom: 0.3em; }
+h3 { margin: 1.2em 0 0.4em; }
+.status {
+    display: inline-block; padding: 0.15em 0.6em; border-radius: 3px;
+    font-weight: 600; font-size: 0.95em;
+}
+.status-current { background: #d4edda; color: #155724; }
+.status-contested { background: #fff3cd; color: #856404; }
+.status-superseded { background: #e2e3e5; color: #383d41; }
+.criterion {
+    border-left: 4px solid #ccc; padding: 0.75em 1em;
+    margin: 1em 0; background: #fff;
+    border-radius: 0 4px 4px 0;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+}
+.criterion.pass { border-left-color: #28a745; }
+.criterion.fail { border-left-color: #dc3545; }
+.criterion.contested { border-left-color: #ffc107; }
+.criterion.not-assessed { border-left-color: #6c757d; }
+.challenge {
+    background: #fff3cd; padding: 1em 1.2em; border-radius: 4px;
+    margin: 1em 0; border-left: 4px solid #856404;
+}
+.gap {
+    background: #f8d7da; padding: 0.6em 1em; border-radius: 4px;
+    margin: 0.6em 0; border-left: 4px solid #dc3545;
+}
+.mermaid {
+    background: #fff; padding: 2em; border: 1px solid #dee2e6;
+    border-radius: 4px; margin: 1em 0; overflow-x: auto;
+}
+code, .tolerance {
+    background: #f0f0f0; padding: 2px 6px; border-radius: 2px;
+    font-family: "SF Mono", Monaco, Consolas, monospace; font-size: 0.92em;
+}
+.detail-row { margin: 0.35em 0; }
+.detail-label { font-weight: 600; color: #495057; }
+.result-pass { color: #28a745; font-weight: 600; }
+.result-fail { color: #dc3545; font-weight: 600; }
+.result-na { color: #6c757d; font-style: italic; }
+ul { padding-left: 1.5em; }
+.backing-list li { margin: 0.4em 0; }
+"#;
+
+const MERMAID_SCRIPT: &str = r#"<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true, theme: 'default' });
+</script>"#;
+
+/// Render the augmented TrustReport JSON as a self-contained HTML
+/// document.
+pub fn render_html(augmented_json: &Value) -> String {
+    let mut out = String::new();
+
+    let claim = augmented_json["claim"].as_str().unwrap_or("(unknown)");
+    let status = augmented_json["status"].as_str().unwrap_or("(unknown)");
+
+    out.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n");
+    out.push_str("  <meta charset=\"utf-8\">\n");
+    out.push_str(&format!(
+        "  <title>Trust Report: {}</title>\n",
+        escape_html(claim)
+    ));
+    out.push_str(&format!("  <style>{CSS}</style>\n"));
+    out.push_str(&format!("  {MERMAID_SCRIPT}\n"));
+    out.push_str("</head>\n<body>\n");
+
+    out.push_str("  <h1>Trust Report</h1>\n");
+    out.push_str(&format!(
+        "  <p><strong>Claim:</strong> <code>{}</code></p>\n",
+        escape_html(claim)
+    ));
+    out.push_str(&format!(
+        "  <p><strong>Status:</strong> <span class=\"status status-{}\">{}</span></p>\n",
+        status,
+        format_status(status)
+    ));
+
+    // Attestation graph (Mermaid).
+    out.push_str("  <h2>Attestation graph</h2>\n");
+    out.push_str("  <div class=\"mermaid\">\n");
+    out.push_str(&render_mermaid_graph(augmented_json));
+    out.push_str("  </div>\n");
+
+    // Criteria.
+    if let Some(criteria) = augmented_json["criteria"].as_array() {
+        if !criteria.is_empty() {
+            out.push_str("  <h2>Criteria</h2>\n");
+            for c in criteria {
+                render_criterion(&mut out, c);
+            }
+        }
+    }
+
+    // Challenges (filtered to kind == challenge).
+    if let Some(events) = augmented_json
+        .pointer("/_graph/review_events")
+        .and_then(|v| v.as_array())
+    {
+        let challenges: Vec<&Value> = events
+            .iter()
+            .filter(|e| e["kind"]["type"].as_str() == Some("challenge"))
+            .collect();
+        if !challenges.is_empty() {
+            out.push_str("  <h2>Active challenges</h2>\n");
+            for c in challenges {
+                render_challenge(&mut out, c);
+            }
+        }
+    }
+
+    // Gaps.
+    if let Some(gaps) = augmented_json["gaps"].as_array() {
+        if !gaps.is_empty() {
+            out.push_str("  <h2>Gaps</h2>\n");
+            for g in gaps {
+                render_gap(&mut out, g);
+            }
+        }
+    }
+
+    // Backing claims summary.
+    if let Some(backing) = augmented_json
+        .pointer("/_graph/backing_reports")
+        .and_then(|v| v.as_array())
+    {
+        if !backing.is_empty() {
+            out.push_str("  <h2>Backing claims</h2>\n  <ul class=\"backing-list\">\n");
+            for b in backing {
+                let bclaim = b["claim"].as_str().unwrap_or("?");
+                let bstatus = b["status"].as_str().unwrap_or("?");
+                let n_crit = b["criteria"]
+                    .as_array()
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                out.push_str(&format!(
+                    "    <li><code>{}</code> — <span class=\"status status-{}\">{}</span> ({} criteria)</li>\n",
+                    escape_html(bclaim),
+                    bstatus,
+                    format_status(bstatus),
+                    n_crit,
+                ));
+            }
+            out.push_str("  </ul>\n");
+        }
+    }
+
+    out.push_str("</body>\n</html>\n");
+    out
+}
+
+fn render_criterion(out: &mut String, c: &Value) {
+    let name = c["name"].as_str().unwrap_or("(unnamed)");
+    let result_type = c["result"]["value"]["type"].as_str().unwrap_or("?");
+    let crit_status = c["result"]["criterion_status"]
+        .as_str()
+        .unwrap_or("current");
+
+    let class_name = match (result_type, crit_status) {
+        (_, "contested") => "contested",
+        (_, "superseded") => "not-assessed",
+        ("pass", _) => "pass",
+        ("fail", _) => "fail",
+        _ => "not-assessed",
+    };
+
+    out.push_str(&format!(
+        "  <div class=\"criterion {class_name}\">\n    <h3>{}</h3>\n",
+        escape_html(name)
+    ));
+
+    out.push_str(&format!(
+        "    <div class=\"detail-row\"><span class=\"detail-label\">Result:</span> {}</div>\n",
+        format_result(result_type, c)
+    ));
+    out.push_str(&format!(
+        "    <div class=\"detail-row\"><span class=\"detail-label\">Render status:</span> <span class=\"status status-{crit_status}\">{}</span></div>\n",
+        format_status(crit_status)
+    ));
+
+    if let Some(observed) = c["result"]["observed_value"].as_f64() {
+        out.push_str(&format!(
+            "    <div class=\"detail-row\"><span class=\"detail-label\">Observed:</span> <code>{observed}</code></div>\n"
+        ));
+    }
+
+    if let Some(tol) = c["tolerance"].as_object() {
+        let metric = tol.get("metric").and_then(|v| v.as_str()).unwrap_or("?");
+        let op = tol.get("op").and_then(|v| v.as_str()).unwrap_or("?");
+        let value = tol
+            .get("value")
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "?".into());
+        let against = tol
+            .get("against")
+            .and_then(|v| v.as_str())
+            .map(|s| format!(" vs <code>{}</code>", escape_html(s)))
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "    <div class=\"detail-row\"><span class=\"detail-label\">Tolerance:</span> <span class=\"tolerance\">{} {} {}</span>{against}</div>\n",
+            escape_html(metric),
+            escape_html(op),
+            value,
+        ));
+    } else {
+        out.push_str(
+            "    <div class=\"detail-row\"><span class=\"detail-label\">Tolerance:</span> <em>(prose-only)</em></div>\n",
+        );
+    }
+
+    if let Some(contested_by) = c["result"]["contested_by"].as_array() {
+        if !contested_by.is_empty() {
+            out.push_str(
+                "    <div class=\"detail-row\"><span class=\"detail-label\">Contested by:</span>\n      <ul>\n",
+            );
+            for e in contested_by {
+                if let Some(s) = e.as_str() {
+                    out.push_str(&format!(
+                        "        <li><code>{}</code></li>\n",
+                        escape_html(s)
+                    ));
+                }
+            }
+            out.push_str("      </ul>\n    </div>\n");
+        }
+    }
+
+    out.push_str("  </div>\n");
+}
+
+fn render_challenge(out: &mut String, e: &Value) {
+    let id = e["id"].as_str().unwrap_or("?");
+    let by_name = e["by"]["name"].as_str().unwrap_or("?");
+    let by_kind = e["by"]["kind"].as_str().unwrap_or("?");
+    let rationale = e["rationale"].as_str().unwrap_or("");
+    let category = e["kind"]["data"]["category"]["type"]
+        .as_str()
+        .unwrap_or("?");
+    let protocol = e["protocol"].as_str();
+
+    out.push_str("  <div class=\"challenge\">\n");
+    out.push_str(&format!("    <h3><code>{}</code></h3>\n", escape_html(id)));
+    out.push_str(&format!(
+        "    <div class=\"detail-row\"><span class=\"detail-label\">Category:</span> {}</div>\n",
+        escape_html(category)
+    ));
+    out.push_str(&format!(
+        "    <div class=\"detail-row\"><span class=\"detail-label\">By:</span> {} ({})</div>\n",
+        escape_html(by_name),
+        escape_html(by_kind)
+    ));
+
+    if let Some(details) = e["by"]["details"].as_array() {
+        for d in details {
+            let k = d["key"].as_str().unwrap_or("?");
+            let v = d["value"].as_str().unwrap_or("?");
+            out.push_str(&format!(
+                "    <div class=\"detail-row\" style=\"margin-left:1em\">{}: <code>{}</code></div>\n",
+                escape_html(k),
+                escape_html(v)
+            ));
+        }
+    }
+
+    if let Some(p) = protocol {
+        out.push_str(&format!(
+            "    <div class=\"detail-row\"><span class=\"detail-label\">Protocol:</span> <code>{}</code></div>\n",
+            escape_html(p)
+        ));
+    }
+
+    if let Some(backed) = e["kind"]["data"]["backed_by"].as_str() {
+        out.push_str(&format!(
+            "    <div class=\"detail-row\"><span class=\"detail-label\">Backed by:</span> <code>{}</code></div>\n",
+            escape_html(backed)
+        ));
+    }
+
+    out.push_str(&format!(
+        "    <div class=\"detail-row\"><span class=\"detail-label\">Rationale:</span> {}</div>\n",
+        escape_html(rationale)
+    ));
+    out.push_str("  </div>\n");
+}
+
+fn render_gap(out: &mut String, g: &Value) {
+    let desc = g["description"].as_str().unwrap_or("?");
+    out.push_str("  <div class=\"gap\">\n");
+    out.push_str(&format!("    <p>{}</p>\n", escape_html(desc)));
+    if let Some(would) = g["would_satisfy"].as_array() {
+        if !would.is_empty() {
+            out.push_str("    <ul>\n");
+            for w in would {
+                if let Some(s) = w.as_str() {
+                    out.push_str(&format!(
+                        "      <li>Would be satisfied by: <em>{}</em></li>\n",
+                        escape_html(s)
+                    ));
+                }
+            }
+            out.push_str("    </ul>\n");
+        }
+    }
+    out.push_str("  </div>\n");
+}
+
+fn format_status(s: &str) -> &'static str {
+    match s {
+        "current" => "Current ✓",
+        "contested" => "Contested ⚠",
+        "superseded" => "Superseded ✗",
+        _ => "Unknown",
+    }
+}
+
+fn format_result(t: &str, c: &Value) -> String {
+    match t {
+        "pass" => "<span class=\"result-pass\">Pass ✓</span>".into(),
+        "fail" => "<span class=\"result-fail\">Fail ✗</span>".into(),
+        "not_assessed" => {
+            let reason = c["result"]["value"]["data"]["reason"]
+                .as_str()
+                .unwrap_or("");
+            format!("<span class=\"result-na\">Not assessed — {}</span>", escape_html(reason))
+        }
+        "partial" => {
+            let detail = c["result"]["value"]["data"]["detail"]
+                .as_str()
+                .unwrap_or("");
+            format!("<span class=\"result-na\">Partial — {}</span>", escape_html(detail))
+        }
+        "not_applicable" => "<span class=\"result-na\">Not applicable</span>".into(),
+        other => escape_html(other),
+    }
+}
+
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
