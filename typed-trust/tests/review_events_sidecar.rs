@@ -33,6 +33,7 @@ fn endorse_event() -> ManifestReviewEvent {
         challenge: None,
         target: None,
         supersede: None,
+        promote_from_extracted: None,
         protocol: None,
     }
 }
@@ -439,6 +440,7 @@ fn supersede_event() -> ManifestReviewEvent {
         supersede: Some(ManifestSupersedeBlock {
             successor: "att-successor-id".into(),
         }),
+        promote_from_extracted: None,
         protocol: None,
     }
 }

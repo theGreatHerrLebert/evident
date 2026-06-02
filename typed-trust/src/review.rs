@@ -40,6 +40,19 @@ pub enum ReviewKind {
         #[serde(skip_serializing_if = "Option::is_none")]
         backed_by: Option<ClaimId>,
     },
+    /// Phase 5 PR3: human-curator promotion of an extracted claim
+    /// from `tier: research` to `tier: ci` or `release`. Distinct
+    /// from `Endorse` so the audit trail keeps "supported" separate
+    /// from "lifecycle transition." The validator
+    /// `validate_promotion_rules` enforces the five Phase 5
+    /// invariants (gate-on-tier, matching, ordering, uniqueness,
+    /// Endorse-independence) at translate time.
+    PromoteFromExtracted {
+        target_claim: ClaimId,
+        from_tier: String,
+        to_tier: String,
+        reviewed_extraction_sha: String,
+    },
 }
 
 /// What a ReviewEvent targets. Note the F-PR14 split:
