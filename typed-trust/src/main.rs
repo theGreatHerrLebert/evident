@@ -26,9 +26,11 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use typed_trust::translate::{
-    parse_manifest_file, translate_claim, translate_evidence, translate_tolerances, ManifestClaim,
-    ManifestLastVerified, TranslationContext,
+    parse_manifest_file, translate_claim, translate_evidence, translate_review_event,
+    translate_tolerances, ManifestClaim, ManifestLastVerified, ReviewEventSidecar,
+    TranslationContext,
 };
+use typed_trust::review::ReviewEvent;
 use typed_trust::*;
 
 #[derive(serde::Serialize)]
@@ -58,6 +60,7 @@ fn main() -> ExitCode {
     };
     let format = parsed.format;
     let sidecar_path = parsed.sidecar;
+    let review_sidecar_path = parsed.review_sidecar;
     let positional = parsed.positional;
 
     let Some(path) = positional.first() else {
@@ -92,6 +95,28 @@ fn main() -> ExitCode {
             }
         }
     }
+
+    // Load and group the review-events sidecar by claim_id. Any event
+    // referencing a claim id not present in the manifest is a hard
+    // error — silently dropping would mask drift between the agent's
+    // run and the current manifest, leaving orphan attestations that
+    // cannot be interpreted. Same posture as the round-11 unmatched-
+    // filter fix.
+    let known_claim_ids: std::collections::HashSet<String> =
+        claims.iter().map(|c| c.claim.id.clone()).collect();
+    let (review_events_by_claim, review_event_aux): (
+        HashMap<String, Vec<ReviewEvent>>,
+        HashMap<String, serde_json::Value>,
+    ) = match review_sidecar_path.as_deref() {
+        Some(path) => match load_review_sidecar(path, &known_claim_ids) {
+            Ok(pair) => pair,
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => (HashMap::new(), HashMap::new()),
+    };
 
     let now: Timestamp = "1970-01-01T00:00:00Z".into();
 
@@ -157,24 +182,35 @@ fn main() -> ExitCode {
             }
         };
 
-        // CLI has no review events, so no cycle set is needed.
+        let events: &[ReviewEvent] = review_events_by_claim
+            .get(&mc.id)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
+
         let report = synthesize(
             ClaimId::new(&mc.id),
             criteria,
             &evidence,
-            &[],
+            events,
             &[],
             &std::collections::HashSet::new(),
             now.clone(),
         );
 
-        let augmented = render_augmented(&RenderInput {
+        let mut augmented = render_augmented(&RenderInput {
             report: &report,
             evidence: &evidence,
-            related_events: &[],
+            related_events: events,
             backing_reports: &[],
         cycle_contested: &std::collections::HashSet::new(),
         });
+
+        // Decorate _graph.review_events entries with their structured
+        // submit_review payload (checks/observed_value/tolerance/
+        // failure_reason) from the sidecar. ReviewEvent itself doesn't
+        // carry these fields — they round-trip via the aux map keyed
+        // by event_id.
+        decorate_with_aux(&mut augmented, &review_event_aux);
 
         reports.push(augmented);
     }
@@ -219,6 +255,7 @@ struct ParsedArgs {
     format: Format,
     positional: Vec<String>,
     sidecar: Option<String>,
+    review_sidecar: Option<String>,
 }
 
 fn parse_args(args: &[String]) -> Option<ParsedArgs> {
@@ -229,6 +266,7 @@ fn parse_args(args: &[String]) -> Option<ParsedArgs> {
     let mut format = Format::Json;
     let mut positional: Vec<String> = Vec::new();
     let mut sidecar: Option<String> = None;
+    let mut review_sidecar: Option<String> = None;
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
         if let Some(value) = arg.strip_prefix("--format=") {
@@ -247,6 +285,14 @@ fn parse_args(args: &[String]) -> Option<ParsedArgs> {
                 return None;
             };
             sidecar = Some(value.clone());
+        } else if let Some(value) = arg.strip_prefix("--review-events-sidecar=") {
+            review_sidecar = Some(value.to_string());
+        } else if arg == "--review-events-sidecar" {
+            let Some(value) = iter.next() else {
+                eprintln!("error: --review-events-sidecar requires a path");
+                return None;
+            };
+            review_sidecar = Some(value.clone());
         } else {
             positional.push(arg.clone());
         }
@@ -255,6 +301,7 @@ fn parse_args(args: &[String]) -> Option<ParsedArgs> {
         format,
         positional,
         sidecar,
+        review_sidecar,
     })
 }
 
@@ -275,7 +322,7 @@ fn parse_format_value(v: &str) -> Option<Format> {
 
 fn usage() {
     eprintln!(
-        "usage: typed-trust [--format json|md|html|mermaid] \\\n               [--last-verified-sidecar <path>] <manifest.yaml> [claim_id]"
+        "usage: typed-trust [--format json|md|html|mermaid] \\\n               [--last-verified-sidecar <path>] \\\n               [--review-events-sidecar <path>] <manifest.yaml> [claim_id]"
     );
     eprintln!();
     eprintln!("Translates each measurement-class claim, synthesizes a TrustReport,");
@@ -289,6 +336,13 @@ fn usage() {
     eprintln!("    overlay sidecar JSON entries onto each claim's last_verified field");
     eprintln!("    before translation. Sidecar shape: {{claim_id: {{commit, date, value,");
     eprintln!("    corpus_sha}}}}. Matches workflow/evident.py's existing convention.");
+    eprintln!();
+    eprintln!("  --review-events-sidecar <path>");
+    eprintln!("    inject ReviewEvents from an append-only sidecar. Shape:");
+    eprintln!("    {{events: [ {{event_id, claim_id, kind, author, rationale,");
+    eprintln!("    timestamp, ...}} ]}}. Endorse / Dissent only in Phase 2a;");
+    eprintln!("    `kind: challenge` is rejected pending Phase 2b. Any event whose");
+    eprintln!("    `claim_id` isn't in the manifest causes exit 1.");
     eprintln!();
     eprintln!("Manifests with a top-level `include:` list have each included file");
     eprintln!("merged in before translation.");
@@ -539,4 +593,125 @@ fn load_sidecar(path: &str) -> Result<HashMap<String, ManifestLastVerified>, Str
         .map_err(|e| format!("error reading sidecar {path}: {e}"))?;
     serde_json::from_str(&bytes)
         .map_err(|e| format!("error parsing sidecar {path}: {e}"))
+}
+
+/// Load a review-events sidecar (`{events: [...]}` shape) and group
+/// entries by `claim_id`. Any entry referencing a claim id not in the
+/// manifest is a hard error — see comment at call site.
+///
+/// Returns:
+/// - `events_by_claim`: ReviewEvents grouped by claim id, fed to
+///   synthesize() and render_augmented().
+/// - `aux_by_event_id`: structured submit_review payload (checks,
+///   observed_value, tolerance, failure_reason) keyed by event_id.
+///   ReviewEvent doesn't carry these fields directly; they're
+///   decorated onto the rendered `_graph.review_events` entries by
+///   `decorate_with_aux`.
+fn load_review_sidecar(
+    path: &str,
+    known_claim_ids: &std::collections::HashSet<String>,
+) -> Result<
+    (
+        HashMap<String, Vec<ReviewEvent>>,
+        HashMap<String, serde_json::Value>,
+    ),
+    String,
+> {
+    let bytes = fs::read_to_string(path)
+        .map_err(|e| format!("error reading review-events sidecar {path}: {e}"))?;
+    let parsed: ReviewEventSidecar = serde_json::from_str(&bytes)
+        .map_err(|e| format!("error parsing review-events sidecar {path}: {e}"))?;
+
+    // Reject any sidecar event whose claim_id isn't in the manifest
+    // before doing any translation work.
+    let mut unknown: Vec<String> = parsed
+        .events
+        .iter()
+        .map(|e| e.claim_id.clone())
+        .filter(|cid| !known_claim_ids.contains(cid))
+        .collect();
+    unknown.sort();
+    unknown.dedup();
+    if !unknown.is_empty() {
+        return Err(format!(
+            "error: review-events sidecar {path} references {} unknown claim id(s): {}",
+            unknown.len(),
+            unknown.join(", ")
+        ));
+    }
+
+    let mut grouped: HashMap<String, Vec<ReviewEvent>> = HashMap::new();
+    let mut aux: HashMap<String, serde_json::Value> = HashMap::new();
+    for entry in &parsed.events {
+        let event = translate_review_event(entry)
+            .map_err(|e| format!("error translating review event in {path}: {e}"))?;
+        let event_id_str = event.id.as_str().to_string();
+        grouped
+            .entry(entry.claim_id.clone())
+            .or_default()
+            .push(event);
+        let aux_value = aux_value_for(entry);
+        if let serde_json::Value::Object(ref m) = aux_value {
+            if !m.is_empty() {
+                aux.insert(event_id_str, aux_value);
+            }
+        }
+    }
+    Ok((grouped, aux))
+}
+
+/// Build the JSON aux block (checks / observed_value / tolerance /
+/// failure_reason) for one sidecar entry. Empty fields are omitted so
+/// the renderer doesn't print empty rows.
+fn aux_value_for(entry: &typed_trust::translate::ManifestReviewEvent) -> serde_json::Value {
+    let mut m = serde_json::Map::new();
+    if let Some(c) = &entry.checks {
+        m.insert("checks".into(), c.clone());
+    }
+    if let Some(o) = &entry.observed_value {
+        m.insert("observed_value".into(), serde_json::Value::String(o.clone()));
+    }
+    if let Some(t) = &entry.tolerance {
+        m.insert("tolerance".into(), serde_json::Value::String(t.clone()));
+    }
+    if let Some(fr) = &entry.failure_reason {
+        m.insert(
+            "failure_reason".into(),
+            serde_json::Value::String(fr.clone()),
+        );
+    }
+    serde_json::Value::Object(m)
+}
+
+/// Walk the augmented JSON's `_graph.review_events` array (if present)
+/// and merge the matching aux fields from `aux_by_event_id` onto each
+/// event entry, looked up by `id`. Renderers read these fields
+/// top-level on the event (`e["checks"]` etc.).
+fn decorate_with_aux(
+    augmented: &mut serde_json::Value,
+    aux_by_event_id: &HashMap<String, serde_json::Value>,
+) {
+    let Some(events) = augmented
+        .pointer_mut("/_graph/review_events")
+        .and_then(|v| v.as_array_mut())
+    else {
+        return;
+    };
+    for event in events.iter_mut() {
+        let Some(id) = event.get("id").and_then(|v| v.as_str()).map(String::from) else {
+            continue;
+        };
+        let Some(aux) = aux_by_event_id.get(&id) else {
+            continue;
+        };
+        let Some(aux_obj) = aux.as_object() else {
+            continue;
+        };
+        let Some(event_obj) = event.as_object_mut() else {
+            continue;
+        };
+        for (k, v) in aux_obj {
+            event_obj.insert(k.clone(), v.clone());
+        }
+    }
 }

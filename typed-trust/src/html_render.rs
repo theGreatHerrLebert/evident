@@ -47,6 +47,13 @@ h3 { margin: 1.2em 0 0.4em; }
     background: #fff3cd; padding: 1em 1.2em; border-radius: 4px;
     margin: 1em 0; border-left: 4px solid #856404;
 }
+.review-event {
+    padding: 0.75em 1em; border-radius: 4px; margin: 0.6em 0;
+    background: #fff; border-left: 4px solid #ccc;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+}
+.review-event.endorsement { border-left-color: #28a745; background: #f1f9f3; }
+.review-event.dissent { border-left-color: #e67e22; background: #fef5ec; }
 .gap {
     background: #f8d7da; padding: 0.6em 1em; border-radius: 4px;
     margin: 0.6em 0; border-left: 4px solid #dc3545;
@@ -151,6 +158,33 @@ pub fn render_html_fragment(augmented_json: &Value) -> String {
             out.push_str("  <h2>Active challenges</h2>\n");
             for c in challenges {
                 render_challenge(&mut out, c);
+            }
+        }
+
+        // Phase 2a: Endorse and Dissent events are surfaced as
+        // recorded reviewer activity. Dissent is framed as "evidence
+        // found insufficient" — it does not flip Pass to Fail; only
+        // backed Challenges do (Phase 2b).
+        let endorsements: Vec<&Value> = events
+            .iter()
+            .filter(|e| e["kind"]["type"].as_str() == Some("endorse"))
+            .collect();
+        if !endorsements.is_empty() {
+            out.push_str("  <h2>Reviewer endorsements</h2>\n");
+            for e in endorsements {
+                render_review(&mut out, e, "endorses", "endorsement");
+            }
+        }
+        let dissents: Vec<&Value> = events
+            .iter()
+            .filter(|e| e["kind"]["type"].as_str() == Some("dissent"))
+            .collect();
+        if !dissents.is_empty() {
+            out.push_str(
+                "  <h2>Reviewer dissents <small>(evidence found insufficient)</small></h2>\n",
+            );
+            for e in dissents {
+                render_review(&mut out, e, "dissents — evidence insufficient", "dissent");
             }
         }
     }
@@ -318,6 +352,91 @@ fn render_challenge(out: &mut String, e: &Value) {
         out.push_str(&format!(
             "    <div class=\"detail-row\"><span class=\"detail-label\">Backed by:</span> <code>{}</code></div>\n",
             escape_html(backed)
+        ));
+    }
+
+    out.push_str(&format!(
+        "    <div class=\"detail-row\"><span class=\"detail-label\">Rationale:</span> {}</div>\n",
+        escape_html(rationale)
+    ));
+    out.push_str("  </div>\n");
+}
+
+/// Render an Endorse/Dissent ReviewEvent (Phase 2a). `verb` is the
+/// human-readable stance label; `kind_class` selects the CSS class
+/// (`endorsement` or `dissent`).
+fn render_review(out: &mut String, e: &Value, verb: &str, kind_class: &str) {
+    let id = e["id"].as_str().unwrap_or("?");
+    let by_name = e["by"]["name"].as_str().unwrap_or("?");
+    let by_kind = e["by"]["kind"].as_str().unwrap_or("?");
+    let rationale = e["rationale"].as_str().unwrap_or("");
+    let at = e["at"].as_str().unwrap_or("");
+
+    out.push_str(&format!(
+        "  <div class=\"review-event {kind_class}\">\n"
+    ));
+    out.push_str(&format!(
+        "    <h3><code>{}</code></h3>\n",
+        escape_html(id)
+    ));
+    out.push_str(&format!(
+        "    <div class=\"detail-row\"><span class=\"detail-label\">{}:</span> {} ({})</div>\n",
+        escape_html(verb),
+        escape_html(by_name),
+        escape_html(by_kind)
+    ));
+    if !at.is_empty() {
+        out.push_str(&format!(
+            "    <div class=\"detail-row\"><span class=\"detail-label\">At:</span> <code>{}</code></div>\n",
+            escape_html(at)
+        ));
+    }
+
+    if let Some(details) = e["by"]["details"].as_array() {
+        for d in details {
+            let k = d["key"].as_str().unwrap_or("?");
+            let v = d["value"].as_str().unwrap_or("?");
+            out.push_str(&format!(
+                "    <div class=\"detail-row\" style=\"margin-left:1em\">{}: <code>{}</code></div>\n",
+                escape_html(k),
+                escape_html(v)
+            ));
+        }
+    }
+
+    // Structured submit_review payload (Phase 2a), decorated onto
+    // event entries by main.rs::decorate_with_aux.
+    if let Some(checks) = e.get("checks").and_then(|v| v.as_object()) {
+        out.push_str("    <div class=\"detail-row\"><span class=\"detail-label\">Checks:</span> ");
+        let pairs: Vec<String> = checks
+            .iter()
+            .map(|(k, v)| {
+                format!(
+                    "<code>{}={}</code>",
+                    escape_html(k),
+                    escape_html(v.as_str().unwrap_or("?"))
+                )
+            })
+            .collect();
+        out.push_str(&pairs.join(", "));
+        out.push_str("</div>\n");
+    }
+    if let Some(obs) = e.get("observed_value").and_then(|v| v.as_str()) {
+        out.push_str(&format!(
+            "    <div class=\"detail-row\"><span class=\"detail-label\">Observed value:</span> <code>{}</code></div>\n",
+            escape_html(obs)
+        ));
+    }
+    if let Some(tol) = e.get("tolerance").and_then(|v| v.as_str()) {
+        out.push_str(&format!(
+            "    <div class=\"detail-row\"><span class=\"detail-label\">Tolerance:</span> <code>{}</code></div>\n",
+            escape_html(tol)
+        ));
+    }
+    if let Some(fr) = e.get("failure_reason").and_then(|v| v.as_str()) {
+        out.push_str(&format!(
+            "    <div class=\"detail-row\"><span class=\"detail-label\">Failure reason:</span> {}</div>\n",
+            escape_html(fr)
         ));
     }
 

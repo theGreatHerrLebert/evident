@@ -34,7 +34,7 @@ use crate::derivation::{
 };
 use crate::evidence::{Evidence, EvidenceKind, Strength, SupportRelation};
 use crate::identity::{Identity, IdentityDetail, IdentityKind};
-use crate::ids::{ClaimId, CriterionId, EvidenceId, Timestamp};
+use crate::ids::{ClaimId, CriterionId, EventId, EvidenceId, Timestamp};
 use crate::report::{ComparisonOp, MetricObservation, Tolerance};
 use crate::derivation::Confidence;
 
@@ -555,4 +555,270 @@ fn translator_identity() -> Identity {
         name: "typed-trust-translator".into(),
         details: vec![],
     }
+}
+
+// ---------- Review-event sidecar (Phase 2a) ----------
+
+/// Top-level shape of the `review_events.json` sidecar:
+/// `{ "events": [ ... ] }`. Mirrors the agent's append-only log.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReviewEventSidecar {
+    #[serde(default)]
+    pub events: Vec<ManifestReviewEvent>,
+}
+
+/// Deserialization shape for one sidecar entry. The agent's
+/// `review_events.json` writer produces exactly this shape.
+///
+/// Endorse / Dissent only in Phase 2a. `Challenge` (Phase 2b) requires
+/// `category` + an optional `backed_by`; we accept those fields here
+/// without yet routing them through synthesis — `translate_review_event`
+/// rejects `challenge` for now with a clear error.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ManifestReviewEvent {
+    pub claim_id: String,
+    pub kind: String, // "endorse" | "dissent" | "challenge" (rejected in 2a)
+    pub author: ManifestReviewAuthor,
+    pub rationale: String,
+    pub timestamp: String,
+    /// Optional explicit event_id. If absent, the translator computes a
+    /// canonical-hash event_id over the payload — this is the safer
+    /// default since the agent is expected to always write it.
+    #[serde(default)]
+    pub event_id: Option<String>,
+    /// Structured per-check verdict from the model's submit_review tool.
+    /// Preserved in the rendered output so reviewers can see which check
+    /// the model ran, not just its overall verdict.
+    #[serde(default)]
+    pub checks: Option<serde_json::Value>,
+    #[serde(default)]
+    pub observed_value: Option<String>,
+    #[serde(default)]
+    pub tolerance: Option<String>,
+    #[serde(default)]
+    pub failure_reason: Option<String>,
+    /// Phase 2b-only: for `challenge` events.
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub backed_by: Option<String>,
+    /// Optional protocol pointer. Release-tier events must set this
+    /// (invariant 10); validator enforcement is downstream.
+    #[serde(default)]
+    pub protocol: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ManifestReviewAuthor {
+    pub kind: String, // "human" | "model" | "automated" | "organization" | "anonymous"
+    pub name: String,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub context: Option<String>,
+    #[serde(default)]
+    pub orcid: Option<String>,
+    #[serde(default)]
+    pub affiliation: Option<String>,
+}
+
+#[derive(Debug)]
+pub enum ReviewTranslateError {
+    UnknownKind { id: String, kind: String },
+    UnknownAuthorKind { id: String, kind: String },
+    ModelMissingVersion { id: String },
+    ChallengeNotSupported { id: String },
+}
+
+impl std::fmt::Display for ReviewTranslateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReviewTranslateError::UnknownKind { id, kind } => {
+                write!(f, "review event for {id}: unknown kind {kind:?} (expected endorse|dissent|challenge)")
+            }
+            ReviewTranslateError::UnknownAuthorKind { id, kind } => {
+                write!(f, "review event for {id}: unknown author kind {kind:?}")
+            }
+            ReviewTranslateError::ModelMissingVersion { id } => {
+                write!(f, "review event for {id}: author kind=model requires `version`")
+            }
+            ReviewTranslateError::ChallengeNotSupported { id } => {
+                write!(f, "review event for {id}: kind=challenge requires Phase 2b backing-claim support; not supported by typed-trust 2a")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ReviewTranslateError {}
+
+/// Translate one sidecar entry into a [`ReviewEvent`].
+///
+/// Event identity (`EventId`): uses the explicit `event_id` field when
+/// present; otherwise computes a sha256 over the canonical JSON of the
+/// event payload. This avoids the `(claim_id, author, kind, timestamp)`
+/// tuple collision risk under sub-second concurrent runs.
+pub fn translate_review_event(
+    e: &ManifestReviewEvent,
+) -> Result<crate::review::ReviewEvent, ReviewTranslateError> {
+    use crate::review::{ReviewEvent, ReviewKind, Target};
+
+    let kind = match e.kind.as_str() {
+        "endorse" => ReviewKind::Endorse,
+        "dissent" => ReviewKind::Dissent,
+        "challenge" => {
+            return Err(ReviewTranslateError::ChallengeNotSupported {
+                id: e.claim_id.clone(),
+            })
+        }
+        other => {
+            return Err(ReviewTranslateError::UnknownKind {
+                id: e.claim_id.clone(),
+                kind: other.into(),
+            })
+        }
+    };
+
+    let by = translate_author(&e.claim_id, &e.author)?;
+
+    let event_id = match &e.event_id {
+        Some(s) => EventId::new(s.clone()),
+        None => EventId::new(canonical_event_id(e)),
+    };
+
+    Ok(ReviewEvent {
+        id: event_id,
+        target: Target::Claim(ClaimId::new(&e.claim_id)),
+        by,
+        protocol: e.protocol.clone(),
+        rationale: e.rationale.clone(),
+        at: e.timestamp.clone(),
+        kind,
+    })
+}
+
+fn translate_author(
+    claim_id: &str,
+    a: &ManifestReviewAuthor,
+) -> Result<Identity, ReviewTranslateError> {
+    use crate::identity::IdentityDetail;
+
+    let kind = match a.kind.as_str() {
+        "human" => IdentityKind::Human,
+        "model" => IdentityKind::Model,
+        "automated" => IdentityKind::Automated,
+        "organization" => IdentityKind::Organization,
+        "anonymous" => IdentityKind::Anonymous,
+        other => {
+            return Err(ReviewTranslateError::UnknownAuthorKind {
+                id: claim_id.into(),
+                kind: other.into(),
+            })
+        }
+    };
+
+    if matches!(kind, IdentityKind::Model) && a.version.is_none() {
+        return Err(ReviewTranslateError::ModelMissingVersion {
+            id: claim_id.into(),
+        });
+    }
+
+    let mut details: Vec<IdentityDetail> = Vec::new();
+    if let Some(v) = &a.version {
+        details.push(IdentityDetail {
+            key: "version".into(),
+            value: v.clone(),
+        });
+    }
+    if let Some(c) = &a.context {
+        details.push(IdentityDetail {
+            key: "context".into(),
+            value: c.clone(),
+        });
+    }
+    if let Some(o) = &a.orcid {
+        details.push(IdentityDetail {
+            key: "orcid".into(),
+            value: o.clone(),
+        });
+    }
+    if let Some(af) = &a.affiliation {
+        details.push(IdentityDetail {
+            key: "affiliation".into(),
+            value: af.clone(),
+        });
+    }
+
+    Ok(Identity {
+        kind,
+        name: a.name.clone(),
+        details,
+    })
+}
+
+/// Canonical-hash event_id: sha256 of a canonically-ordered JSON
+/// representation of the event payload. Deterministic and
+/// collision-resistant under concurrent agent runs in the same second.
+/// Distinct fields → distinct hashes; identical payloads → identical
+/// hash (so a deliberate replay of the same recorded fixture produces
+/// a stable id).
+pub fn canonical_event_id(e: &ManifestReviewEvent) -> String {
+    use sha2::{Digest, Sha256};
+
+    // Build a serde_json::Value with keys inserted in a fixed order so
+    // serde_json's preserve-insertion-order behavior (default for
+    // Map<String, Value>) gives canonical output.
+    let canonical = canonical_event_value(e);
+    let bytes = serde_json::to_vec(&canonical).expect("serialize canonical event");
+    let digest = Sha256::digest(&bytes);
+    format!("sha256:{:x}", digest)
+}
+
+fn canonical_event_value(e: &ManifestReviewEvent) -> serde_json::Value {
+    use serde_json::{Map, Value};
+
+    let mut author = Map::new();
+    author.insert("kind".into(), Value::String(e.author.kind.clone()));
+    author.insert("name".into(), Value::String(e.author.name.clone()));
+    if let Some(v) = &e.author.version {
+        author.insert("version".into(), Value::String(v.clone()));
+    }
+    if let Some(c) = &e.author.context {
+        author.insert("context".into(), Value::String(c.clone()));
+    }
+    if let Some(o) = &e.author.orcid {
+        author.insert("orcid".into(), Value::String(o.clone()));
+    }
+    if let Some(af) = &e.author.affiliation {
+        author.insert("affiliation".into(), Value::String(af.clone()));
+    }
+
+    let mut m = Map::new();
+    m.insert("claim_id".into(), Value::String(e.claim_id.clone()));
+    m.insert("kind".into(), Value::String(e.kind.clone()));
+    m.insert("author".into(), Value::Object(author));
+    m.insert("rationale".into(), Value::String(e.rationale.clone()));
+    m.insert("timestamp".into(), Value::String(e.timestamp.clone()));
+    if let Some(c) = &e.checks {
+        m.insert("checks".into(), c.clone());
+    }
+    if let Some(o) = &e.observed_value {
+        m.insert("observed_value".into(), Value::String(o.clone()));
+    }
+    if let Some(t) = &e.tolerance {
+        m.insert("tolerance".into(), Value::String(t.clone()));
+    }
+    if let Some(f) = &e.failure_reason {
+        m.insert("failure_reason".into(), Value::String(f.clone()));
+    }
+    if let Some(c) = &e.category {
+        m.insert("category".into(), Value::String(c.clone()));
+    }
+    if let Some(b) = &e.backed_by {
+        m.insert("backed_by".into(), Value::String(b.clone()));
+    }
+    if let Some(p) = &e.protocol {
+        m.insert("protocol".into(), Value::String(p.clone()));
+    }
+
+    Value::Object(m)
 }
