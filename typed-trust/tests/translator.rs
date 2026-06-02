@@ -881,7 +881,94 @@ claims:
 }
 
 #[test]
-fn evidence_parses_all_nine_replay_reason_values() {
+fn evidence_rejects_absent_status_with_present_reason() {
+    // Codex code review F-PR1-CR1 coverage: when status is absent it
+    // defaults to NotAttempted; pairing the default with a present
+    // reason is the only illegal-pair case that exercises the fallback
+    // string in IllegalReplayPair.
+    let yaml = r#"
+claims:
+  - id: absent-status-with-reason
+    title: absent status with reason
+    kind: measurement
+    tier: research
+    case: src.md
+    source: ..
+    claim: absent status with reason
+    tolerances:
+      - metric: x
+        op: "<"
+        value: 1.0
+        prose: |
+          example
+    evidence:
+      oracle: [Manual]
+      command: echo
+      artifact: out.txt
+      replay_reason: data_unavailable
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let criteria = translate_tolerances(mc).unwrap();
+    let ctx = ctx("any.yaml");
+    let err = translate_evidence(&ctx, mc, &criteria).unwrap_err();
+
+    match err {
+        TranslateError::IllegalReplayPair { id, status, reason } => {
+            assert_eq!(id, "absent-status-with-reason");
+            assert_eq!(status, "not_attempted");
+            assert_eq!(reason.as_deref(), Some("data_unavailable"));
+        }
+        other => panic!("expected IllegalReplayPair, got {other:?}"),
+    }
+}
+
+#[test]
+fn evidence_rejects_available_paired_with_reason() {
+    // Codex code review F-PR1-CR1 coverage: `available + reason` is
+    // illegal too (a replay path that succeeded shouldn't carry a
+    // blocker). The existing tests covered `not_attempted + reason`
+    // but not this side of the same rule.
+    let yaml = r#"
+claims:
+  - id: available-with-reason
+    title: available with reason
+    kind: measurement
+    tier: ci
+    case: src.md
+    source: ..
+    claim: available with reason
+    tolerances:
+      - metric: x
+        op: "<"
+        value: 1.0
+        prose: |
+          example
+    evidence:
+      oracle: [Manual]
+      command: echo
+      artifact: out.txt
+      replay_status: available
+      replay_reason: data_unavailable
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let criteria = translate_tolerances(mc).unwrap();
+    let ctx = ctx("any.yaml");
+    let err = translate_evidence(&ctx, mc, &criteria).unwrap_err();
+
+    match err {
+        TranslateError::IllegalReplayPair { id, status, reason } => {
+            assert_eq!(id, "available-with-reason");
+            assert_eq!(status, "available");
+            assert_eq!(reason.as_deref(), Some("data_unavailable"));
+        }
+        other => panic!("expected IllegalReplayPair, got {other:?}"),
+    }
+}
+
+#[test]
+fn evidence_parses_all_ten_replay_reason_values() {
     use typed_trust::evidence::ReplayReason;
     let cases = [
         ("code_private", ReplayReason::CodePrivate),

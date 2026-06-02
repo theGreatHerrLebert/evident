@@ -160,7 +160,7 @@ pub enum TranslateError {
     /// `available | not_attempted | unavailable_artifacts`.
     InvalidReplayStatus { id: String, value: String },
     /// Phase 5: the `evidence.replay_reason` field was not one of the
-    /// nine known reason strings.
+    /// ten known reason strings.
     InvalidReplayReason { id: String, value: String },
     /// Phase 5: the `(replay_status, replay_reason)` pair is not in
     /// the legal set. Legal combinations:
