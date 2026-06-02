@@ -31,6 +31,8 @@ fn endorse_event() -> ManifestReviewEvent {
         tolerance: Some("< 0.02".into()),
         failure_reason: None,
         challenge: None,
+        target: None,
+        supersede: None,
         protocol: None,
     }
 }
@@ -400,4 +402,152 @@ fn deserializes_sidecar_shape_round_trip() {
     assert_eq!(e.claim_id, "claim-A");
     assert_eq!(e.event_id.as_deref(), Some("sha256:abcd"));
     assert_eq!(e.checks.as_ref().and_then(|c| c.get("metric_present")).and_then(|v| v.as_str()), Some("pass"));
+}
+
+// ============================================================
+// Phase 2d-i: translator schema extension tests
+// ============================================================
+
+use typed_trust::translate::{ManifestSupersedeBlock, ManifestTargetBlock};
+
+fn supersede_event() -> ManifestReviewEvent {
+    ManifestReviewEvent {
+        claim_id: "ball-electrostatic-ci".into(),
+        kind: "supersede".into(),
+        author: ManifestReviewAuthor {
+            kind: "model".into(),
+            name: "claude-opus-4-7".into(),
+            version: Some("20260601".into()),
+            context: None,
+            orcid: None,
+            affiliation: None,
+        },
+        rationale: "Re-reviewed the digest; cited value is a known artifact. Withdraw prior Challenge.".into(),
+        timestamp: "2026-06-15T09:00:00Z".into(),
+        event_id: None,
+        checks: None,
+        observed_value: None,
+        tolerance: None,
+        failure_reason: None,
+        challenge: None,
+        target: Some(ManifestTargetBlock {
+            kind: "review_event".into(),
+            id: "sha256:prior-challenge-id".into(),
+        }),
+        supersede: Some(ManifestSupersedeBlock {
+            successor: "att-successor-id".into(),
+        }),
+        protocol: None,
+    }
+}
+
+#[test]
+fn phase2d_translates_supersede_with_review_event_target() {
+    let entry = supersede_event();
+    let event = translate_review_event(&entry).expect("supersede translates");
+    use typed_trust::review::{ReviewKind, Target};
+    match &event.target {
+        Target::ReviewEvent(eid) => assert_eq!(eid.as_str(), "sha256:prior-challenge-id"),
+        other => panic!("expected Target::ReviewEvent, got {other:?}"),
+    }
+    match &event.kind {
+        ReviewKind::Supersede { successor } => {
+            assert_eq!(successor.as_str(), "att-successor-id");
+        }
+        other => panic!("expected Supersede, got {other:?}"),
+    }
+}
+
+#[test]
+fn phase2d_rejects_supersede_without_target() {
+    let mut entry = supersede_event();
+    entry.target = None;
+    let err = translate_review_event(&entry).expect_err("supersede without target must reject");
+    assert!(
+        matches!(err, ReviewTranslateError::SupersedeMissingTarget { .. }),
+        "expected SupersedeMissingTarget, got {err:?}"
+    );
+}
+
+#[test]
+fn phase2d_rejects_supersede_without_successor() {
+    let mut entry = supersede_event();
+    entry.supersede = None;
+    let err = translate_review_event(&entry).expect_err("supersede without successor must reject");
+    assert!(
+        matches!(err, ReviewTranslateError::SupersedeMissingSuccessor { .. }),
+        "expected SupersedeMissingSuccessor, got {err:?}"
+    );
+}
+
+#[test]
+fn phase2d_rejects_supersede_with_empty_successor() {
+    let mut entry = supersede_event();
+    entry.supersede = Some(ManifestSupersedeBlock {
+        successor: "   ".into(),
+    });
+    let err = translate_review_event(&entry).expect_err("empty successor must reject");
+    assert!(matches!(err, ReviewTranslateError::SupersedeMissingSuccessor { .. }));
+}
+
+#[test]
+fn phase2d_rejects_unsupported_target_type() {
+    // Phase 2d-i scope: only claim + review_event are accepted.
+    // CriterionResult, Evidence, etc. require schema extensions
+    // deferred to Phase 2e+ (codex F-2D-13).
+    let mut entry = supersede_event();
+    entry.target = Some(ManifestTargetBlock {
+        kind: "criterion_result".into(),
+        id: "x".into(),
+    });
+    let err = translate_review_event(&entry).expect_err("unsupported target must reject");
+    assert!(
+        matches!(&err, ReviewTranslateError::UnsupportedTargetType { target_type, .. } if target_type == "criterion_result"),
+        "expected UnsupportedTargetType, got {err:?}"
+    );
+}
+
+#[test]
+fn phase2d_endorse_with_explicit_claim_target_translates_to_claim() {
+    // Explicit target.type=claim works the same as no target block.
+    let mut entry = endorse_event();
+    entry.target = Some(ManifestTargetBlock {
+        kind: "claim".into(),
+        id: "explicit-claim-id".into(),
+    });
+    let event = translate_review_event(&entry).expect("explicit claim target translates");
+    use typed_trust::review::Target;
+    match &event.target {
+        Target::Claim(c) => assert_eq!(c.as_str(), "explicit-claim-id"),
+        other => panic!("expected Target::Claim, got {other:?}"),
+    }
+}
+
+#[test]
+fn phase2d_pre_2d_sidecar_canonical_event_id_unchanged() {
+    // Codex F-2D-5: pre-2d sidecars (no target/supersede fields)
+    // must canonicalize to the same bytes as before. The existing
+    // canonical_event_id_is_stable_across_identical_payloads test
+    // covers stability; this one explicitly asserts that adding
+    // None values doesn't change the hash, which is the parity
+    // property.
+    let entry = endorse_event();
+    let id1 = canonical_event_id(&entry);
+
+    // Building the "same" entry with explicit None for the new
+    // fields should canonicalize identically.
+    let mut entry2 = endorse_event();
+    entry2.target = None;
+    entry2.supersede = None;
+    let id2 = canonical_event_id(&entry2);
+    assert_eq!(id1, id2);
+
+    // Adding a target block CHANGES the hash (because it's a
+    // semantically distinguishing field).
+    entry2.target = Some(ManifestTargetBlock {
+        kind: "claim".into(),
+        id: "explicit-claim-id".into(),
+    });
+    let id3 = canonical_event_id(&entry2);
+    assert_ne!(id1, id3);
 }

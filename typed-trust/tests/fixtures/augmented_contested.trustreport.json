@@ -39,12 +39,20 @@
         "model": 0,
         "organization": 0
       },
+      "invalid_supersedes": [],
       "n_challenge": 1,
       "n_dissent": 0,
       "n_endorse": 0,
       "n_events": 1,
+      "n_events_active": 1,
+      "n_events_raw": 1,
+      "n_invalid_supersede": 0,
       "n_reviewers": 1,
       "n_supersede": 0,
+      "n_supersede_raw": 0,
+      "n_unresolved_supersede": 0,
+      "superseded_pairs": [],
+      "unresolved_supersedes": [],
       "verdicts_by_reviewer": [
         {
           "author": {

@@ -23,10 +23,146 @@ use serde_json::{json, Map, Value};
 
 use crate::derivation::{Derivation, Rerun};
 use crate::evidence::Evidence;
-use crate::ids::{ClaimId, CriterionId};
+use crate::ids::{ClaimId, CriterionId, EventId};
 use crate::report::{RenderStatus, TrustReport};
 use crate::review::{ReviewEvent, ReviewKind, Target};
 use crate::synthesize::{backing_report_sustains, is_procedural_category};
+
+// ============================================================
+// Phase 2d: SupersedeProjection
+// ============================================================
+//
+// Single computation over a per-claim event slice that returns
+// "what's active right now" plus the audit material for what
+// isn't. Used by panel_summary, by the per-kind rendered
+// sections, by `contested_by`, AND by synthesize's render-status
+// computation. Single source of truth so panel and status can
+// never disagree on which Challenges are active (codex review).
+//
+// Phase 2d-i scope decisions (see EVIDENT_AGENT_PHASE2D_DRAFT.md):
+// - Locality: Supersede applies only when both events live in
+//   this slice. Cross-claim Supersedes go to
+//   `unresolved_supersedes`.
+// - One-pass semantics: a Supersede whose target is itself a
+//   Supersede is `invalid`; we do not reactivate the underlying
+//   verdict.
+// - Cycles (A↔B, self-target) go to `invalid_supersedes`.
+// - Same author submitting Endorse + Dissent without a Supersede
+//   linking them: both stay active (typed-trust records every
+//   speech act).
+
+/// The four buckets a per-claim event slice is partitioned into
+/// once Supersede semantics are applied. Borrowed references to
+/// the underlying events so the projection is cheap to build and
+/// the caller's event vec keeps ownership.
+pub struct SupersedeProjection<'a> {
+    /// Endorse / Dissent / Challenge events that have NOT been
+    /// superseded by a well-formed local Supersede. Excludes
+    /// Supersede events themselves and events that are
+    /// superseded targets.
+    pub active_verdicts: Vec<&'a ReviewEvent>,
+    /// Supersede event paired with the event it supersedes.
+    /// Audit material; renderers display these in the
+    /// `## Superseded Events` section's "valid pairs" subsection.
+    pub superseded_pairs: Vec<(&'a ReviewEvent, &'a ReviewEvent)>,
+    /// Supersede events whose target is NOT in this slice
+    /// (cross-claim, pruned, missing). Active set is unaffected;
+    /// renderers display these in the "unresolved" subsection.
+    pub unresolved_supersedes: Vec<&'a ReviewEvent>,
+    /// Supersede events whose target IS in this slice but is
+    /// itself a Supersede event (meta-supersede), or whose
+    /// target id is part of a cycle, or that self-target. Phase
+    /// 2d-i does NOT reactivate the underlying verdict; renderers
+    /// display these in the "invalid" subsection.
+    pub invalid_supersedes: Vec<&'a ReviewEvent>,
+}
+
+impl<'a> SupersedeProjection<'a> {
+    /// Returns true iff the given event id is in `active_verdicts`.
+    /// Used by synthesize + render-aux to decide whether a
+    /// Challenge contests the report.
+    pub fn is_active(&self, event_id: &EventId) -> bool {
+        self.active_verdicts.iter().any(|e| &e.id == event_id)
+    }
+}
+
+/// Compute the `SupersedeProjection` for a per-claim event slice.
+///
+/// Pure function. O(N) over the slice; uses two `HashSet`s to
+/// track ids that are superseded and ids that are themselves
+/// Supersede events.
+pub fn supersede_projection<'a>(events: &'a [ReviewEvent]) -> SupersedeProjection<'a> {
+    use std::collections::HashMap;
+
+    // Index by event_id so we can resolve Supersede targets in O(1).
+    // Slice membership is by id; cross-claim Supersedes (target id
+    // not in this map) go to `unresolved_supersedes`.
+    let by_id: HashMap<&EventId, &ReviewEvent> =
+        events.iter().map(|e| (&e.id, e)).collect();
+
+    // First pass: bucket each Supersede event by validity.
+    // - Target not in slice → unresolved.
+    // - Target IS a Supersede event → invalid (meta-supersede).
+    // - Target == this Supersede's own id → invalid (self-target).
+    // Cycles (A targets B, B targets A) fall out: B's target A is
+    // a Supersede event itself, so B is invalid; symmetrically A.
+    let mut superseded_ids: HashSet<&EventId> = HashSet::new();
+    let mut superseded_pairs: Vec<(&ReviewEvent, &ReviewEvent)> = Vec::new();
+    let mut unresolved_supersedes: Vec<&ReviewEvent> = Vec::new();
+    let mut invalid_supersedes: Vec<&ReviewEvent> = Vec::new();
+
+    for e in events.iter() {
+        if !matches!(e.kind, ReviewKind::Supersede { .. }) {
+            continue;
+        }
+        // Target must be a ReviewEvent to constitute a verdict
+        // supersede. Phase 2d-i: a Supersede whose target is NOT
+        // a review event (e.g., Target::Criterion) is left in the
+        // raw event log; the synthesize layer's existing per-
+        // criterion Supersede handling covers that case
+        // independently. Those Supersedes are also not "verdict
+        // supersedes" — they don't go to any of our four buckets
+        // and so don't affect the active_verdicts set.
+        let target_id = match &e.target {
+            Target::ReviewEvent(eid) => eid,
+            _ => continue,
+        };
+        // Self-target = invalid.
+        if target_id == &e.id {
+            invalid_supersedes.push(e);
+            continue;
+        }
+        // Target absent from slice = unresolved.
+        let Some(target_event) = by_id.get(target_id).copied() else {
+            unresolved_supersedes.push(e);
+            continue;
+        };
+        // Target is itself a Supersede event = invalid (meta-supersede).
+        if matches!(target_event.kind, ReviewKind::Supersede { .. }) {
+            invalid_supersedes.push(e);
+            continue;
+        }
+        // Valid pair.
+        superseded_ids.insert(target_id);
+        superseded_pairs.push((target_event, e));
+    }
+
+    // Active verdicts: Endorse / Dissent / Challenge events whose
+    // id is NOT in the superseded set. Supersede events themselves
+    // are not "verdicts" — they're meta — so they're excluded too.
+    let active_verdicts: Vec<&ReviewEvent> = events
+        .iter()
+        .filter(|e| !matches!(e.kind, ReviewKind::Supersede { .. }))
+        .filter(|e| !superseded_ids.contains(&e.id))
+        .collect();
+
+    SupersedeProjection {
+        active_verdicts,
+        superseded_pairs,
+        unresolved_supersedes,
+        invalid_supersedes,
+    }
+}
 
 /// Inputs to the render-aux layer. Borrows so a caller that already
 /// has the report + evidence + events doesn't have to clone.
@@ -81,8 +217,14 @@ fn augment_criterion(crit_json: &mut Value, input: &RenderInput) {
         input.backing_reports,
         input.cycle_contested,
     );
-    let contested_by: Vec<String> = input
-        .related_events
+    // Phase 2d-i: contested_by must reflect ACTIVE Challenges only.
+    // A Challenge that was superseded by a ReviewEvent-targeted
+    // Supersede shouldn't appear here — otherwise the criterion's
+    // result.contested_by would disagree with criterion_status
+    // and with the synthesized report status.
+    let projection = supersede_projection(input.related_events);
+    let contested_by: Vec<String> = projection
+        .active_verdicts
         .iter()
         .filter(|e| matches!(&e.kind, ReviewKind::Challenge { .. }))
         .filter(|e| event_targets_criterion(&e.target, &crit_id))
@@ -142,12 +284,19 @@ fn compute_criterion_status(
     }) {
         return RenderStatus::Superseded;
     }
+    // Phase 2d-i: filter to active verdicts before checking which
+    // Challenges contest this criterion. Without this, a Challenge
+    // that was superseded by a ReviewEvent-targeted Supersede would
+    // still flip the criterion to Contested even though the report
+    // status reads Current. Single projection, used everywhere.
+    let projection = supersede_projection(events);
+
     // Same §8 sustain + cycle-propagation rule as
     // synthesize::compute_render_status. Without the cycle check
     // here, a criterion-targeted challenge backed by a cycled claim
     // would leave the criterion `current` while the report itself
     // renders `contested` — render would contradict synthesize.
-    if events.iter().any(|e| match &e.kind {
+    if projection.active_verdicts.iter().any(|e| match &e.kind {
         ReviewKind::Challenge {
             category,
             backed_by,
@@ -226,14 +375,16 @@ fn build_graph_aux(input: &RenderInput) -> Option<Value> {
 /// markdown / HTML renderers can read its fields without traversing
 /// the event slice themselves.
 fn build_panel_summary(events: &[ReviewEvent]) -> Value {
-    // Distinct authors keyed by the full canonical identity: kind +
-    // name + every detail. Codex F-CR2C-2: keying on (kind, name,
-    // version) alone collapses two distinct authors who share name
-    // but differ in other identity fields (e.g., two humans named
-    // "John Smith" with different orcids, or two model reviewers
-    // with different contexts). Use the same projection used for
-    // identity-sensitive hashing elsewhere (canonical_event_id's
-    // author block, build_backing_claim's short-hash).
+    // Phase 2d-i: build the supersede projection once and let
+    // panel_summary reflect ACTIVE verdicts only. The counters,
+    // by_kind tally, and verdicts_by_reviewer all read the active
+    // set so the rendered panel agrees with the synthesized status.
+    let projection = supersede_projection(events);
+    let active_verdicts = &projection.active_verdicts;
+
+    // Distinct authors keyed by the full canonical identity (codex
+    // F-CR2C-2). Tally on the ACTIVE set so two reviewers whose
+    // only verdicts were superseded don't inflate n_reviewers.
     let mut seen_reviewers: std::collections::BTreeSet<String> =
         std::collections::BTreeSet::new();
     let mut by_kind: std::collections::BTreeMap<&'static str, usize> =
@@ -244,9 +395,8 @@ fn build_panel_summary(events: &[ReviewEvent]) -> Value {
     let mut n_endorse = 0usize;
     let mut n_dissent = 0usize;
     let mut n_challenge = 0usize;
-    let mut n_supersede = 0usize;
 
-    for e in events.iter() {
+    for e in active_verdicts.iter() {
         let kind_str = identity_kind_label(&e.by.kind);
         let key = canonical_identity_key(&e.by);
         let is_new_reviewer = seen_reviewers.insert(key);
@@ -257,19 +407,29 @@ fn build_panel_summary(events: &[ReviewEvent]) -> Value {
             ReviewKind::Endorse => n_endorse += 1,
             ReviewKind::Dissent => n_dissent += 1,
             ReviewKind::Challenge { .. } => n_challenge += 1,
-            ReviewKind::Supersede { .. } => n_supersede += 1,
+            // Supersede events are never in active_verdicts;
+            // this match arm is unreachable but kept exhaustive
+            // for compiler safety against future ReviewKind
+            // additions.
+            ReviewKind::Supersede { .. } => {}
         }
     }
     let n_reviewers = seen_reviewers.len();
-    let n_events = events.len();
+    let n_events_active = active_verdicts.len();
+    let n_events_raw = events.len();
+    // n_supersede_raw counts EVERY Supersede event in the slice
+    // — telemetry about how much re-judgment has happened, not a
+    // statement about active state.
+    let n_supersede_raw = events
+        .iter()
+        .filter(|e| matches!(e.kind, ReviewKind::Supersede { .. }))
+        .count();
+    let n_unresolved_supersede = projection.unresolved_supersedes.len();
+    let n_invalid_supersede = projection.invalid_supersedes.len();
 
-    // verdicts_by_reviewer rows. Stable sort by
-    // (kind, name, version, timestamp, event_id) — codex F-2C-13.
-    // Note: the sort key intentionally remains the "human-readable"
-    // projection (not the full canonical identity used for the
-    // dedup key above), so the rendered output orders rows by the
-    // fields a human reads first.
-    let mut rows: Vec<(String, String, String, String, String, Value)> = events
+    // verdicts_by_reviewer rows: ACTIVE verdicts only. Stable sort
+    // by (kind, name, version, timestamp, event_id) — codex F-2C-13.
+    let mut rows: Vec<(String, String, String, String, String, Value)> = active_verdicts
         .iter()
         .map(|e| {
             let kind_str = identity_kind_label(&e.by.kind).to_string();
@@ -286,13 +446,38 @@ fn build_panel_summary(events: &[ReviewEvent]) -> Value {
     });
     let verdicts_by_reviewer: Vec<Value> = rows.into_iter().map(|(_, _, _, _, _, v)| v).collect();
 
+    // Audit material: the three Supersede subsections rendered
+    // under `## Superseded Events`. Each sorted by (timestamp,
+    // event_id) of the relevant Supersede event for determinism
+    // (codex review-2 audit ordering).
+    let superseded_pairs_json = build_superseded_pairs_aux(&projection.superseded_pairs);
+    let unresolved_json = build_supersede_list_aux(&projection.unresolved_supersedes);
+    let invalid_json = build_supersede_list_aux(&projection.invalid_supersedes);
+
     let mut summary = Map::new();
-    summary.insert("n_events".into(), Value::Number(n_events.into()));
+    // New explicit counter names (codex F-2D-7).
+    summary.insert("n_events_raw".into(), Value::Number(n_events_raw.into()));
+    summary.insert("n_events_active".into(), Value::Number(n_events_active.into()));
+    summary.insert("n_supersede_raw".into(), Value::Number(n_supersede_raw.into()));
+    summary.insert(
+        "n_unresolved_supersede".into(),
+        Value::Number(n_unresolved_supersede.into()),
+    );
+    summary.insert(
+        "n_invalid_supersede".into(),
+        Value::Number(n_invalid_supersede.into()),
+    );
+    // Compat aliases for one release (codex review-2 + plan open
+    // decision 1): old consumers that read n_events / n_supersede
+    // continue to work. Both names point at the same numbers so
+    // there's no semantic drift.
+    summary.insert("n_events".into(), Value::Number(n_events_raw.into()));
+    summary.insert("n_supersede".into(), Value::Number(n_supersede_raw.into()));
+
     summary.insert("n_reviewers".into(), Value::Number(n_reviewers.into()));
     summary.insert("n_endorse".into(), Value::Number(n_endorse.into()));
     summary.insert("n_dissent".into(), Value::Number(n_dissent.into()));
     summary.insert("n_challenge".into(), Value::Number(n_challenge.into()));
-    summary.insert("n_supersede".into(), Value::Number(n_supersede.into()));
     let mut by_kind_obj = Map::new();
     for (k, v) in by_kind {
         by_kind_obj.insert(k.into(), Value::Number(v.into()));
@@ -302,7 +487,53 @@ fn build_panel_summary(events: &[ReviewEvent]) -> Value {
         "verdicts_by_reviewer".into(),
         Value::Array(verdicts_by_reviewer),
     );
+    summary.insert("superseded_pairs".into(), superseded_pairs_json);
+    summary.insert("unresolved_supersedes".into(), unresolved_json);
+    summary.insert("invalid_supersedes".into(), invalid_json);
     Value::Object(summary)
+}
+
+/// Aux JSON for the "valid superseded pairs" subsection of the
+/// rendered `## Superseded Events`. Each pair carries the original
+/// event and the Supersede event with the full audit context the
+/// renderer needs (event ids, author identities, timestamps,
+/// successor id, supersede rationale).
+fn build_superseded_pairs_aux(
+    pairs: &[(&ReviewEvent, &ReviewEvent)],
+) -> Value {
+    let mut rows: Vec<(String, String, Value)> = pairs
+        .iter()
+        .map(|(original, supersede)| {
+            let mut obj = Map::new();
+            obj.insert(
+                "original".into(),
+                serde_json::to_value(*original).expect("serialize original"),
+            );
+            obj.insert(
+                "supersede".into(),
+                serde_json::to_value(*supersede).expect("serialize supersede"),
+            );
+            (supersede.at.to_string(), supersede.id.as_str().to_string(), Value::Object(obj))
+        })
+        .collect();
+    rows.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+    Value::Array(rows.into_iter().map(|(_, _, v)| v).collect())
+}
+
+/// Aux JSON for either of the two single-list Supersede subsections
+/// (unresolved or invalid). Just the Supersede event itself; the
+/// renderer adds the "(target not in slice)" / "(invalid chain)"
+/// framing.
+fn build_supersede_list_aux(events: &[&ReviewEvent]) -> Value {
+    let mut rows: Vec<(String, String, Value)> = events
+        .iter()
+        .map(|e| {
+            let v = serde_json::to_value(*e).expect("serialize supersede");
+            (e.at.to_string(), e.id.as_str().to_string(), v)
+        })
+        .collect();
+    rows.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+    Value::Array(rows.into_iter().map(|(_, _, v)| v).collect())
 }
 
 fn identity_kind_label(kind: &crate::identity::IdentityKind) -> &'static str {

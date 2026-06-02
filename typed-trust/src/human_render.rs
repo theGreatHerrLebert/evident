@@ -35,13 +35,27 @@ pub fn render_markdown(augmented_json: &Value) -> String {
         .and_then(|g| g.get("review_events"))
         .and_then(|v| v.as_array())
     {
-        // Filter to Challenge events only — endorsements, dissents,
-        // and supersedes share `_graph.review_events` but rendering
-        // them under "Active Challenges" would mis-represent normal
-        // review activity as objections.
+        // Phase 2d-i: filter per-kind sections to ACTIVE verdicts
+        // only. Superseded events still appear in the report, but in
+        // the dedicated `## Superseded Events` section below.
+        let active_event_ids = active_event_ids_from_panel(augmented_json);
+        let is_active = |e: &&Value| {
+            // No panel_summary present (single-event report) → treat
+            // every event as active. This preserves Phase 2a/b/c
+            // rendering when the projection wasn't built.
+            match &active_event_ids {
+                Some(ids) => e["id"]
+                    .as_str()
+                    .map(|id| ids.contains(id))
+                    .unwrap_or(false),
+                None => true,
+            }
+        };
+
         let challenges: Vec<&Value> = events
             .iter()
             .filter(|e| e["kind"]["type"].as_str() == Some("challenge"))
+            .filter(is_active)
             .collect();
         if !challenges.is_empty() {
             out.push_str("## Active Challenges\n\n");
@@ -51,10 +65,7 @@ pub fn render_markdown(augmented_json: &Value) -> String {
         }
 
         // Phase 2c: reviewer panel. Only rendered when more than one
-        // distinct reviewer authored events on this claim. The panel
-        // section surfaces convergence vs divergence at a glance;
-        // per-event detail still appears below in the kind-specific
-        // sections.
+        // distinct reviewer authored events on this claim.
         if let Some(panel) = augmented_json
             .get("_graph")
             .and_then(|g| g.get("panel_summary"))
@@ -66,12 +77,11 @@ pub fn render_markdown(augmented_json: &Value) -> String {
 
         // Phase 2a: reviewer endorsements and dissents are surfaced
         // here so model-authored attestations are visible in the
-        // rendered report. Dissents are framed as "reviewer found the
-        // supplied evidence insufficient" — they do not flip Pass to
-        // Fail; only backed Challenges do (Phase 2b).
+        // rendered report. Phase 2d filters to active only.
         let endorsements: Vec<&Value> = events
             .iter()
             .filter(|e| e["kind"]["type"].as_str() == Some("endorse"))
+            .filter(is_active)
             .collect();
         if !endorsements.is_empty() {
             out.push_str("## Reviewer Endorsements\n\n");
@@ -82,12 +92,24 @@ pub fn render_markdown(augmented_json: &Value) -> String {
         let dissents: Vec<&Value> = events
             .iter()
             .filter(|e| e["kind"]["type"].as_str() == Some("dissent"))
+            .filter(is_active)
             .collect();
         if !dissents.is_empty() {
             out.push_str("## Reviewer Dissents (evidence found insufficient)\n\n");
             for e in dissents {
                 render_review_event(&mut out, e, "dissents — evidence insufficient");
             }
+        }
+
+        // Phase 2d: consolidated audit section for superseded events.
+        // Three subsections in fixed order (valid pairs → unresolved
+        // → invalid); each subsection sorted by (timestamp, event_id)
+        // by the projection layer.
+        if let Some(panel) = augmented_json
+            .get("_graph")
+            .and_then(|g| g.get("panel_summary"))
+        {
+            render_superseded_section(&mut out, panel);
         }
     }
 
@@ -369,11 +391,139 @@ fn render_panel_section(out: &mut String, panel: &Value) {
         out.push('\n');
     }
 
-    if n_supersede > 0 {
-        out.push_str(
-            "_Panel reflects raw attestation log; supersedes not yet applied (Phase 2d)._\n\n",
-        );
+    // Phase 2d-i removed the "supersedes not yet applied" footnote
+    // — the panel now reflects ACTIVE verdicts. The audit material
+    // (superseded pairs, unresolved, invalid) appears in the
+    // dedicated `## Superseded Events` section below.
+    let _ = n_supersede;
+}
+
+/// Build the active-event-id set from `_graph.panel_summary.
+/// verdicts_by_reviewer` if present. Returns None when there's no
+/// panel_summary (no projection has been run) — callers treat that
+/// as "show every event" to preserve pre-Phase-2d rendering.
+fn active_event_ids_from_panel(augmented_json: &Value) -> Option<std::collections::HashSet<String>> {
+    let rows = augmented_json
+        .pointer("/_graph/panel_summary/verdicts_by_reviewer")?
+        .as_array()?;
+    Some(
+        rows.iter()
+            .filter_map(|row| row["event_id"].as_str().map(String::from))
+            .collect(),
+    )
+}
+
+/// Phase 2d: render the consolidated `## Superseded Events`
+/// section. Three ordered subsections (valid pairs → unresolved →
+/// invalid); each subsection sorted by (timestamp, event_id) by
+/// the projection layer. Section is omitted when all three
+/// subsections are empty.
+fn render_superseded_section(out: &mut String, panel: &Value) {
+    let pairs = panel
+        .get("superseded_pairs")
+        .and_then(|v| v.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let unresolved = panel
+        .get("unresolved_supersedes")
+        .and_then(|v| v.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let invalid = panel
+        .get("invalid_supersedes")
+        .and_then(|v| v.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+
+    if pairs.is_empty() && unresolved.is_empty() && invalid.is_empty() {
+        return;
     }
+
+    out.push_str("## Superseded Events\n\n");
+
+    if !pairs.is_empty() {
+        out.push_str("### Valid superseded pairs\n\n");
+        for pair in pairs {
+            render_superseded_pair(out, pair);
+        }
+    }
+    if !unresolved.is_empty() {
+        out.push_str("### Unresolved supersedes (target not in this slice)\n\n");
+        for s in unresolved {
+            render_lone_supersede(out, s, "target event not present in this claim's slice");
+        }
+    }
+    if !invalid.is_empty() {
+        out.push_str("### Invalid supersede chain\n\n");
+        for s in invalid {
+            render_lone_supersede(out, s, "meta-supersede / cycle / self-target — original verdict NOT reactivated");
+        }
+    }
+}
+
+/// One valid superseded pair: original verdict + the Supersede
+/// event that retired it. Surfaces full audit context (event id,
+/// author kind/name, timestamp, supersede rationale, successor id,
+/// cross-author labeling).
+fn render_superseded_pair(out: &mut String, pair: &Value) {
+    let original = &pair["original"];
+    let supersede = &pair["supersede"];
+
+    let original_id = original["id"].as_str().unwrap_or("?");
+    let original_kind = original["kind"]["type"].as_str().unwrap_or("?");
+    let original_author_kind = original["by"]["kind"].as_str().unwrap_or("?");
+    let original_author_name = original["by"]["name"].as_str().unwrap_or("?");
+    let original_at = original["at"].as_str().unwrap_or("");
+
+    let supersede_id = supersede["id"].as_str().unwrap_or("?");
+    let supersede_author_kind = supersede["by"]["kind"].as_str().unwrap_or("?");
+    let supersede_author_name = supersede["by"]["name"].as_str().unwrap_or("?");
+    let supersede_at = supersede["at"].as_str().unwrap_or("");
+    let supersede_rationale = supersede["rationale"].as_str().unwrap_or("");
+    let successor = supersede["kind"]["data"]["successor"]
+        .as_str()
+        .unwrap_or("?");
+
+    let cross_author_label = if original_author_name == supersede_author_name
+        && original_author_kind == supersede_author_kind
+    {
+        ""
+    } else {
+        " (cross-author supersede)"
+    };
+
+    out.push_str(&format!(
+        "- **Original**: `{original_id}` — {original_author_kind} `{original_author_name}` {original_kind}ed at _{original_at}_.\n"
+    ));
+    out.push_str(&format!(
+        "  - **Superseded by**: `{supersede_id}` — {supersede_author_kind} `{supersede_author_name}` at _{supersede_at}_{cross_author_label}.\n"
+    ));
+    out.push_str(&format!("  - **Successor**: `{successor}`.\n"));
+    if !supersede_rationale.is_empty() {
+        out.push_str(&format!("  - **Rationale**: {supersede_rationale}\n"));
+    }
+    out.push('\n');
+}
+
+/// One lone Supersede event (unresolved or invalid). `framing` is
+/// the explanatory sentence that distinguishes the two subsections.
+fn render_lone_supersede(out: &mut String, supersede: &Value, framing: &str) {
+    let id = supersede["id"].as_str().unwrap_or("?");
+    let author_kind = supersede["by"]["kind"].as_str().unwrap_or("?");
+    let author_name = supersede["by"]["name"].as_str().unwrap_or("?");
+    let at = supersede["at"].as_str().unwrap_or("");
+    let rationale = supersede["rationale"].as_str().unwrap_or("");
+    let target_id = supersede["target"]["data"].as_str().unwrap_or("?");
+
+    out.push_str(&format!(
+        "- **Supersede event**: `{id}` — {author_kind} `{author_name}` at _{at}_.\n"
+    ));
+    out.push_str(&format!("  - **Targets**: event `{target_id}`.\n"));
+    out.push_str(&format!("  - **Note**: {framing}.\n"));
+    if !rationale.is_empty() {
+        out.push_str(&format!("  - **Rationale**: {rationale}\n"));
+    }
+    out.push('\n');
 }
 
 fn render_gap(out: &mut String, g: &Value) {
