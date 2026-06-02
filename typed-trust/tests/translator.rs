@@ -1152,7 +1152,10 @@ claims:
 }
 
 #[test]
-fn structured_provenance_rejects_unknown_source_context_value() {
+fn structured_provenance_rejects_unknown_source_context_value_at_parse_time() {
+    // Codex F-PR2-CR1 fix: source_context is a typed enum, so an
+    // unknown value fails at parse time. This closes the MCP bypass
+    // (list_claims would have surfaced the raw string).
     let yaml = r#"
 claims:
   - id: bad-source-context
@@ -1177,23 +1180,146 @@ claims:
       kind: extracted-from-paper
       source_context: completely_made_up
 "#;
+    let err = parse_manifest_file(yaml).unwrap_err();
+    match err {
+        TranslateError::Yaml(msg) => {
+            assert!(
+                msg.contains("source_context") || msg.contains("variant"),
+                "expected yaml error naming source_context/variant, got: {msg}"
+            );
+        }
+        other => panic!("expected Yaml parse error, got {other:?}"),
+    }
+}
+
+#[test]
+fn structured_provenance_rejects_unknown_field_at_parse_time() {
+    // Codex F-PR2-CR2 fix: deny_unknown_fields on ProvenanceBlock
+    // catches typos like `source_contxt:` at parse time instead of
+    // silently dropping them.
+    let yaml = r#"
+claims:
+  - id: typo-claim
+    title: typo claim
+    kind: measurement
+    tier: research
+    case: src.md
+    source: ..
+    claim: typo claim
+    tolerances:
+      - metric: x
+        op: "<"
+        value: 1.0
+        prose: typo
+    evidence:
+      oracle: [Manual]
+      command: "no-replay-path"
+      artifact: src.md
+      replay_status: unavailable_artifacts
+      replay_reason: data_unavailable
+    provenance:
+      kind: extracted-from-paper
+      source_contxt: repo_authored
+"#;
+    let err = parse_manifest_file(yaml).unwrap_err();
+    match err {
+        TranslateError::Yaml(msg) => {
+            // Untagged-enum dispatch produces a less precise error
+            // than naming the typo directly ("did not match any
+            // variant of untagged enum ManifestProvenance"). A custom
+            // Deserialize impl would name the typo; that's a
+            // follow-up. The important guarantee is that the typo
+            // does NOT silently parse — without deny_unknown_fields
+            // the manifest would have parsed and the field would
+            // have been dropped.
+            assert!(
+                msg.contains("ManifestProvenance")
+                    || msg.contains("source_contxt")
+                    || msg.contains("unknown field"),
+                "expected yaml error rejecting the typo, got: {msg}"
+            );
+        }
+        other => panic!("expected Yaml parse error, got {other:?}"),
+    }
+}
+
+#[test]
+fn structured_provenance_all_three_source_context_values_parse() {
+    // Codex F-PR2-CR3 coverage: each legal source_context value
+    // round-trips.
+    for (yaml_value, expected) in [
+        ("repo_authored", "repo_authored"),
+        ("copied_external_text", "copied_external_text"),
+        ("unknown", "unknown"),
+    ] {
+        let yaml = format!(
+            r#"
+claims:
+  - id: sc-{yaml_value}
+    title: sc table test
+    kind: measurement
+    tier: research
+    case: src.md
+    source: ..
+    claim: sc table test
+    tolerances:
+      - metric: x
+        op: "<"
+        value: 1.0
+        prose: sc table test
+    evidence:
+      oracle: [Manual]
+      command: "no-replay-path"
+      artifact: src.md
+      replay_status: unavailable_artifacts
+      replay_reason: data_unavailable
+    provenance:
+      kind: extracted-from-paper
+      source_context: {yaml_value}
+"#
+        );
+        let manifest = parse_manifest_file(&yaml)
+            .unwrap_or_else(|e| panic!("parse failed for {yaml_value}: {e:?}"));
+        let mc = &manifest.claims[0];
+        let provenance = mc.provenance.as_ref().unwrap();
+        assert_eq!(
+            provenance.source_context(),
+            Some(expected),
+            "wrong projection for {yaml_value}",
+        );
+    }
+}
+
+#[test]
+fn absent_provenance_field_yields_none() {
+    // A claim with no provenance field at all is valid and produces
+    // ManifestClaim.provenance == None. Used downstream as "legacy
+    // hand-authored, no extra context."
+    let yaml = r#"
+claims:
+  - id: no-provenance
+    title: no provenance field
+    kind: measurement
+    tier: ci
+    source: .
+    claim: no provenance field
+    tolerances:
+      - metric: relative_error
+        op: "<"
+        value: 0.02
+        prose: stay under 2 percent
+    evidence:
+      oracle: [Biopython]
+      command: pytest
+      artifact: out.json
+"#;
     let manifest = parse_manifest_file(yaml).unwrap();
     let mc = &manifest.claims[0];
-    let criteria = translate_tolerances(mc).unwrap();
-    let ctx = ctx("any.yaml");
-
-    // The provenance struct parses, but the source_context value is
-    // not one of the allowed strings. translate_evidence validates
-    // it before lowering into the typed representation.
-    let err = translate_evidence(&ctx, mc, &criteria).unwrap_err();
-
-    match err {
-        TranslateError::InvalidSourceContext { id, value } => {
-            assert_eq!(id, "bad-source-context");
-            assert_eq!(value, "completely_made_up");
-        }
-        other => panic!("expected InvalidSourceContext, got {other:?}"),
-    }
+    assert!(
+        mc.provenance.is_none(),
+        "expected provenance=None, got {:?}",
+        mc.provenance
+    );
 }
 
 #[test]

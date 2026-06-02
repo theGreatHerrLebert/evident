@@ -100,7 +100,11 @@ pub enum ManifestProvenance {
 /// `kind` is the only required field. Everything else is optional so
 /// a manifest can declare `extracted-from-paper` without committing to
 /// a particular extractor or source_id at authoring time.
+///
+/// `deny_unknown_fields` (codex F-PR2-CR2) catches typos like
+/// `source_contxt:` at parse time instead of silently dropping them.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProvenanceBlock {
     /// The provenance discriminator. Phase 5 introduces
     /// `extracted-from-paper` and `extracted-from-repo`; legacy
@@ -116,9 +120,13 @@ pub struct ProvenanceBlock {
     /// source bytes.
     pub source_sha: Option<String>,
     /// Provenance of the text the claim was extracted FROM. Distinct
-    /// from `kind`, which is the provenance of the CLAIM. Values:
-    /// `repo_authored`, `copied_external_text`, `unknown`.
-    pub source_context: Option<String>,
+    /// from `kind`, which is the provenance of the CLAIM. Parses as
+    /// a typed enum so an unknown value (`source_context:
+    /// completely_made_up`) is rejected at parse time, not at
+    /// translate time (codex F-PR2-CR1). This closes the
+    /// `list_claims` bypass — every value MCP surfaces is one of
+    /// the three legal strings.
+    pub source_context: Option<SourceContext>,
     /// Extractor metadata. Optional so manifests can pre-declare
     /// structured provenance before the extractor runs.
     pub extractor: Option<ExtractorBlock>,
@@ -129,10 +137,43 @@ pub struct ProvenanceBlock {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExtractorBlock {
     pub model: Option<String>,
     pub model_version: Option<String>,
     pub extracted_at: Option<String>,
+}
+
+/// Phase 5 PR2: provenance of the source text a claim was extracted
+/// FROM. Distinct from `provenance.kind`, which is the provenance of
+/// the claim itself.
+///
+/// Parses as `#[serde(rename_all = "snake_case")]` so the YAML strings
+/// are `repo_authored`, `copied_external_text`, `unknown`. Anything
+/// else fails at deserialization time with a serde error naming the
+/// unknown variant — the validator-at-translate-time pattern was
+/// replaced by parse-time enum validation per codex F-PR2-CR1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceContext {
+    /// Text was written for the artifact it lives in (e.g. the repo's
+    /// own README, the paper's own body).
+    RepoAuthored,
+    /// Text was copied verbatim from a separate authoritative source
+    /// (vendored README, corporate marketing copy, etc.).
+    CopiedExternalText,
+    /// Extractor could not determine.
+    Unknown,
+}
+
+impl SourceContext {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SourceContext::RepoAuthored => "repo_authored",
+            SourceContext::CopiedExternalText => "copied_external_text",
+            SourceContext::Unknown => "unknown",
+        }
+    }
 }
 
 impl ManifestProvenance {
@@ -159,10 +200,10 @@ impl ManifestProvenance {
             ManifestProvenance::Structured(b) => b.source_sha.as_deref(),
         }
     }
-    pub fn source_context(&self) -> Option<&str> {
+    pub fn source_context(&self) -> Option<&'static str> {
         match self {
             ManifestProvenance::Legacy(_) => None,
-            ManifestProvenance::Structured(b) => b.source_context.as_deref(),
+            ManifestProvenance::Structured(b) => b.source_context.map(|s| s.as_str()),
         }
     }
     pub fn extractor_model(&self) -> Option<&str> {
@@ -270,10 +311,6 @@ pub enum TranslateError {
         status: String,
         reason: Option<String>,
     },
-    /// Phase 5 PR2: `provenance.source_context` was set to a string
-    /// outside the allowed set
-    /// (`repo_authored | copied_external_text | unknown`).
-    InvalidSourceContext { id: String, value: String },
 }
 
 impl std::fmt::Display for TranslateError {
@@ -321,11 +358,6 @@ impl std::fmt::Display for TranslateError {
                 "claim {id}: illegal (replay_status, replay_reason) pair \
                  ({status:?}, {reason:?}); legal pairs are (available, null), \
                  (not_attempted, null), (unavailable_artifacts, <reason>)"
-            ),
-            TranslateError::InvalidSourceContext { id, value } => write!(
-                f,
-                "claim {id}: provenance.source_context {value:?} is not one of \
-                 repo_authored | copied_external_text | unknown"
             ),
         }
     }
@@ -542,7 +574,6 @@ pub fn translate_evidence(
         return Ok(None);
     };
     let provenance_kind = mc.provenance.as_ref().map(|p| p.effective_kind());
-    validate_source_context(&mc.id, mc.provenance.as_ref())?;
     let runner = unspecified_runner_identity(provenance_kind);
     let first_criterion = criteria.first().map(|c| c.id.clone());
     let reruns = translate_last_verified(
@@ -584,26 +615,6 @@ pub fn translate_evidence(
         replay_status,
         replay_reason,
     }))
-}
-
-/// Phase 5 PR2: enforce the `source_context` enum (when set).
-/// Allowed values: `repo_authored`, `copied_external_text`, `unknown`.
-/// Anything else is a translation error so downstream consumers can
-/// rely on the discriminator.
-fn validate_source_context(
-    claim_id: &str,
-    provenance: Option<&ManifestProvenance>,
-) -> Result<(), TranslateError> {
-    let Some(ctx) = provenance.and_then(|p| p.source_context()) else {
-        return Ok(());
-    };
-    match ctx {
-        "repo_authored" | "copied_external_text" | "unknown" => Ok(()),
-        other => Err(TranslateError::InvalidSourceContext {
-            id: claim_id.into(),
-            value: other.into(),
-        }),
-    }
 }
 
 /// Phase 5: parse + validate `evidence.replay_status` and
