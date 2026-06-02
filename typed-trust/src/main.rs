@@ -97,6 +97,7 @@ fn main() -> ExitCode {
 
     let mut reports: Vec<serde_json::Value> = Vec::new();
     let mut skipped: Vec<SkipReason> = Vec::new();
+    let mut filter_matched = false;
 
     for cw in claims.iter() {
         let mc = &cw.claim;
@@ -104,6 +105,7 @@ fn main() -> ExitCode {
             if mc.id != *f {
                 continue;
             }
+            filter_matched = true;
         }
         // Per-claim TranslationContext so the resulting SourceSpan
         // points at the originating manifest file (for `include:`
@@ -175,6 +177,18 @@ fn main() -> ExitCode {
         });
 
         reports.push(augmented);
+    }
+
+    // A filter that matched nothing is a manifest typo. CI gates with
+    // a stale claim id would otherwise see "0 reports, exit 0" and
+    // green-light a run that actually checked nothing.
+    if let Some(ref f) = filter {
+        if !filter_matched {
+            eprintln!(
+                "error: claim id {f:?} not found in manifest {path}"
+            );
+            return ExitCode::FAILURE;
+        }
     }
 
     let any_fatal = skipped.iter().any(|s| s.fatal);
