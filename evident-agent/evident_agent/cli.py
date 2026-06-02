@@ -582,8 +582,42 @@ def _write_record_fixture(
         "tool_input": tool_input,
         "digest": digest_rendered,
     }
-    out_path = record_dir / f"{claim_id}.json"
+    out_path = _safe_fixture_path(record_dir, claim_id)
     out_path.write_text(json.dumps(fixture, indent=2, sort_keys=False) + "\n")
+
+
+def _safe_fixture_path(record_dir: Path, claim_id: str) -> Path:
+    """Compose ``record_dir / <safe_claim_id>.json`` and verify the
+    result stays inside ``record_dir``.
+
+    Claim ids are arbitrary strings elsewhere in the repo: namespaced
+    ids like ``org/claim`` and traversal-like ids are syntactically
+    valid manifest input. Using them as raw path components either
+    creates files outside the record dir or fails on missing
+    intermediates. Sanitize by replacing path separators / drive
+    letters / control chars / dot-prefixed segments with ``_``, then
+    re-check via ``Path.resolve()`` that the result is a child of
+    ``record_dir``. Any residual escape is a hard error.
+    """
+    import re
+
+    safe = re.sub(r"[/\\\x00-\x1f]", "_", claim_id)
+    # Reject lone ``.`` / ``..`` segments after the separator replacement.
+    if safe in (".", "..") or safe.startswith(".."):
+        safe = "_" + safe.lstrip(".")
+    if not safe:
+        safe = "_unnamed"
+
+    candidate = (record_dir / f"{safe}.json").resolve()
+    record_root = record_dir.resolve()
+    try:
+        candidate.relative_to(record_root)
+    except ValueError as exc:
+        raise click.UsageError(
+            f"refusing to record fixture for claim id {claim_id!r}: "
+            f"sanitized path {candidate} escapes record directory {record_root}"
+        ) from exc
+    return candidate
 
 
 if __name__ == "__main__":

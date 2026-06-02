@@ -407,10 +407,70 @@ def test_recorded_ball_challenge_e2e(tmp_path: Path) -> None:
         assert required in verdict.challenge_violation, (
             f"violation missing required field {required!r}"
         )
-    # The reported bound + comparator must match the target's own —
-    # codex F-2B-3/4 (target-contradicting, not threshold-drift).
-    # We do not assert exact values here; that's the role of
-    # validate_contradiction in the live record run.
+
+    # Phase 2b's load-bearing rule (codex F-2B-2): the violation MUST
+    # actually contradict the target tolerance — same metric, same
+    # bound, same comparator, finite numeric observed_value that
+    # violates the bound. Without this assertion the fixture is just
+    # a shape check; a regressed model that drifted on metric or bound
+    # would pass CI.
+    target_claim = _read_target_claim_for_fixture(
+        "ball_challenge", "ball-electrostatic-synthetic-challenge"
+    )
+    validate_contradiction(
+        target_claim,
+        verdict.challenge_target_criterion_id,
+        verdict.challenge_violation,
+    )
+
+
+def test_recorded_ball_challenge_e2e_catches_threshold_drift_codex_3_cr2(
+    tmp_path: Path,
+) -> None:
+    """Codex F-CR3-2 regression: the strengthened Challenge fixture
+    assertion must catch a model that drifts on the bound. Simulate a
+    regression by mutating the fixture's reported bound; the test
+    helper must now reject."""
+    fixture = _fixture_dir() / "ball_electrostatic_challenge.json"
+    if not fixture.is_file():
+        pytest.skip(f"recorded BALL challenge fixture not present at {fixture}")
+    recorded = json.loads(fixture.read_text())
+    # Drift the bound to a value that doesn't match the target's 0.02.
+    recorded["tool_input"]["challenge"]["violation"]["bound"] = 0.10
+    target_claim = _read_target_claim_for_fixture(
+        "ball_challenge", "ball-electrostatic-synthetic-challenge"
+    )
+    with pytest.raises(ViolationRejected, match="threshold drift"):
+        validate_contradiction(
+            target_claim,
+            recorded["tool_input"]["challenge"]["target_criterion_id"],
+            recorded["tool_input"]["challenge"]["violation"],
+        )
+
+
+def _read_target_claim_for_fixture(fixture_dir: str, claim_id: str) -> dict:
+    """Load the target claim dict for a recorded fixture.
+
+    Mirrors the agent's view of the adversarial fixture manifest so the
+    CI assertion uses the same source of truth the model was reviewed
+    against.
+    """
+    import yaml
+
+    manifest_path = (
+        Path(__file__).resolve().parent
+        / "fixtures"
+        / "adversarial"
+        / fixture_dir
+        / "evident.yaml"
+    )
+    parsed = yaml.safe_load(manifest_path.read_text())
+    for c in parsed.get("claims", []):
+        if c.get("id") == claim_id:
+            return c
+    raise AssertionError(
+        f"target claim {claim_id!r} not found in {manifest_path}"
+    )
 
 
 # ============================================================
