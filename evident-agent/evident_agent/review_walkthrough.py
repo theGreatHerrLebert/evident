@@ -185,8 +185,16 @@ def _format_claim_for_display(
 PromptDecision = Callable[[str], str]
 """Given the display block, return one of accept/drop/skip/quit."""
 
-PromptTier = Callable[[], str]
-"""Return 'ci' or 'release'."""
+PromptTier = Callable[[list[str], str], str]
+"""Given (valid_targets, current_tier), return the chosen target.
+
+The walkthrough computes ``valid_targets`` from the promotion ladder
+(`curator._adjacent_promotion_target`). Today that's at most one
+element — a research-tier claim advances to ci, a ci-tier claim
+advances to release. The prompt presents the choice; if only one
+target is valid, it asks for explicit confirmation rather than
+auto-selecting.
+"""
 
 PromptText = Callable[[str], str]
 """Return free text for rationale."""
@@ -210,10 +218,33 @@ def _click_prompt_decision(display: str) -> str:
         click.echo("  ? choose a/d/s/q")
 
 
-def _click_prompt_tier() -> str:
+def _click_prompt_tier(valid_targets: list[str], current_tier: str) -> str:
+    """Prompt the curator for the promotion target.
+
+    Multi-step ladder awareness: the walkthrough passes only the
+    next-rung target. If there's exactly one valid target, ask for
+    confirmation; otherwise present the choice.
+    """
+    if not valid_targets:
+        raise click.UsageError(
+            f"claim is at tier {current_tier!r} which is not a valid "
+            "promotion source"
+        )
+    if len(valid_targets) == 1:
+        target = valid_targets[0]
+        if click.confirm(
+            f"promote {current_tier} -> {target}?",
+            default=False,
+        ):
+            return target
+        # Treat decline as a skip-from-accept-branch — the walkthrough
+        # records this via the CuratorError path. Returning the same
+        # tier triggers the ladder rejection downstream which the
+        # walkthrough re-maps to skip.
+        return current_tier
     return click.prompt(
-        "promote to which tier?",
-        type=click.Choice(["ci", "release"]),
+        f"promote {current_tier} -> which tier?",
+        type=click.Choice(valid_targets),
     )
 
 
@@ -428,7 +459,28 @@ def walk_manifest(
             continue
 
         if choice == "accept":
-            to_tier = prompt_tier()
+            # Compute the next-rung target from the promotion
+            # ladder. Today this returns at most one option per
+            # claim (research→ci or ci→release). The prompt
+            # presents it explicitly so the curator can confirm.
+            next_rung = curator_mod._adjacent_promotion_target(tier)
+            valid_targets = [next_rung] if next_rung is not None else []
+            to_tier = prompt_tier(valid_targets, tier)
+            if not valid_targets or to_tier == tier:
+                # Curator declined the confirm prompt, or no valid
+                # target exists. Record as skip.
+                ended = _now_utc()
+                records.append(
+                    ClaimReviewRecord(
+                        extracted_id=cid,
+                        decision="skip",
+                        started_at=_iso(started),
+                        ended_at=_iso(ended),
+                        minutes_spent=_minutes(started, ended),
+                        notes="curator declined promotion",
+                    )
+                )
+                continue
             rationale = prompt_text("rationale (required)")
             try:
                 curator_mod.promote_claim(

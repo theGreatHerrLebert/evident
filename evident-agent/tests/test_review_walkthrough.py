@@ -155,7 +155,13 @@ def _sample_manifest(tmp_path: Path) -> Path:
 
 def _scripted(decisions: list[str], tiers: list[str] | None = None, rationales: list[str] | None = None):
     """Return three prompt callbacks driven by canned answers.
-    Each prompt pops the next value from the relevant list."""
+    Each prompt pops the next value from the relevant list.
+
+    The tier callback receives (valid_targets, current_tier) — the
+    ladder-aware signature. Each canned tier value must be in the
+    valid_targets list at that step or the test deliberately scripts
+    a decline (by returning the current_tier).
+    """
     decisions = list(decisions)
     tiers = list(tiers) if tiers else []
     rationales = list(rationales) if rationales else []
@@ -163,7 +169,7 @@ def _scripted(decisions: list[str], tiers: list[str] | None = None, rationales: 
     def _decision(_display: str) -> str:
         return decisions.pop(0)
 
-    def _tier() -> str:
+    def _tier(_valid_targets: list[str], _current_tier: str) -> str:
         return tiers.pop(0)
 
     def _text(_prompt: str) -> str:
@@ -571,6 +577,93 @@ def test_walkthrough_tolerates_missing_cited_md(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------
+# Multi-step ladder awareness (PR after #28)
+# ---------------------------------------------------------------------
+
+
+def test_prompt_tier_receives_only_next_rung_for_research_claim(tmp_path: Path):
+    """Ladder awareness: a research-tier claim's tier prompt is
+    called with valid_targets=['ci'], not the old ['ci', 'release']."""
+    manifest_path = _sample_manifest(tmp_path)
+    seen_valid_targets: list[list[str]] = []
+    seen_current_tiers: list[str] = []
+
+    def _decision(_display):
+        return "accept"
+
+    def _tier(valid_targets, current_tier):
+        seen_valid_targets.append(list(valid_targets))
+        seen_current_tiers.append(current_tier)
+        return valid_targets[0]
+
+    def _text(_p):
+        return "rationale"
+
+    # All three claims are at research; each accept walks through
+    # the prompt once.
+    rw.walk_manifest(
+        manifest_path=manifest_path,
+        curator="Jane",
+        prompt_decision=_decision,
+        prompt_tier=_tier,
+        prompt_text=_text,
+    )
+    assert seen_valid_targets == [["ci"], ["ci"], ["ci"]]
+    assert seen_current_tiers == ["research", "research", "research"]
+
+
+def test_prompt_tier_receives_release_after_first_promotion(tmp_path: Path):
+    """Multi-step: run 1 promotes research → ci; run 2 (which
+    re-enters the same claim because tier is no longer research)
+    should NOT re-prompt for that claim — already_curated. But
+    if a future fixture has a tier:ci extracted claim, the prompt
+    would receive valid_targets=['release']. Verify via direct
+    helper call."""
+    from evident_agent import curator as curator_mod
+    assert curator_mod._adjacent_promotion_target("research") == "ci"
+    assert curator_mod._adjacent_promotion_target("ci") == "release"
+    assert curator_mod._adjacent_promotion_target("release") is None
+
+
+def test_walkthrough_decline_confirm_records_skip(tmp_path: Path):
+    """If the curator picks accept but then declines the confirmation
+    prompt (returns the same tier), the walkthrough records a skip
+    instead of a failed promote."""
+    manifest_path = _sample_manifest(tmp_path)
+
+    def _decision(_d):
+        return "accept"
+
+    declined = [False, False, False]
+
+    def _tier(valid_targets, current_tier):
+        # Decline by returning current_tier (simulating the
+        # _click_prompt_tier behavior when the curator says "no"
+        # to the confirm prompt).
+        return current_tier
+
+    def _text(_p):
+        # Should NOT be called for declined accepts.
+        raise AssertionError("rationale prompt should not run on decline")
+
+    result = rw.walk_manifest(
+        manifest_path=manifest_path,
+        curator="Jane",
+        prompt_decision=_decision,
+        prompt_tier=_tier,
+        prompt_text=_text,
+    )
+    # All three claims declined → all three skip.
+    for r in result.records:
+        assert r.decision == "skip"
+        assert r.notes == "curator declined promotion"
+    # Manifest unchanged: tier still research everywhere.
+    parsed = yaml.safe_load(manifest_path.read_text())
+    for c in parsed["claims"]:
+        assert c["tier"] == "research"
+
+
+# ---------------------------------------------------------------------
 # CLI integration
 # ---------------------------------------------------------------------
 
@@ -585,10 +678,13 @@ def test_cli_review_extracted_runs_against_canned_input(tmp_path: Path):
 
     manifest_path = _sample_manifest(tmp_path)
     runner = CliRunner()
-    # Inputs: claim-a accept→ci, rationale; claim-b drop; claim-c skip
+    # Inputs: claim-a accept, confirm ci promotion (y), rationale;
+    # claim-b drop; claim-c skip. The ladder-aware prompt asks
+    # "promote research -> ci? [y/N]" with a single next-rung
+    # option rather than the old "[ci|release]" choice.
     keystrokes = "\n".join([
         "a",
-        "ci",
+        "y",
         "rationale a",
         "d",
         "s",
