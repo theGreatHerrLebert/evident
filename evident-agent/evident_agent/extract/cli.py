@@ -1,0 +1,261 @@
+"""Phase 5 PR5: CLI wiring for ``evident-agent extract``.
+
+Composes the walker (``repo.py``) with the framing/validator/render
+package from PR4. The bridge between the model's open-ended
+output and the framework's structured corpus.
+
+Two modes:
+
+- ``--dry-run``: walker runs, model is NOT called; ``audit.py``
+  writes the source-audit outputs.
+- normal: walker → model call → response processing → validator
+  → render writes ``extracted/<artifact-id>/`` directory.
+
+The response processor is where the validator becomes
+load-bearing: the model can return any tolerance, but only
+validator-approved tolerances reach ``evident.yaml``.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import asdict
+from pathlib import Path
+from typing import Any, Iterable
+
+from . import audit, framing, render, repo
+from .render import ExtractedClaim, ExtractionResult, RejectedCandidate
+from .validator import ValidationError, validate_tolerance
+
+
+LOGGER = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------
+# Response extraction (same pattern as evident_agent.review)
+# ---------------------------------------------------------------------
+
+
+class ExtractTransportError(Exception):
+    """The API response was missing the expected tool_use block."""
+
+
+def _extract_tool_input(response: Any) -> dict:
+    """Pull the ``submit_extracted_claims`` tool input out of an
+    Anthropic Message response. Tolerates both SDK objects and
+    plain-dict fixture replay (mirrors review.py).
+    """
+    content = getattr(response, "content", None)
+    if content is None and isinstance(response, dict):
+        content = response.get("content")
+    if not content:
+        raise ExtractTransportError("response has no content")
+
+    for block in content:
+        block_type = getattr(block, "type", None)
+        if block_type is None and isinstance(block, dict):
+            block_type = block.get("type")
+        if block_type != "tool_use":
+            continue
+        name = (
+            getattr(block, "name", None)
+            or (block.get("name") if isinstance(block, dict) else None)
+        )
+        if name != framing.TOOL_DEFINITION["name"]:
+            continue
+        tool_input = getattr(block, "input", None)
+        if tool_input is None and isinstance(block, dict):
+            tool_input = block.get("input")
+        if not isinstance(tool_input, dict):
+            raise ExtractTransportError(
+                f"tool_use block has non-dict input: {type(tool_input).__name__}"
+            )
+        return tool_input
+    raise ExtractTransportError(
+        f"no {framing.TOOL_DEFINITION['name']!r} tool_use block in response"
+    )
+
+
+# ---------------------------------------------------------------------
+# Tool-response processor (the validator's hook)
+# ---------------------------------------------------------------------
+
+
+def process_tool_response(
+    tool_input: dict,
+    walked: repo.WalkedSource,
+    *,
+    extractor_model: str,
+    extracted_at: str,
+) -> ExtractionResult:
+    """Walk the model's tool_input, drop validator-rejected
+    tolerances, drop claims with zero remaining tolerances, and
+    return a ready-to-render ``ExtractionResult``.
+    """
+    accepted_claims: list[ExtractedClaim] = []
+    rejections: list[RejectedCandidate] = list(
+        _model_rejections(tool_input)
+    )
+
+    for raw_claim in tool_input.get("claims", []):
+        if not isinstance(raw_claim, dict):
+            continue
+        accepted_tolerances: list[dict] = []
+        for raw_tol in raw_claim.get("tolerances", []):
+            try:
+                validate_tolerance(
+                    raw_tol,
+                    subject_aliases=raw_claim.get(
+                        "subject_aliases", []
+                    ),
+                )
+            except ValidationError as exc:
+                rejections.append(
+                    RejectedCandidate(
+                        candidate_text=str(raw_tol.get("source_span", "")),
+                        locator=str(raw_claim.get("id", "<unknown>")),
+                        reason=_map_validator_kind_to_rejection_reason(
+                            exc.kind
+                        ),
+                        rationale=(
+                            f"validator rejected tolerance for "
+                            f"{raw_claim.get('id')!r}: {exc.message}"
+                        ),
+                    )
+                )
+                continue
+            accepted_tolerances.append(raw_tol)
+
+        if not accepted_tolerances:
+            # Codex v3 contract: claim with zero valid tolerances is
+            # dropped entirely. Each tolerance rejection is already
+            # in `rejections`.
+            continue
+
+        accepted_claims.append(
+            ExtractedClaim(
+                id=str(raw_claim.get("id", "")),
+                title=str(raw_claim.get("title", "")),
+                claim=str(raw_claim.get("claim", "")),
+                subject_aliases=list(
+                    raw_claim.get("subject_aliases", [])
+                ),
+                tolerances=accepted_tolerances,
+            )
+        )
+
+    return ExtractionResult(
+        source_id=walked.source_id,
+        source_sha=walked.source_sha,
+        extractor_model=extractor_model,
+        extracted_at=extracted_at,
+        claims=accepted_claims,
+        rejections=rejections,
+    )
+
+
+def _model_rejections(tool_input: dict) -> Iterable[RejectedCandidate]:
+    for raw in tool_input.get("rejections", []) or []:
+        if not isinstance(raw, dict):
+            continue
+        yield RejectedCandidate(
+            candidate_text=str(raw.get("candidate_text", "")),
+            locator=str(raw.get("locator", "")),
+            reason=str(raw.get("reason", "unspecified")),
+            rationale=str(raw.get("rationale", "")),
+        )
+
+
+# Validator kind discriminators are stable but their names don't
+# exactly match the model-rejection enum from framing.py. Map them.
+_VALIDATOR_TO_REJECTION_REASON = {
+    "missing_source_span": "bound_not_stated",
+    "missing_metric": "metric_not_named",
+    "missing_comparator": "bound_not_stated",
+    "missing_value": "bound_not_stated",
+    "missing_subject": "comparator_bound_to_wrong_subject",
+    "comparator_direction_mismatch": "bound_not_stated",
+    "comparator_bound_to_wrong_subject": "comparator_bound_to_wrong_subject",
+}
+
+
+def _map_validator_kind_to_rejection_reason(kind: str) -> str:
+    """Lift a validator KIND_* into a rejection enum the
+    EXTRACTION.md renderer understands."""
+    return _VALIDATOR_TO_REJECTION_REASON.get(kind, "bound_not_stated")
+
+
+# ---------------------------------------------------------------------
+# Top-level run
+# ---------------------------------------------------------------------
+
+
+def run_extract_repo(
+    *,
+    repo_path: Path,
+    output_dir: Path,
+    project: str | None = None,
+    model: str = "claude-opus-4-7",
+    dry_run: bool = False,
+    api_client: Any | None = None,
+    max_tokens: int = 4096,
+    extracted_at: str | None = None,
+) -> ExtractionResult | None:
+    """Top-level entry point. Returns the ``ExtractionResult`` on a
+    normal run; ``None`` on dry-run (no manifest is produced).
+    """
+    walked = repo.walk_repo(repo_path)
+    if dry_run:
+        audit.write_dry_run_outputs(walked, output_dir)
+        return None
+
+    assembled = repo.assemble_for_model(walked)
+    request = framing.build_request(
+        source_text=assembled,
+        source_id=walked.source_id,
+        model=model,
+        max_tokens=max_tokens,
+    )
+    if api_client is None:
+        api_client = _default_api_client()
+    response = api_client.messages.create(**request)
+    tool_input = _extract_tool_input(response)
+    result = process_tool_response(
+        tool_input,
+        walked,
+        extractor_model=model,
+        extracted_at=(
+            extracted_at if extracted_at else render.now_utc_isoformat()
+        ),
+    )
+    project_name = project or f"extracted/{_repo_id_for_project(walked.source_id)}"
+    render.write_outputs(result, output_dir=output_dir, project=project_name)
+    return result
+
+
+def _repo_id_for_project(source_id: str) -> str:
+    """Map a `github:owner/repo@sha` or `local:name@sha` into a
+    filesystem-friendly project slug."""
+    # Drop the @sha tail.
+    base = source_id.split("@", 1)[0]
+    return base.replace(":", "-").replace("/", "-")
+
+
+def _default_api_client() -> Any:
+    """Lazy-import the Anthropic SDK and return a default client."""
+    try:
+        import anthropic
+    except ImportError as exc:
+        raise RuntimeError(
+            "Anthropic SDK not installed; install `anthropic` or pass "
+            "an explicit api_client to run_extract_repo()."
+        ) from exc
+    return anthropic.Anthropic()
+
+
+# Re-export for tests
+__all__ = [
+    "ExtractTransportError",
+    "process_tool_response",
+    "run_extract_repo",
+]

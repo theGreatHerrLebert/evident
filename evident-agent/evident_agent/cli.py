@@ -755,5 +755,84 @@ def _safe_fixture_path(record_dir: Path, claim_id: str) -> Path:
     return candidate
 
 
+@main.command()
+@click.option(
+    "--repo",
+    "repo_path",
+    required=True,
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+    help="Path to a local git repo (or directory tree) to extract from.",
+)
+@click.option(
+    "--output-dir",
+    "output_dir",
+    required=True,
+    type=click.Path(file_okay=False, path_type=Path),
+    help="Directory to write extracted/<artifact-id>/ outputs into.",
+)
+@click.option(
+    "--model",
+    default="claude-opus-4-7",
+    show_default=True,
+    help="Anthropic model id to use for extraction.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help=(
+        "Source-audit mode: walk the repo and emit EXTRACTION.md + "
+        "dry_run.json describing what WOULD be sent to the model. "
+        "No API call is made; no evident.yaml is written."
+    ),
+)
+@click.option(
+    "--project",
+    default=None,
+    help=(
+        "Override the manifest's `project:` field. Defaults to "
+        "`extracted/<source-id>`."
+    ),
+)
+def extract(
+    repo_path: Path,
+    output_dir: Path,
+    model: str,
+    dry_run: bool,
+    project: Optional[str],
+) -> None:
+    """Phase 5: extract structured claims from a local repo.
+
+    Reads README + CHANGELOG + docs from the repo, redacts external
+    citations (DOIs, arXiv links, preprint URLs, bibliography
+    sections), and asks the model to extract structured tolerances.
+    Each tolerance is validated by the source-span/local-binding
+    validator before reaching the manifest.
+
+    Per the v3 plan, this PR is the **repo** walker only. Paper
+    extraction (--paper) ships in PR6.
+    """
+    from . import extract as _extract_pkg
+
+    result = _extract_pkg.cli.run_extract_repo(
+        repo_path=repo_path,
+        output_dir=output_dir,
+        project=project,
+        model=model,
+        dry_run=dry_run,
+    )
+    if dry_run:
+        click.echo(
+            f"dry-run audit written to {output_dir}/EXTRACTION.md "
+            "(no model call made)"
+        )
+        return
+    assert result is not None
+    click.echo(
+        f"extracted {len(result.claims)} claim(s), "
+        f"{len(result.rejections)} rejection(s) — output in {output_dir}"
+    )
+
+
 if __name__ == "__main__":
     main()
