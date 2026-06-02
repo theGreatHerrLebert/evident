@@ -5,11 +5,29 @@ edition = "2021"
 description = "Typed Trust — Rust scaffold for concepts/typed-trust.md"
 license = "MIT OR Apache-2.0"
 
+[[bin]]
+name = "typed-trust"
+path = "src/main.rs"
+
+[[bin]]
+name = "typed-trust-mcp"
+path = "src/bin/mcp.rs"
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_yaml_ng = "0.10"
 serde_json = "1"
 sha2 = "0.10"
+# Phase 3 (MCP server) deps. Kept minimal: just tokio for the
+# async runtime. The MCP protocol surface this server needs
+# (initialize / tools/list / tools/call) is small enough that
+# hand-rolled JSON-RPC is clearer than wrestling with an MCP
+# abstraction layer. Tool input schemas are hand-written JSON;
+# no schemars dependency.
+tokio = { version = "1", features = ["rt-multi-thread", "io-std", "io-util", "macros", "sync"] }
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints.rust]
 unused = "warn"

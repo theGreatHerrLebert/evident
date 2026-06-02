@@ -37,6 +37,8 @@ pub mod render;
 pub mod human_render;
 pub mod graph;
 pub mod html_render;
+pub mod loader;
+pub mod mcp;
 
 pub use ids::*;
 pub use identity::*;

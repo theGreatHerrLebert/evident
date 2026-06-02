@@ -22,11 +22,10 @@
 use std::collections::HashMap;
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use typed_trust::translate::{
-    backing_claim_for_event, parse_manifest_file, translate_claim, translate_evidence,
+    backing_claim_for_event, translate_claim, translate_evidence,
     translate_review_event, translate_tolerances, ManifestClaim, ManifestLastVerified,
     ReviewEventSidecar, TranslationContext,
 };
@@ -392,60 +391,23 @@ struct ClaimWithSource {
 /// relative to the manifest's directory). Returns the merged claim
 /// list. Per workflow/SCHEMA.md, includes are flat (no chained
 /// includes), so we resolve one level only.
+///
+/// CLI uses the permissive policy; the MCP server (Phase 3) passes
+/// an `AllowListPathPolicy` via the library's
+/// `load_claims_with_policy`.
 fn load_claims(path_str: &str) -> Result<Vec<ClaimWithSource>, String> {
-    let path = PathBuf::from(path_str);
-    let yaml = fs::read_to_string(&path)
-        .map_err(|e| format!("error reading {}: {e}", path.display()))?;
-
-    let manifest = parse_manifest_file(&yaml)
-        .map_err(|e| format!("error parsing {}: {e}", path.display()))?;
-
-    let mut out: Vec<ClaimWithSource> = Vec::new();
-    for (idx, c) in manifest.claims.into_iter().enumerate() {
-        out.push(ClaimWithSource {
-            claim: c,
-            source_path: path_str.to_string(),
-            span: format!("claims[{idx}]"),
-        });
-    }
-
-    for inc in extract_includes(&yaml) {
-        let resolved = path
-            .parent()
-            .map(|p| p.join(&inc))
-            .unwrap_or_else(|| Path::new(&inc).to_path_buf());
-        let inc_yaml = fs::read_to_string(&resolved)
-            .map_err(|e| format!("error reading include {}: {e}", resolved.display()))?;
-        let inc_manifest = parse_manifest_file(&inc_yaml)
-            .map_err(|e| format!("error parsing include {}: {e}", resolved.display()))?;
-        let inc_path_str = resolved.to_string_lossy().into_owned();
-        for (idx, c) in inc_manifest.claims.into_iter().enumerate() {
-            out.push(ClaimWithSource {
-                claim: c,
-                source_path: inc_path_str.clone(),
-                span: format!("claims[{idx}]"),
-            });
-        }
-    }
-
-    Ok(out)
-}
-
-/// Parse the top-level YAML by hand to extract `include:` paths.
-/// The ManifestFile struct in `typed_trust::translate` doesn't carry
-/// an `include` field (the schema layer is intentionally small).
-fn extract_includes(yaml: &str) -> Vec<String> {
-    let parsed: serde_yaml_ng::Value = match serde_yaml_ng::from_str(yaml) {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
-    };
-    let Some(includes) = parsed.get("include").and_then(|v| v.as_sequence()) else {
-        return Vec::new();
-    };
-    includes
-        .iter()
-        .filter_map(|v| v.as_str().map(String::from))
-        .collect()
+    typed_trust::loader::load_claims(path_str)
+        .map(|claims| {
+            claims
+                .into_iter()
+                .map(|c| ClaimWithSource {
+                    claim: c.claim,
+                    source_path: c.source_path,
+                    span: c.span,
+                })
+                .collect()
+        })
+        .map_err(|e| e.to_string())
 }
 
 fn emit_json(
