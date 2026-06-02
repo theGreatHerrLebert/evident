@@ -24,7 +24,7 @@ from typing import Optional
 
 import click
 
-from . import docker, manifest, scoring, sidecar, typed_trust
+from . import docker, evidence, manifest, prompt as prompt_mod, review as review_mod, review_sidecar, scoring, sidecar, typed_trust
 
 
 @click.group()
@@ -208,6 +208,239 @@ def _resolve_commit(source_dir: Path) -> Optional[str]:
     except Exception:
         pass
     return None
+
+
+@main.command()
+@click.option(
+    "--manifest",
+    "manifest_path",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Path to evident.yaml (or an included claim file).",
+)
+@click.option(
+    "--claim",
+    "claim_filter",
+    default=None,
+    help="Review only this claim id. Default: all measurement claims.",
+)
+@click.option(
+    "--model",
+    required=True,
+    type=str,
+    help="Anthropic model id (e.g. claude-opus-4-7).",
+)
+@click.option(
+    "--model-version",
+    default=None,
+    type=str,
+    help="Author version for the sidecar entry. Default: same as --model.",
+)
+@click.option(
+    "--review-sidecar",
+    "review_sidecar_path",
+    default=None,
+    type=click.Path(path_type=Path),
+    help="Sidecar path. Default: manifest.parent / 'review_events.json'.",
+)
+@click.option(
+    "--last-verified-sidecar",
+    "last_verified_sidecar_path",
+    default=None,
+    type=click.Path(path_type=Path),
+    help=(
+        "Path to a last_verified.json sidecar to overlay onto each claim "
+        "before producing the digest. Default: manifest.parent / 'last_verified.json' if it exists."
+    ),
+)
+@click.option(
+    "--no-api",
+    is_flag=True,
+    help="Skip the API call; only build the prompt (for testing / record).",
+)
+@click.option(
+    "--render",
+    default=None,
+    type=click.Choice(["json", "md", "html", "mermaid"]),
+    help="After writing the review sidecar, also invoke typed-trust.",
+)
+@click.option(
+    "--typed-trust-binary",
+    default=None,
+    type=str,
+    help="Path to the typed-trust binary. Default: search PATH and repo-relative builds.",
+)
+def review(
+    manifest_path: Path,
+    claim_filter: Optional[str],
+    model: str,
+    model_version: Optional[str],
+    review_sidecar_path: Optional[Path],
+    last_verified_sidecar_path: Optional[Path],
+    no_api: bool,
+    render: Optional[str],
+    typed_trust_binary: Optional[str],
+) -> None:
+    """Author Endorse/Dissent ReviewEvents on a claim's evidence (Phase 2a).
+
+    Per claim:
+      1. Build a per-format evidence digest from the cited artifact.
+      2. Construct a default-Dissent prompt with the submit_review tool.
+      3. Call the Anthropic API (one retry on transport failure).
+      4. Validate the response — reject Endorse-with-failing-check,
+         hallucinated criterion names, short rationales.
+      5. Append the validated entry to the review_events.json sidecar.
+      6. Optionally invoke typed-trust to emit a rendered report.
+    """
+    if review_sidecar_path is None:
+        review_sidecar_path = manifest_path.parent / "review_events.json"
+    if last_verified_sidecar_path is None:
+        candidate = manifest_path.parent / "last_verified.json"
+        if candidate.is_file():
+            last_verified_sidecar_path = candidate
+
+    if model_version is None:
+        model_version = model
+
+    claims = list(manifest.load_claims(manifest_path))
+    selected = list(manifest.filter_claims(claims, claim_filter=claim_filter))
+    if not selected:
+        click.echo(f"no measurement claims matched (filter={claim_filter!r})", err=True)
+        sys.exit(2)
+
+    new_entries: list[review_sidecar.ReviewEventEntry] = []
+    for i, claim in enumerate(selected, start=1):
+        click.echo(f"[{i}/{len(selected)}] {claim.id}")
+
+        # Resolve source dir + artifact path (per workflow/SCHEMA.md,
+        # the claim's `source` field is relative to the TOP manifest's
+        # directory — encapsulated by ClaimRecord.source_dir()).
+        source_dir = claim.source_dir()
+        artifact_rel = (claim.raw.get("evidence") or {}).get("artifact")
+        if not artifact_rel:
+            click.echo("  skip: claim has no evidence.artifact", err=True)
+            continue
+        # `artifact` may be a free-form human string; pick the first
+        # path-like token. Same posture as Phase 1.
+        artifact_token = artifact_rel.split()[0]
+        artifact_path = source_dir / artifact_token
+
+        # Extract digest.
+        metric = _first_tolerance_metric(claim.raw)
+        digest_obj = evidence.make_digest(
+            artifact_path,
+            metric,
+            source_dir=source_dir,
+        )
+        click.echo(f"  digest: format={digest_obj.header.get('format')} metric_present={digest_obj.header.get('metric_present')} truncated={digest_obj.truncated}")
+
+        if no_api:
+            click.echo("  (--no-api) skipping API call; no sidecar entry written")
+            continue
+
+        # Build messages + call API.
+        claim_yaml_text = _claim_yaml_block(claim.raw)
+        try:
+            verdict = review_mod.call_review(
+                model=model,
+                claim_yaml=claim_yaml_text,
+                digest_rendered=digest_obj.render(),
+            )
+        except review_mod.ReviewTransportError as exc:
+            click.echo(f"  skip: transport error after retry: {exc}", err=True)
+            continue
+        except review_mod.ReviewRejected as exc:
+            click.echo(f"  skip: response rejected by validation: {exc}", err=True)
+            continue
+
+        # Hallucination check requires the claim's criteria ids.
+        criteria_ids = _claim_criterion_ids(claim.raw)
+        try:
+            review_mod.reject_if_hallucinated_criterion(verdict, criteria_ids)
+        except review_mod.ReviewRejected as exc:
+            click.echo(f"  skip: hallucinated criterion: {exc}", err=True)
+            continue
+
+        # Truncated-evidence-without-citation check (F9). The model
+        # cannot Endorse when the digest was truncated and its cited
+        # observed_value isn't in the digest text — it's working blind.
+        try:
+            review_mod.reject_if_truncated_endorse_lacks_evidence(
+                verdict, digest_obj.body, digest_obj.truncated
+            )
+        except review_mod.ReviewRejected as exc:
+            click.echo(f"  skip: truncated digest, no citation: {exc}", err=True)
+            continue
+
+        click.echo(
+            f"  verdict: {verdict.verdict} "
+            f"(rationale: {verdict.rationale[:80]}…)"
+        )
+        entry = review_mod.verdict_to_sidecar_entry(
+            verdict,
+            claim_id=claim.id,
+            author_name=model,
+            author_version=model_version,
+            author_context="evident-agent review v0.2a",
+        )
+        new_entries.append(entry)
+
+    if not new_entries:
+        click.echo("no review events written", err=True)
+    else:
+        review_sidecar.append_events(review_sidecar_path, new_entries)
+        click.echo(
+            f"review sidecar updated: {review_sidecar_path} ({len(new_entries)} new)"
+        )
+
+    if render is not None:
+        result = typed_trust.run(
+            manifest_path=manifest_path,
+            sidecar_path=last_verified_sidecar_path,
+            format=render,
+            claim_filter=claim_filter,
+            binary=typed_trust_binary,
+            extra_args=["--review-events-sidecar", str(review_sidecar_path)],
+        )
+        if result.exit_code != 0:
+            click.echo(result.stderr, err=True)
+            sys.exit(result.exit_code)
+        click.echo(result.stdout, nl=False)
+
+
+def _first_tolerance_metric(claim_raw: dict) -> Optional[str]:
+    """Pull the first tolerance metric (dotted path or simple name)
+    from a claim's manifest dict. Returns None for prose-only or
+    missing tolerances."""
+    tols = claim_raw.get("tolerances") or []
+    for t in tols:
+        if isinstance(t, dict) and t.get("metric"):
+            return str(t["metric"])
+    return None
+
+
+def _claim_criterion_ids(claim_raw: dict) -> list[str]:
+    """Best-effort list of criterion identifier tokens for the
+    hallucination check. Uses tolerance.metric values as the criterion
+    surface (matches what typed-trust uses for CriterionId)."""
+    out: list[str] = []
+    tols = claim_raw.get("tolerances") or []
+    for t in tols:
+        if isinstance(t, dict) and t.get("metric"):
+            out.append(str(t["metric"]))
+    return out
+
+
+def _claim_yaml_block(claim_raw: dict) -> str:
+    """Render the claim dict back to YAML for inclusion in the prompt.
+
+    The model sees the full structured claim (tier, all tolerances,
+    evidence pointer, last_verified) — multi-criterion claims must
+    reveal every criterion.
+    """
+    import yaml
+
+    return yaml.safe_dump(claim_raw, sort_keys=False)
 
 
 if __name__ == "__main__":
