@@ -759,9 +759,21 @@ def _safe_fixture_path(record_dir: Path, claim_id: str) -> Path:
 @click.option(
     "--repo",
     "repo_path",
-    required=True,
+    default=None,
     type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
     help="Path to a local git repo (or directory tree) to extract from.",
+)
+@click.option(
+    "--paper",
+    "paper_path",
+    default=None,
+    type=click.Path(exists=True, file_okay=True, dir_okay=False, path_type=Path),
+    help=(
+        "Path to a single paper file (markdown or PDF) to extract "
+        "from. PR6 (Phase 5-ii). PDF support is experimental; "
+        "--source-id is recommended for preprints with version "
+        "ambiguity."
+    ),
 )
 @click.option(
     "--output-dir",
@@ -769,6 +781,16 @@ def _safe_fixture_path(record_dir: Path, claim_id: str) -> Path:
     required=True,
     type=click.Path(file_okay=False, path_type=Path),
     help="Directory to write extracted/<artifact-id>/ outputs into.",
+)
+@click.option(
+    "--source-id",
+    "source_id_override",
+    default=None,
+    help=(
+        "Pin the manifest's provenance.source_id. Recommended for "
+        "PDFs/preprints where DOI/arXiv version ambiguity matters. "
+        "Only used with --paper."
+    ),
 )
 @click.option(
     "--model",
@@ -781,8 +803,8 @@ def _safe_fixture_path(record_dir: Path, claim_id: str) -> Path:
     is_flag=True,
     default=False,
     help=(
-        "Source-audit mode: walk the repo and emit EXTRACTION.md + "
-        "dry_run.json describing what WOULD be sent to the model. "
+        "Source-audit mode: walk the source and emit EXTRACTION.md "
+        "+ dry_run.json describing what WOULD be sent to the model. "
         "No API call is made; no evident.yaml is written."
     ),
 )
@@ -795,32 +817,67 @@ def _safe_fixture_path(record_dir: Path, claim_id: str) -> Path:
     ),
 )
 def extract(
-    repo_path: Path,
+    repo_path: Optional[Path],
+    paper_path: Optional[Path],
     output_dir: Path,
+    source_id_override: Optional[str],
     model: str,
     dry_run: bool,
     project: Optional[str],
 ) -> None:
-    """Phase 5: extract structured claims from a local repo.
+    """Phase 5: extract structured claims from a local repo OR paper.
 
-    Reads README + CHANGELOG + docs from the repo, redacts external
-    citations (DOIs, arXiv links, preprint URLs, bibliography
-    sections), and asks the model to extract structured tolerances.
-    Each tolerance is validated by the source-span/local-binding
-    validator before reaching the manifest.
+    --repo: Phase 5-i (PR5). README + CHANGELOG + docs.
+    --paper: Phase 5-ii (PR6). Markdown or PDF. PDF is experimental.
 
-    Per the v3 plan, this PR is the **repo** walker only. Paper
-    extraction (--paper) ships in PR6.
+    Reads the source, redacts external citations (DOIs, arXiv links,
+    preprint URLs, bibliography sections), and asks the model to
+    extract structured tolerances. Each tolerance is validated by
+    the source-span/local-binding validator before reaching the
+    manifest.
     """
     from . import extract as _extract_pkg
 
-    result = _extract_pkg.cli.run_extract_repo(
-        repo_path=repo_path,
-        output_dir=output_dir,
-        project=project,
-        model=model,
-        dry_run=dry_run,
-    )
+    if repo_path is not None and paper_path is not None:
+        raise click.UsageError(
+            "pass either --repo OR --paper, not both"
+        )
+    if repo_path is None and paper_path is None:
+        raise click.UsageError("one of --repo or --paper is required")
+
+    if repo_path is not None:
+        if source_id_override is not None:
+            raise click.UsageError(
+                "--source-id is only supported with --paper; repo "
+                "source ids come from `git config remote.origin.url`"
+            )
+        result = _extract_pkg.cli.run_extract_repo(
+            repo_path=repo_path,
+            output_dir=output_dir,
+            project=project,
+            model=model,
+            dry_run=dry_run,
+        )
+    else:
+        assert paper_path is not None
+        try:
+            result = _extract_pkg.cli.run_extract_paper(
+                paper_path=paper_path,
+                output_dir=output_dir,
+                project=project,
+                source_id=source_id_override,
+                model=model,
+                dry_run=dry_run,
+            )
+        except _extract_pkg.cli.PaperExtractionSkipped as exc:
+            reasons = sorted({s.reason for s in exc.walked.skipped})
+            click.echo(
+                f"paper extraction skipped ({', '.join(reasons)}); "
+                f"see {output_dir}/EXTRACTION.md for the diagnostic.",
+                err=True,
+            )
+            sys.exit(2)
+
     if dry_run:
         click.echo(
             f"dry-run audit written to {output_dir}/EXTRACTION.md "

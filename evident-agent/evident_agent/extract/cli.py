@@ -23,7 +23,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Iterable
 
-from . import audit, framing, render, repo
+from . import audit, framing, paper, render, repo
 from .render import ExtractedClaim, ExtractionResult, RejectedCandidate
 from .validator import ValidationError, validate_tolerance
 
@@ -245,6 +245,101 @@ def run_extract_repo(
     project_name = project or f"extracted/{_repo_id_for_project(walked.source_id)}"
     render.write_outputs(result, output_dir=output_dir, project=project_name)
     return result
+
+
+class PaperExtractionSkipped(Exception):
+    """Raised when the paper walker decides the source cannot be
+    safely sent to the model (pdftotext missing / no form-feeds /
+    extraction empty). Carries the WalkedSource so the CLI can
+    write a diagnostic EXTRACTION.md."""
+
+    def __init__(self, walked: repo.WalkedSource):
+        super().__init__(
+            f"paper walker skipped source {walked.source_id!r}"
+        )
+        self.walked = walked
+
+
+def run_extract_paper(
+    *,
+    paper_path: Path,
+    output_dir: Path,
+    project: str | None = None,
+    source_id: str | None = None,
+    model: str = "claude-opus-4-7",
+    dry_run: bool = False,
+    api_client: Any | None = None,
+    max_tokens: int = 4096,
+    extracted_at: str | None = None,
+) -> ExtractionResult | None:
+    """Phase 5 PR6: top-level entry point for paper extraction.
+
+    Returns the ``ExtractionResult`` on a normal run; ``None`` on
+    dry-run. Raises ``PaperExtractionSkipped`` when the walker
+    refused to produce a usable source (pdftotext missing, empty
+    PDF text, no form-feeds, unsupported extension); the CLI maps
+    that to a diagnostic audit and a non-zero exit.
+    """
+    result = paper.walk_paper(paper_path, source_id=source_id)
+    walked = result.walked
+
+    if dry_run:
+        audit.write_dry_run_outputs(walked, output_dir)
+        return None
+
+    # PDF refusal modes — write a diagnostic audit and propagate.
+    if not walked.sections:
+        audit.write_dry_run_outputs(walked, output_dir)
+        raise PaperExtractionSkipped(walked)
+
+    assembled = paper.assemble_for_model(walked)
+    request = framing.build_request(
+        source_text=assembled,
+        source_id=walked.source_id,
+        model=model,
+        max_tokens=max_tokens,
+    )
+    if api_client is None:
+        api_client = _default_api_client()
+    response = api_client.messages.create(**request)
+    tool_input = _extract_tool_input(response)
+    extraction = process_tool_response(
+        tool_input,
+        walked,
+        extractor_model=model,
+        extracted_at=(
+            extracted_at if extracted_at else render.now_utc_isoformat()
+        ),
+    )
+    project_name = project or f"extracted/{_repo_id_for_project(walked.source_id)}"
+    render.write_outputs(
+        extraction, output_dir=output_dir, project=project_name,
+    )
+    # PDF experimental warning travels through walked.notes; surface
+    # it in EXTRACTION.md by appending after render's writer ran.
+    if result.source_format == "pdf" and walked.notes:
+        _append_experimental_pdf_banner(output_dir, walked.notes)
+    return extraction
+
+
+def _append_experimental_pdf_banner(
+    output_dir: Path, notes: list[str]
+) -> None:
+    """Surface PR6 experimental-PDF banner on top of the render's
+    EXTRACTION.md so a curator can't miss it."""
+    md_path = output_dir / "EXTRACTION.md"
+    if not md_path.is_file():
+        return
+    body = md_path.read_text(encoding="utf-8")
+    banner_lines = [
+        "> **Experimental PDF source.**",
+        *(f"> {n}" for n in notes if n),
+        "",
+    ]
+    md_path.write_text(
+        "\n".join(banner_lines) + "\n" + body,
+        encoding="utf-8",
+    )
 
 
 def _repo_id_for_project(source_id: str) -> str:
