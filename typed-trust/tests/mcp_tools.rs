@@ -672,3 +672,221 @@ fn server_survives_after_tier2_error() {
     assert_eq!(payload["items"].as_array().unwrap().len(), 1);
     proc.shutdown();
 }
+
+// ============================================================
+// Phase 3 code review (codex post-merge): F-CR3-1, F-CR3-2, F-CR3-3
+// ============================================================
+
+#[test]
+fn last_verified_sidecar_is_overlayed_codex_3_cr1() {
+    // Codex F-CR3-1: read_report with last_verified_sidecar must
+    // overlay it before synthesize. Before this fix the argument
+    // was accepted but ignored — MCP results disagreed with the
+    // CLI for any corpus using last_verified.json.
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = tmp.path().join("evident.yaml");
+    std::fs::write(
+        &manifest,
+        r#"version: 0.1
+project: test
+claims:
+  - id: claim-A
+    kind: measurement
+    tier: release
+    source: .
+    title: Released claim
+    claim: relative_error stays under tolerance
+    tolerances:
+      - metric: relative_error
+        op: "<"
+        value: 0.005
+        prose: stay under 0.5 percent
+    evidence:
+      oracle: [Test]
+      command: "true"
+      artifact: out.json
+"#,
+    )
+    .unwrap();
+
+    let last_verified = tmp.path().join("last_verified.json");
+    std::fs::write(
+        &last_verified,
+        json!({
+            "claim-A": {
+                "commit": "abc123",
+                "date": "2026-05-11",
+                "value": 0.0017,
+                "corpus_sha": "fixturesha"
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+
+    // Without last_verified_sidecar: criterion is NotAssessed
+    // because the manifest's inline last_verified is null/empty.
+    let resp_without = proc.call_tool(
+        "read_report",
+        json!({
+            "manifest_path": manifest.to_str().unwrap(),
+            "claim_id": "claim-A"
+        }),
+    );
+    let bundle_without = decode_result(&resp_without);
+    let crit_result_without = &bundle_without["report"]["criteria"][0]["result"]["value"]["type"];
+    assert_eq!(
+        crit_result_without.as_str(),
+        Some("not_assessed"),
+        "without last_verified overlay the criterion must be not_assessed; got {bundle_without}"
+    );
+
+    // With last_verified_sidecar: criterion is Pass (0.0017 < 0.005).
+    let resp_with = proc.call_tool(
+        "read_report",
+        json!({
+            "manifest_path": manifest.to_str().unwrap(),
+            "claim_id": "claim-A",
+            "last_verified_sidecar": last_verified.to_str().unwrap()
+        }),
+    );
+    let bundle_with = decode_result(&resp_with);
+    let crit_result_with = &bundle_with["report"]["criteria"][0]["result"]["value"]["type"];
+    assert_eq!(
+        crit_result_with.as_str(),
+        Some("pass"),
+        "last_verified overlay should produce Pass; got {bundle_with}"
+    );
+
+    proc.shutdown();
+}
+
+#[test]
+fn malformed_backing_claim_surfaces_as_tier2_codex_3_cr2() {
+    // Codex F-CR3-2: a Challenge whose inline backing_claim fails
+    // translation used to be silently dropped — the target then
+    // stayed Current instead of becoming Contested. CLI treats
+    // this as fatal; MCP must match by returning a tier-2 data
+    // error naming the offending backing claim.
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = tmp.path().join("evident.yaml");
+    std::fs::write(
+        &manifest,
+        r#"version: 0.1
+project: test
+claims:
+  - id: target-claim
+    kind: measurement
+    tier: ci
+    source: .
+    title: Target
+    claim: relative_error stays under tolerance
+    tolerances:
+      - metric: relative_error
+        op: "<"
+        value: 0.02
+        prose: stay under 2 percent
+    evidence:
+      oracle: [Test]
+      command: "true"
+      artifact: out.json
+"#,
+    )
+    .unwrap();
+
+    let sidecar = tmp.path().join("review_events.json");
+    // Backing claim with kind=policy (out-of-scope) — translate_claim
+    // returns OutOfScope, which the loop should NOT silently swallow.
+    std::fs::write(
+        &sidecar,
+        serde_json::to_string(&json!({
+            "events": [{
+                "claim_id": "target-claim",
+                "kind": "challenge",
+                "author": {"kind": "model", "name": "claude-opus-4-7", "version": "v1"},
+                "rationale": "challenge with a deliberately malformed backing claim — backing has wrong kind for translation.",
+                "timestamp": "2026-06-02T10:00:00Z",
+                "challenge": {
+                    "category": "weak_statistics",
+                    "target_criterion_id": "relative_error",
+                    "violation": {
+                        "metric": "relative_error",
+                        "observed_value": 0.05,
+                        "bound": 0.02,
+                        "comparator": "<",
+                        "citation": "row 1"
+                    },
+                    "backing_claim": {
+                        "id": "broken-backing",
+                        "title": "Broken backing",
+                        "kind": "policy",
+                        "tier": "ci",
+                        "source": ".",
+                        "claim": "policy claims are out of scope for translate_claim",
+                        "tolerances": [],
+                        "evidence": {"oracle": ["Test"], "command": "true", "artifact": "out.json"}
+                    }
+                }
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let resp = proc.call_tool(
+        "read_report",
+        json!({
+            "manifest_path": manifest.to_str().unwrap(),
+            "claim_id": "target-claim",
+            "sidecar": sidecar.to_str().unwrap()
+        }),
+    );
+    let result = resp.get("result").expect("tier-2 carries result");
+    assert_eq!(
+        result["isError"],
+        true,
+        "malformed backing claim should surface as tier-2 data error; got {resp}"
+    );
+    let text = result["content"][0]["text"].as_str().unwrap_or("");
+    assert!(
+        text.contains("backing claim") && text.contains("broken-backing"),
+        "error should name the offending backing claim; got: {text}"
+    );
+
+    proc.shutdown();
+}
+
+#[test]
+fn query_claims_cursor_beyond_total_returns_empty_codex_3_cr3() {
+    // Codex F-CR3-3: cursor > total used to underflow
+    // `claims.len() - cursor` in debug builds and panic the
+    // blocking handler. Clamping with `.min(total)` makes the
+    // failure mode "empty page" with a clean response.
+    let tmp = tempfile::tempdir().unwrap();
+    let _manifest = write_simple_manifest(tmp.path(), "claim-A");
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let resp = proc.call_tool(
+        "query_claims",
+        json!({
+            "manifest_path": tmp.path().join("evident.yaml").to_str().unwrap(),
+            "cursor": "999"
+        }),
+    );
+    // Must NOT be a tier-1 internal error (which would happen on
+    // panic). Must be a clean tier-2-equivalent: result with
+    // empty items.
+    assert!(
+        resp.get("error").is_none(),
+        "cursor underflow should not produce a protocol error; got {resp}"
+    );
+    let payload = decode_result(&resp);
+    assert_eq!(
+        payload["items"].as_array().map(|a| a.len()),
+        Some(0),
+        "cursor beyond total should return empty items; got {payload}"
+    );
+    proc.shutdown();
+}

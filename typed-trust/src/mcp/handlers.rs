@@ -21,8 +21,8 @@ use crate::review::ReviewEvent;
 use crate::synthesize::synthesize;
 use crate::translate::{
     backing_claim_for_event, translate_claim, translate_evidence, translate_review_event,
-    translate_tolerances, ManifestClaim, ManifestReviewEvent, ReviewEventSidecar,
-    TranslationContext,
+    translate_tolerances, ManifestClaim, ManifestLastVerified, ManifestReviewEvent,
+    ReviewEventSidecar, TranslationContext,
 };
 
 /// State shared across all handlers. Cheap to clone (everything
@@ -318,6 +318,13 @@ fn query_claims(state: &ServerState, args: Value) -> Result<Value, ToolError> {
     }
 
     let claims = load_claims_with_policy(&manifest_path, &state.policy)?;
+    // Codex F-CR3-3: clamp cursor against total before the
+    // truncated subtraction below. An out-of-range cursor used to
+    // underflow `claims.len() - cursor` in debug builds and panic
+    // the blocking handler. `list_claims` already clamps; mirror
+    // that here for symmetry and to keep the failure mode "empty
+    // page" instead of "tier-1 internal error".
+    let cursor = cursor.min(claims.len());
     let mut matches: Vec<Value> = Vec::new();
     let mut examined = 0usize;
     for (idx, c) in claims.iter().enumerate() {
@@ -485,10 +492,25 @@ fn synthesize_for(
     manifest_path: &str,
     claim_id: &str,
     sidecar_path: Option<&str>,
-    _last_verified_path: Option<&str>,
+    last_verified_path: Option<&str>,
 ) -> Result<Value, ToolError> {
-    let claims = load_claims_with_policy(manifest_path, &state.policy)?;
+    let mut claims = load_claims_with_policy(manifest_path, &state.policy)?;
     let now = "1970-01-01T00:00:00Z".to_string();
+
+    // Codex F-CR3-1: overlay the last_verified sidecar (when given)
+    // onto each claim's `last_verified` field BEFORE translation.
+    // Without this overlay the MCP results disagreed with the CLI
+    // for any corpus using last_verified.json (the agent's
+    // Phase 1 sidecar convention).
+    if let Some(lv_path) = last_verified_path {
+        authorize_sidecar(state, lv_path, "last_verified_sidecar")?;
+        let overlay = load_last_verified_sidecar(lv_path)?;
+        for cw in claims.iter_mut() {
+            if let Some(lv) = overlay.get(&cw.claim.id) {
+                cw.claim.last_verified = Some(lv.clone());
+            }
+        }
+    }
 
     // Find the target claim.
     let target = claims
@@ -539,38 +561,41 @@ fn synthesize_for(
         .map(|v| v.as_slice())
         .unwrap_or(&[]);
 
-    let backing_reports: Vec<crate::report::TrustReport> = backing_claims_by_target
-        .get(claim_id)
-        .map(|bcs| {
-            let mut out = Vec::new();
-            for bc in bcs {
-                let bc_ctx = TranslationContext {
-                    now: now.clone(),
-                    manifest_path: ctx.manifest_path.clone(),
-                };
-                let span = "(mcp_backing)".to_string();
-                if let Err(_) = translate_claim(&bc_ctx, bc, &span) {
-                    continue;
-                }
-                let Ok(bc_criteria) = translate_tolerances(bc) else { continue };
-                let bc_evidence: Vec<_> = match translate_evidence(&bc_ctx, bc, &bc_criteria) {
-                    Ok(opt) => opt.into_iter().collect(),
-                    Err(_) => continue,
-                };
-                let bc_report = synthesize(
-                    ClaimId::new(&bc.id),
-                    bc_criteria,
-                    &bc_evidence,
-                    &[],
-                    &[],
-                    &std::collections::HashSet::new(),
-                    now.clone(),
-                );
-                out.push(bc_report);
-            }
-            out
-        })
-        .unwrap_or_default();
+    // Codex F-CR3-2: a backing-claim translation failure used to be
+    // silently dropped here, meaning a Challenge could lose its
+    // backing and the target's status would stay Current instead of
+    // becoming Contested. The CLI treats this as a fatal data error
+    // — MCP must match. We surface the first failure as a tier-2
+    // ToolError naming which backing claim was broken.
+    let mut backing_reports: Vec<crate::report::TrustReport> = Vec::new();
+    if let Some(bcs) = backing_claims_by_target.get(claim_id) {
+        for bc in bcs {
+            let bc_ctx = TranslationContext {
+                now: now.clone(),
+                manifest_path: ctx.manifest_path.clone(),
+            };
+            let span = "(mcp_backing)".to_string();
+            translate_claim(&bc_ctx, bc, &span).map_err(|e| {
+                ToolError::data(format!("backing claim {}: {e}", bc.id))
+            })?;
+            let bc_criteria = translate_tolerances(bc)
+                .map_err(|e| ToolError::data(format!("backing claim {}: {e}", bc.id)))?;
+            let bc_evidence: Vec<_> = translate_evidence(&bc_ctx, bc, &bc_criteria)
+                .map_err(|e| ToolError::data(format!("backing claim {}: {e}", bc.id)))?
+                .into_iter()
+                .collect();
+            let bc_report = synthesize(
+                ClaimId::new(&bc.id),
+                bc_criteria,
+                &bc_evidence,
+                &[],
+                &[],
+                &std::collections::HashSet::new(),
+                now.clone(),
+            );
+            backing_reports.push(bc_report);
+        }
+    }
 
     let report = synthesize(
         ClaimId::new(claim_id),
@@ -598,4 +623,17 @@ fn parse_sidecar(path: &str) -> Result<ReviewEventSidecar, ToolError> {
         .map_err(|e| ToolError::data(format!("read sidecar {path}: {e}")))?;
     serde_json::from_str(&bytes)
         .map_err(|e| ToolError::data(format!("parse sidecar {path}: {e}")))
+}
+
+/// Read a `last_verified.json` sidecar and return the per-claim
+/// overlay map. Phase 1 framework convention (key: claim_id, value:
+/// `ManifestLastVerified` shape). Codex F-CR3-1: was the missing
+/// piece in `synthesize_for`.
+fn load_last_verified_sidecar(
+    path: &str,
+) -> Result<HashMap<String, ManifestLastVerified>, ToolError> {
+    let bytes = std::fs::read_to_string(path)
+        .map_err(|e| ToolError::data(format!("read last_verified sidecar {path}: {e}")))?;
+    serde_json::from_str(&bytes)
+        .map_err(|e| ToolError::data(format!("parse last_verified sidecar {path}: {e}")))
 }
