@@ -162,3 +162,81 @@ fn render_contested_sasa_report_as_markdown() {
     let _ = fs::create_dir_all(&dir);
     fs::write(dir.join("contested.md"), markdown).expect("write contested.md");
 }
+
+#[test]
+fn endorse_event_not_rendered_under_active_challenges() {
+    // Codex round 8: when related_events contains non-Challenge kinds
+    // (Endorse, Dissent, Supersede), the markdown renderer must NOT
+    // include them under "## Active Challenges" — that would
+    // mis-represent normal review activity as objections.
+    use typed_trust::Attested;
+
+    let claim_id = ClaimId::new("test-claim");
+    let report = TrustReport {
+        claim: claim_id.clone(),
+        status: RenderStatus::Current,
+        criteria: vec![Criterion {
+            id: CriterionId::new("c0"),
+            name: "metric < 0.5".into(),
+            tolerance: None,
+            result: Attested {
+                value: CriterionResult::Pass,
+                derivation: Derivation::Verified {
+                    method: ToolInvocation {
+                        command: "x".into(),
+                        tool_version: "x".into(),
+                        env: vec![],
+                    },
+                    ran_by: Identity {
+                        kind: IdentityKind::Automated,
+                        name: "synth".into(),
+                        details: vec![],
+                    },
+                    reruns: vec![],
+                },
+                at: "2026-06-01T00:00:00Z".into(),
+            },
+        }],
+        challenges: vec![],
+        gaps: vec![],
+        aggregate: None,
+    };
+
+    // An Endorse event in related_events.
+    let endorse = ReviewEvent {
+        id: EventId::new("rev-endorse"),
+        target: Target::Claim(claim_id),
+        by: Identity {
+            kind: IdentityKind::Human,
+            name: "Approver".into(),
+            details: vec![],
+        },
+        protocol: Some("p".into()),
+        rationale: "Looks good to me.".into(),
+        at: "2026-06-01T00:00:00Z".into(),
+        kind: ReviewKind::Endorse,
+    };
+
+    let augmented = render_augmented(&RenderInput {
+        report: &report,
+        evidence: &[],
+        related_events: std::slice::from_ref(&endorse),
+        backing_reports: &[],
+        cycle_contested: &std::collections::HashSet::new(),
+    });
+    let markdown = render_markdown(&augmented);
+
+    // The endorse event is in _graph.review_events but must NOT appear
+    // under "## Active Challenges". Since this is the only event, the
+    // "Active Challenges" section should not appear at all.
+    assert!(
+        !markdown.contains("## Active Challenges"),
+        "endorse event leaked into Active Challenges section:\n{markdown}"
+    );
+    // Endorse is still in the graph payload — render_augmented owns
+    // that, render_markdown just doesn't surface it as a challenge.
+    assert_eq!(
+        augmented["_graph"]["review_events"][0]["kind"]["type"],
+        "endorse"
+    );
+}

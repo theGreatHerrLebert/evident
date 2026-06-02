@@ -35,9 +35,17 @@ pub fn render_markdown(augmented_json: &Value) -> String {
         .and_then(|g| g.get("review_events"))
         .and_then(|v| v.as_array())
     {
-        if !events.is_empty() {
+        // Filter to Challenge events only — endorsements, dissents,
+        // and supersedes share `_graph.review_events` but rendering
+        // them under "Active Challenges" would mis-represent normal
+        // review activity as objections.
+        let challenges: Vec<&Value> = events
+            .iter()
+            .filter(|e| e["kind"]["type"].as_str() == Some("challenge"))
+            .collect();
+        if !challenges.is_empty() {
             out.push_str("## Active Challenges\n\n");
-            for e in events {
+            for e in challenges {
                 render_challenge_event(&mut out, e);
             }
         }
