@@ -412,6 +412,10 @@ fn build_panel_summary(events: &[ReviewEvent]) -> Value {
             // for compiler safety against future ReviewKind
             // additions.
             ReviewKind::Supersede { .. } => {}
+            // Phase 5 PR3: PromoteFromExtracted is a lifecycle
+            // transition, not a verdict; render keeps it visually
+            // separate from Endorse/Dissent/Challenge counts.
+            ReviewKind::PromoteFromExtracted { .. } => {}
         }
     }
     let n_reviewers = seen_reviewers.len();
@@ -600,6 +604,8 @@ fn build_panel_row(event: &ReviewEvent, kind_str: &str) -> Value {
             ("challenge", has, bb)
         }
         ReviewKind::Supersede { .. } => ("supersede", false, None),
+        // Phase 5 PR3: lifecycle transition, rendered as its own row.
+        ReviewKind::PromoteFromExtracted { .. } => ("promote_from_extracted", false, None),
     };
 
     let mut row = Map::new();
