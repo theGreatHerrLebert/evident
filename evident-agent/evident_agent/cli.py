@@ -32,6 +32,7 @@ from . import (
     prompt as prompt_mod,
     review as review_mod,
     review_sidecar,
+    review_walkthrough,
     scoring,
     sidecar,
     typed_trust,
@@ -1008,6 +1009,123 @@ def drop(manifest_path: Path, claim_id: str) -> None:
     click.echo(
         f"dropped {result.claim_id}\n"
         f"  remaining: {len(result.remaining_claim_ids)} claim(s)"
+    )
+
+
+@main.command("review-extracted")
+@click.option(
+    "--manifest",
+    "manifest_path",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Path to the extracted evident.yaml.",
+)
+@click.option(
+    "--curator",
+    required=True,
+    help="Curator identity (e.g. 'Jane Doe <orcid:0000-0001-...>').",
+)
+@click.option(
+    "--curation-log",
+    "curation_log_path",
+    default=None,
+    type=click.Path(path_type=Path),
+    help=(
+        "Where to write the curation log YAML. Default: "
+        "manifest.parent / 'curation_log.yaml'."
+    ),
+)
+@click.option(
+    "--artifact-id",
+    default=None,
+    help=(
+        "Override the artifact_id in the curation log. Defaults "
+        "to the manifest's `project:` field."
+    ),
+)
+@click.option(
+    "--cited-md",
+    "cited_md_path",
+    default=None,
+    type=click.Path(path_type=Path),
+    help=(
+        "Path to source/cited.md (the per-claim citations). "
+        "Default: manifest.parent / 'source' / 'cited.md'."
+    ),
+)
+@click.option(
+    "--sidecar",
+    "sidecar_path",
+    default=None,
+    type=click.Path(path_type=Path),
+    help=(
+        "Sidecar path for promotion events. Default: "
+        "manifest.parent / 'review_events.json'."
+    ),
+)
+def review_extracted(
+    manifest_path: Path,
+    curator: str,
+    curation_log_path: Optional[Path],
+    artifact_id: Optional[str],
+    cited_md_path: Optional[Path],
+    sidecar_path: Optional[Path],
+) -> None:
+    """Interactive walkthrough of an extracted manifest.
+
+    Walks each tier:research claim with display + accept/drop/skip/
+    quit prompts. Composes promote_claim / drop_claim under the
+    hood, captures per-claim timing, and writes a curation log
+    matching the Phase 5 extraction-rate experiment's template.
+
+    The walkthrough is idempotent: already-promoted or already-dropped
+    claims are recorded as `already_curated` and skipped. Run again
+    after a `quit` to finish a partial session.
+    """
+    if curation_log_path is None:
+        curation_log_path = manifest_path.parent / "curation_log.yaml"
+    # Codex F-WALK-CR2 (P1): a Ctrl-C from the curator inside a
+    # click prompt raises click.exceptions.Abort. Without trapping
+    # it, prior accept/drop edits are on disk but the curation log
+    # isn't written — silent state loss. Trap and write whatever
+    # partial state we have, then re-raise as a UsageError so the
+    # exit code stays non-zero.
+    try:
+        result = review_walkthrough.walk_manifest(
+            manifest_path=manifest_path,
+            curator=curator,
+            curation_log_path=curation_log_path,
+            artifact_id=artifact_id,
+            cited_md_path=cited_md_path,
+            sidecar_path=sidecar_path,
+        )
+    except (click.exceptions.Abort, KeyboardInterrupt):
+        click.echo(
+            "\nwalkthrough aborted; prior decisions are preserved "
+            "in the manifest + sidecar. Re-run review-extracted "
+            "to continue.",
+            err=True,
+        )
+        sys.exit(130)  # standard exit code for SIGINT-ish abort
+    review_walkthrough.write_curation_log(result, curation_log_path)
+    n_accept = sum(1 for r in result.records if r.decision == "accept")
+    n_drop = sum(1 for r in result.records if r.decision == "drop")
+    n_skip = sum(1 for r in result.records if r.decision == "skip")
+    n_unreviewed = sum(
+        1 for r in result.records if r.decision == "unreviewed"
+    )
+    n_already = sum(
+        1 for r in result.records if r.decision == "already_curated"
+    )
+    click.echo(
+        f"reviewed {len(result.records)} claim(s): "
+        f"{n_accept} accepted, {n_drop} dropped, "
+        f"{n_skip} skipped, {n_unreviewed} unreviewed, "
+        f"{n_already} already curated"
+    )
+    click.echo(
+        f"curation log: {curation_log_path}\n"
+        f"total time: {result.minutes_total:.2f} min"
     )
 
 
