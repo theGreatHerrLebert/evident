@@ -362,3 +362,375 @@ def test_recorded_ball_dissent_e2e(tmp_path: Path) -> None:
     assert verdict.verdict == "dissent"
     assert verdict.failure_reason
     assert any(verdict.checks[k] != "pass" for k in CHECK_KEYS)
+
+
+# ============================================================
+# Phase 2b — eight required fixtures
+# ============================================================
+
+from evident_agent.review import (
+    ReviewRejected,
+    ReviewVerdict,
+    verdict_to_sidecar_entry,
+)
+from evident_agent.review_sidecar import append_events
+from evident_agent.violation import (
+    ViolationRejected,
+    build_backing_claim,
+    validate_contradiction,
+)
+
+
+def _target_claim_dict() -> dict:
+    return {
+        "id": "ball-electrostatic-ci",
+        "title": "BALL electrostatic CI",
+        "kind": "measurement",
+        "tier": "ci",
+        "source": ".",
+        "claim": "electrostatic_error stays under tolerance",
+        "tolerances": [
+            {
+                "metric": "electrostatic_error",
+                "op": "<",
+                "value": 0.02,
+                "prose": "stay under 2%",
+            }
+        ],
+        "evidence": {
+            "oracle": ["BALL"],
+            "command": "pytest",
+            "artifact": "bench/electrostatic_results.csv",
+        },
+    }
+
+
+# Fixture 2 — Trivial-pass violation rejected
+def test_fixture2_trivial_pass_violation_rejected() -> None:
+    """Codex F-2B-2 load-bearing case: `observed > 0` against target
+    `< 0.02` is rejected at validate_contradiction."""
+    bad = {
+        "metric": "electrostatic_error",
+        "observed_value": 1.0,
+        "bound": 0.0,
+        "comparator": "<",
+        "citation": "x",
+    }
+    with pytest.raises(ViolationRejected, match="threshold drift"):
+        validate_contradiction(_target_claim_dict(), "electrostatic_error", bad)
+
+
+# Fixture 3 — Threshold-drift violation rejected
+def test_fixture3_threshold_drift_violation_rejected() -> None:
+    bad = {
+        "metric": "electrostatic_error",
+        "observed_value": 0.015,
+        "bound": 0.01,
+        "comparator": "<",
+        "citation": "x",
+    }
+    with pytest.raises(ViolationRejected, match="threshold drift"):
+        validate_contradiction(_target_claim_dict(), "electrostatic_error", bad)
+
+
+# Fixture 4 — Metric-drift violation rejected
+def test_fixture4_metric_drift_violation_rejected() -> None:
+    bad = {
+        "metric": "rmsd",
+        "observed_value": 0.05,
+        "bound": 0.02,
+        "comparator": "<",
+        "citation": "x",
+    }
+    with pytest.raises(ViolationRejected, match="metric drift"):
+        validate_contradiction(_target_claim_dict(), "electrostatic_error", bad)
+
+
+# Fixture 5 — Non-violating observation rejected
+def test_fixture5_non_violating_observation_rejected() -> None:
+    """observed_value satisfies the target tolerance, so no real
+    contradiction exists."""
+    bad = {
+        "metric": "electrostatic_error",
+        "observed_value": 0.008,
+        "bound": 0.02,
+        "comparator": "<",
+        "citation": "row 1 of bench/electrostatic_results.csv",
+    }
+    with pytest.raises(ViolationRejected, match="no real"):
+        validate_contradiction(_target_claim_dict(), "electrostatic_error", bad)
+
+
+# Fixture 6 — Sustaining Challenge flips target to Contested (end-to-end)
+def test_fixture6_sustaining_challenge_flips_target_to_contested(
+    tmp_path: Path,
+) -> None:
+    """End-to-end through the typed-trust binary: hand-crafted sidecar
+    with a valid violation, agent-built backing claim, target renders
+    Contested with backing report Current + Pass."""
+    binary = _typed_trust_binary()
+    if not binary.is_file():
+        pytest.skip(f"typed-trust binary not built at {binary}")
+
+    target = _target_claim_dict()
+    target["last_verified"] = {
+        "commit": "abc",
+        "date": "2026-05-01",
+        "value": 0.008,
+    }
+    manifest = tmp_path / "evident.yaml"
+    manifest.write_text(
+        "version: 0.1\n"
+        "project: test\n"
+        "claims:\n"
+        "  - id: ball-electrostatic-ci\n"
+        "    kind: measurement\n"
+        "    tier: ci\n"
+        "    title: t\n"
+        "    claim: c\n"
+        "    tolerances:\n"
+        "      - metric: electrostatic_error\n"
+        "        op: \"<\"\n"
+        "        value: 0.02\n"
+        "        prose: stay under 2%\n"
+        "    evidence:\n"
+        "      oracle: [BALL]\n"
+        "      command: \"true\"\n"
+        "      artifact: bench/electrostatic_results.csv\n"
+        "    last_verified:\n"
+        "      commit: abc\n"
+        "      date: 2026-05-01\n"
+        "      value: 0.008\n"
+    )
+
+    verdict = ReviewVerdict(
+        verdict="challenge",
+        checks={
+            "metric_present": "pass",
+            "within_tolerance": "fail",
+            "outliers_checked": "pass",
+            "reproducible_chain": "pass",
+        },
+        rationale="Row 47 reports electrostatic_error 0.025, exceeding the 0.02 bound.",
+        observed_value="0.025",
+        tolerance="< 0.02",
+        failure_reason="row 47 violates the upper bound on electrostatic_error",
+        challenge_category="weak_statistics",
+        challenge_target_criterion_id="electrostatic_error",
+        challenge_violation={
+            "metric": "electrostatic_error",
+            "observed_value": 0.025,
+            "bound": 0.02,
+            "comparator": "<",
+            "citation": "row 47 of bench/electrostatic_results.csv",
+        },
+        model="claude-opus-4-7",
+    )
+    entry = verdict_to_sidecar_entry(
+        verdict,
+        claim_id="ball-electrostatic-ci",
+        author_name="claude-opus-4-7",
+        author_version="20250101",
+        target_claim=target,
+    )
+    sidecar = tmp_path / "review_events.json"
+    append_events(sidecar, [entry])
+
+    result = subprocess.run(
+        [
+            str(binary),
+            "--format",
+            "json",
+            "--review-events-sidecar",
+            str(sidecar),
+            str(manifest),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    bundle = json.loads(result.stdout)
+    target_report = bundle["reports"][0]
+    assert target_report["status"] == "contested", (
+        f"expected target Contested, got {target_report['status']}; bundle: {bundle}"
+    )
+    backing_reports = target_report.get("_graph", {}).get("backing_reports", [])
+    assert any(b["status"] == "current" for b in backing_reports), (
+        "expected at least one backing report Current"
+    )
+
+
+# Fixture 7 — Procedural Challenge without backing
+def test_fixture7_procedural_challenge_renders_without_backing(
+    tmp_path: Path,
+) -> None:
+    binary = _typed_trust_binary()
+    if not binary.is_file():
+        pytest.skip(f"typed-trust binary not built at {binary}")
+
+    manifest = tmp_path / "evident.yaml"
+    manifest.write_text(
+        "version: 0.1\n"
+        "project: test\n"
+        "claims:\n"
+        "  - id: ball-electrostatic-ci\n"
+        "    kind: measurement\n"
+        "    tier: ci\n"
+        "    title: t\n"
+        "    claim: c\n"
+        "    tolerances:\n"
+        "      - metric: electrostatic_error\n"
+        "        op: \"<\"\n"
+        "        value: 0.02\n"
+        "        prose: stay under 2%\n"
+        "    evidence:\n"
+        "      oracle: [BALL]\n"
+        "      command: \"true\"\n"
+        "      artifact: out.json\n"
+    )
+    sidecar_path = tmp_path / "review_events.json"
+    sidecar_path.write_text(
+        json.dumps(
+            {
+                "events": [
+                    {
+                        "claim_id": "ball-electrostatic-ci",
+                        "kind": "challenge",
+                        "author": {
+                            "kind": "model",
+                            "name": "claude-opus-4-7",
+                            "version": "20250101",
+                        },
+                        "rationale": "Docker container fails to start; reproducibility blocked completely.",
+                        "timestamp": "2026-06-02T10:31:44Z",
+                        "challenge": {"category": "command_failure"},
+                    }
+                ]
+            }
+        )
+    )
+    result = subprocess.run(
+        [
+            str(binary),
+            "--format",
+            "json",
+            "--review-events-sidecar",
+            str(sidecar_path),
+            str(manifest),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    bundle = json.loads(result.stdout)
+    target = bundle["reports"][0]
+    # Procedural Challenge moves status to contested (without a
+    # backing claim).
+    assert target["status"] == "contested"
+    # And there should be no backing reports.
+    backing = target.get("_graph", {}).get("backing_reports", [])
+    assert not backing, f"procedural challenge must not carry backing reports; got {backing}"
+
+
+# Fixture 8 — Cycle / depth-2 backing rejected
+def test_fixture8_backing_claim_id_matching_target_id_rejected(
+    tmp_path: Path,
+) -> None:
+    binary = _typed_trust_binary()
+    if not binary.is_file():
+        pytest.skip(f"typed-trust binary not built at {binary}")
+
+    manifest = tmp_path / "evident.yaml"
+    manifest.write_text(
+        "version: 0.1\n"
+        "project: test\n"
+        "claims:\n"
+        "  - id: ball-electrostatic-ci\n"
+        "    kind: measurement\n"
+        "    tier: ci\n"
+        "    title: t\n"
+        "    claim: c\n"
+        "    tolerances:\n"
+        "      - metric: electrostatic_error\n"
+        "        op: \"<\"\n"
+        "        value: 0.02\n"
+        "        prose: stay under 2%\n"
+        "    evidence:\n"
+        "      oracle: [BALL]\n"
+        "      command: \"true\"\n"
+        "      artifact: out.json\n"
+    )
+    # Hand-crafted sidecar with backing.id == target.id — one-step
+    # cycle that typed-trust rejects at translation time.
+    sidecar_path = tmp_path / "review_events.json"
+    sidecar_path.write_text(
+        json.dumps(
+            {
+                "events": [
+                    {
+                        "claim_id": "ball-electrostatic-ci",
+                        "kind": "challenge",
+                        "author": {
+                            "kind": "model",
+                            "name": "claude-opus-4-7",
+                            "version": "20250101",
+                        },
+                        "rationale": "Row 47 reports 0.025 exceeding the 0.02 bound on electrostatic_error.",
+                        "timestamp": "2026-06-02T10:31:44Z",
+                        "challenge": {
+                            "category": "weak_statistics",
+                            "target_criterion_id": "electrostatic_error",
+                            "violation": {
+                                "metric": "electrostatic_error",
+                                "observed_value": 0.025,
+                                "bound": 0.02,
+                                "comparator": "<",
+                                "citation": "row 47",
+                            },
+                            "backing_claim": {
+                                # Cycle: same id as the target.
+                                "id": "ball-electrostatic-ci",
+                                "title": "self-cycle",
+                                "kind": "measurement",
+                                "tier": "ci",
+                                "source": ".",
+                                "claim": "x",
+                                "tolerances": [
+                                    {
+                                        "metric": "electrostatic_error",
+                                        "op": ">=",
+                                        "value": 0.02,
+                                        "prose": "x",
+                                    }
+                                ],
+                                "evidence": {
+                                    "oracle": ["BALL"],
+                                    "command": "true",
+                                    "artifact": "x",
+                                },
+                                "last_verified": {
+                                    "date": "2026-06-02",
+                                    "value": 0.025,
+                                },
+                            },
+                        },
+                    }
+                ]
+            }
+        )
+    )
+    result = subprocess.run(
+        [
+            str(binary),
+            "--format",
+            "json",
+            "--review-events-sidecar",
+            str(sidecar_path),
+            str(manifest),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "matches the target" in result.stderr or "cycle" in result.stderr.lower()

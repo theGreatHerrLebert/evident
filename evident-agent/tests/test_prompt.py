@@ -45,9 +45,40 @@ def test_tool_schema_check_keys_match_six_check_design() -> None:
     }
 
 
-def test_tool_schema_verdict_enum_is_endorse_dissent_only() -> None:
+def test_tool_schema_verdict_enum_covers_phase2b() -> None:
     enum = TOOL_DEFINITION["input_schema"]["properties"]["verdict"]["enum"]
-    assert set(enum) == {"endorse", "dissent"}
+    assert set(enum) == {"endorse", "dissent", "challenge"}
+
+
+def test_tool_schema_challenge_block_categories() -> None:
+    """Phase 2b: the challenge category enum lists every substantive
+    and procedural category we support."""
+    from evident_agent.prompt import PROCEDURAL_CATEGORIES, SUBSTANTIVE_CATEGORIES
+
+    enum = TOOL_DEFINITION["input_schema"]["properties"]["challenge"][
+        "properties"
+    ]["category"]["enum"]
+    assert set(enum) == set(SUBSTANTIVE_CATEGORIES) | set(PROCEDURAL_CATEGORIES)
+
+
+def test_tool_schema_violation_requires_numeric_observed_and_bound() -> None:
+    violation_schema = TOOL_DEFINITION["input_schema"]["properties"]["challenge"][
+        "properties"
+    ]["violation"]["properties"]
+    assert violation_schema["observed_value"]["type"] == "number"
+    assert violation_schema["bound"]["type"] == "number"
+    # Comparator is restricted — float-equality reflex is deferred.
+    assert set(violation_schema["comparator"]["enum"]) == {"<", "<=", ">", ">="}
+
+
+def test_system_framing_includes_phase2b_escalation_rule() -> None:
+    """The default-Dissent → Challenge rule and its negative examples
+    must be in the system framing."""
+    from evident_agent.prompt import SYSTEM_FRAMING
+
+    assert "Escalate from Dissent to **Challenge**" in SYSTEM_FRAMING
+    assert "trivial threshold drift" in SYSTEM_FRAMING
+    assert "metric drift" in SYSTEM_FRAMING
 
 
 def test_tool_schema_serializes_to_json() -> None:

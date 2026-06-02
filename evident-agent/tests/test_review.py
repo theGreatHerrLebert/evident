@@ -317,6 +317,259 @@ def test_sdk_exception_is_mapped_to_review_transport_error_and_retried() -> None
         review_mod._sdk_transport_exception_types = original
 
 
+def _challenge_tool_input() -> dict[str, Any]:
+    return {
+        "verdict": "challenge",
+        "checks": {
+            "metric_present": "pass",
+            "within_tolerance": "fail",
+            "outliers_checked": "pass",
+            "reproducible_chain": "pass",
+        },
+        "observed_value": "0.025",
+        "tolerance": "< 0.02",
+        "failure_reason": "row 47 violates upper bound",
+        "rationale": "Row 47 of the digest reports electrostatic_error 0.025, exceeding the 0.02 bound.",
+        "challenge": {
+            "category": "weak_statistics",
+            "target_criterion_id": "electrostatic_error",
+            "violation": {
+                "metric": "electrostatic_error",
+                "observed_value": 0.025,
+                "bound": 0.02,
+                "comparator": "<",
+                "citation": "row 47 of bench/electrostatic_results.csv",
+            },
+        },
+    }
+
+
+def _procedural_challenge_tool_input() -> dict[str, Any]:
+    return {
+        "verdict": "challenge",
+        "checks": {
+            "metric_present": "unknown",
+            "within_tolerance": "unknown",
+            "outliers_checked": "unknown",
+            "reproducible_chain": "fail",
+        },
+        "observed_value": None,
+        "tolerance": None,
+        "failure_reason": "the cited command failed with exit 1; cannot reproduce",
+        "rationale": "Cited command fails to run in the proteon docker image; reproducibility blocked.",
+        "challenge": {"category": "command_failure"},
+    }
+
+
+# ---------- Phase 2b: substantive Challenge validation ----------
+
+def test_accepts_substantive_challenge_with_violation() -> None:
+    client = FakeClient([_resp_with(_challenge_tool_input())])
+    v = call_review(model="m", claim_yaml="c", digest_rendered="d", api_client=client)
+    assert v.verdict == "challenge"
+    assert v.challenge_category == "weak_statistics"
+    assert v.challenge_target_criterion_id == "electrostatic_error"
+    assert v.challenge_violation["observed_value"] == 0.025
+    assert v.challenge_violation["bound"] == 0.02
+
+
+def test_rejects_challenge_without_challenge_block() -> None:
+    bad = _challenge_tool_input()
+    bad["challenge"] = None
+    client = FakeClient([_resp_with(bad)])
+    with pytest.raises(ReviewRejected, match="`challenge` block"):
+        call_review(model="m", claim_yaml="c", digest_rendered="d", api_client=client)
+
+
+def test_rejects_substantive_challenge_without_violation() -> None:
+    bad = _challenge_tool_input()
+    bad["challenge"].pop("violation")
+    client = FakeClient([_resp_with(bad)])
+    with pytest.raises(ReviewRejected, match="violation tuple"):
+        call_review(model="m", claim_yaml="c", digest_rendered="d", api_client=client)
+
+
+def test_rejects_substantive_challenge_without_target_criterion_id() -> None:
+    bad = _challenge_tool_input()
+    bad["challenge"]["target_criterion_id"] = None
+    client = FakeClient([_resp_with(bad)])
+    with pytest.raises(ReviewRejected, match="target_criterion_id"):
+        call_review(model="m", claim_yaml="c", digest_rendered="d", api_client=client)
+
+
+def test_rejects_violation_missing_required_field() -> None:
+    bad = _challenge_tool_input()
+    bad["challenge"]["violation"].pop("citation")
+    client = FakeClient([_resp_with(bad)])
+    with pytest.raises(ReviewRejected, match="citation"):
+        call_review(model="m", claim_yaml="c", digest_rendered="d", api_client=client)
+
+
+def test_rejects_challenge_with_unknown_category() -> None:
+    bad = _challenge_tool_input()
+    bad["challenge"]["category"] = "vibes_off"
+    client = FakeClient([_resp_with(bad)])
+    with pytest.raises(ReviewRejected, match="not a known category"):
+        call_review(model="m", claim_yaml="c", digest_rendered="d", api_client=client)
+
+
+# ---------- Phase 2b: procedural Challenge validation ----------
+
+def test_accepts_procedural_challenge_without_violation() -> None:
+    client = FakeClient([_resp_with(_procedural_challenge_tool_input())])
+    v = call_review(model="m", claim_yaml="c", digest_rendered="d", api_client=client)
+    assert v.verdict == "challenge"
+    assert v.challenge_category == "command_failure"
+    assert v.challenge_target_criterion_id is None
+    assert v.challenge_violation is None
+
+
+def test_rejects_procedural_challenge_with_violation() -> None:
+    bad = _procedural_challenge_tool_input()
+    bad["challenge"]["violation"] = {
+        "metric": "x",
+        "observed_value": 1.0,
+        "bound": 0.0,
+        "comparator": "<",
+        "citation": "x",
+    }
+    client = FakeClient([_resp_with(bad)])
+    with pytest.raises(ReviewRejected, match="must not"):
+        call_review(model="m", claim_yaml="c", digest_rendered="d", api_client=client)
+
+
+# ---------- Phase 2b: verdict_to_sidecar_entry constructs backing ----------
+
+def test_verdict_to_sidecar_entry_substantive_challenge_constructs_backing() -> None:
+    """The sidecar entry for a substantive Challenge must carry both
+    the model-reported violation and the agent-constructed backing
+    claim. The model does NOT author the backing claim's tolerance."""
+    target = {
+        "id": "ball-electrostatic-ci",
+        "title": "BALL electrostatic CI",
+        "kind": "measurement",
+        "tier": "ci",
+        "source": ".",
+        "claim": "electrostatic_error stays under tolerance",
+        "tolerances": [
+            {
+                "metric": "electrostatic_error",
+                "op": "<",
+                "value": 0.02,
+                "prose": "stay under 2%",
+            }
+        ],
+        "evidence": {
+            "oracle": ["BALL"],
+            "command": "pytest",
+            "artifact": "bench/electrostatic_results.csv",
+        },
+    }
+    v = ReviewVerdict(
+        verdict="challenge",
+        checks={
+            "metric_present": "pass",
+            "within_tolerance": "fail",
+            "outliers_checked": "pass",
+            "reproducible_chain": "pass",
+        },
+        rationale="x" * 60,
+        observed_value="0.025",
+        tolerance="< 0.02",
+        failure_reason="row 47 exceeds bound",
+        challenge_category="weak_statistics",
+        challenge_target_criterion_id="electrostatic_error",
+        challenge_violation={
+            "metric": "electrostatic_error",
+            "observed_value": 0.025,
+            "bound": 0.02,
+            "comparator": "<",
+            "citation": "row 47 of results.csv",
+        },
+    )
+    entry = verdict_to_sidecar_entry(
+        v,
+        claim_id=target["id"],
+        author_name="claude-opus-4-7",
+        author_version="20250101",
+        target_claim=target,
+    )
+    assert entry.kind == "challenge"
+    assert entry.challenge["category"] == "weak_statistics"
+    assert entry.challenge["target_criterion_id"] == "electrostatic_error"
+    assert entry.challenge["violation"]["observed_value"] == 0.025
+    backing = entry.challenge["backing_claim"]
+    # Agent-constructed backing: inverse comparator, target's bound.
+    assert backing["tolerances"][0]["op"] == ">="
+    assert backing["tolerances"][0]["value"] == 0.02
+    # last_verified.value = violation.observed_value (so backing sustains).
+    assert backing["last_verified"]["value"] == 0.025
+    assert backing["last_verified"]["date"]
+    # Backing is a structural leaf.
+    assert "review_events" not in backing
+    assert "challenge" not in backing
+    # Backing id is deterministic.
+    assert backing["id"].startswith("ball-electrostatic-ci-counter-")
+
+
+def test_verdict_to_sidecar_entry_procedural_challenge_no_backing() -> None:
+    v = ReviewVerdict(
+        verdict="challenge",
+        checks={
+            "metric_present": "unknown",
+            "within_tolerance": "unknown",
+            "outliers_checked": "unknown",
+            "reproducible_chain": "fail",
+        },
+        rationale="x" * 60,
+        failure_reason="docker container exit 1",
+        challenge_category="command_failure",
+    )
+    entry = verdict_to_sidecar_entry(
+        v,
+        claim_id="any-claim",
+        author_name="claude-opus-4-7",
+        author_version="20250101",
+    )
+    assert entry.kind == "challenge"
+    assert entry.challenge["category"] == "command_failure"
+    assert "target_criterion_id" not in entry.challenge
+    assert "violation" not in entry.challenge
+    assert "backing_claim" not in entry.challenge
+
+
+def test_verdict_to_sidecar_entry_substantive_challenge_requires_target() -> None:
+    """A substantive Challenge without target_claim cannot construct
+    the backing claim — must reject rather than silently drop."""
+    v = ReviewVerdict(
+        verdict="challenge",
+        checks={
+            "metric_present": "pass",
+            "within_tolerance": "fail",
+            "outliers_checked": "pass",
+            "reproducible_chain": "pass",
+        },
+        rationale="x" * 60,
+        challenge_category="weak_statistics",
+        challenge_target_criterion_id="electrostatic_error",
+        challenge_violation={
+            "metric": "electrostatic_error",
+            "observed_value": 0.025,
+            "bound": 0.02,
+            "comparator": "<",
+            "citation": "row 47",
+        },
+    )
+    with pytest.raises(ReviewRejected, match="target_claim"):
+        verdict_to_sidecar_entry(
+            v,
+            claim_id="any",
+            author_name="m",
+            author_version="v",
+            # target_claim NOT supplied
+        )
+
+
 def test_verdict_to_sidecar_entry_preserves_fields() -> None:
     v = ReviewVerdict(
         verdict="endorse",

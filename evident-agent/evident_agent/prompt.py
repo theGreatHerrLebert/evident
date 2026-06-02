@@ -43,7 +43,39 @@ Default to **Dissent** unless the supplied materials let you verify, by direct c
 5. Outliers within the digest do not contradict the headline value.
 6. The evidence chain is reproducible from the cited commit (the digest header reports the commit and command).
 
-Do NOT infer missing evidence. Do NOT treat a successful command exit, a headline summary, or the claim's own prose as proof — only the digest content counts. If any of your `checks` is `fail` or `unknown`, your verdict MUST be `dissent`."""
+Do NOT infer missing evidence. Do NOT treat a successful command exit, a headline summary, or the claim's own prose as proof — only the digest content counts. If any of your `checks` is `fail` or `unknown`, your verdict MUST be `dissent`.
+
+Escalate from Dissent to **Challenge** only when the digest contains a specific observed value that violates one of the target claim's stated tolerances. Report the violation as `{ target_criterion_id, metric, observed_value, bound, comparator, citation }` using the target's own metric name, bound, and comparator. The agent — not you — constructs the backing claim from your report. Do NOT propose new metrics, looser bounds, or trivial predicates like `observed > 0`, `row exists`, or `value is numeric` as a way to escalate. If you cannot cite a specific row/field/value that contradicts the target tolerance with its own bound, stay with Dissent.
+
+Multi-criterion target: name which criterion you are contradicting via `target_criterion_id`. If you cannot identify a specific criterion, that is Dissent, not Challenge.
+
+Negative examples of invalid Challenge violations (each one must remain Dissent):
+- target says `error < 0.02`; you report `bound: 0.0, comparator: ">"` — trivial threshold drift.
+- target says `error < 0.02`; you report `metric: "rmsd"` — metric drift.
+- target says `error < 0.02`; you report `observed_value: "0.025"` — stringified, not numeric.
+- target says `error < 0.02`; you report `observed_value: 0.008` — satisfies the tolerance, not a contradiction.
+
+Positive example: target says `electrostatic_error < 0.02`; digest row 47 shows `electrostatic_error = 0.025`. Valid violation: `{metric: "electrostatic_error", observed_value: 0.025, bound: 0.02, comparator: "<", citation: "row 47 of bench/electrostatic_results.csv"}`."""
+
+
+PROCEDURAL_CATEGORIES = (
+    "command_failure",
+    "hash_mismatch",
+    "artifact_unavailable",
+    "conflict_of_interest",
+    "peer_review_unverifiable",
+)
+
+SUBSTANTIVE_CATEGORIES = (
+    "missing_control",
+    "weak_statistics",
+    "confound",
+    "unverifiable_assumption",
+    "missing_benchmark",
+    "reproducibility_risk",
+)
+
+CHALLENGE_CATEGORIES = SUBSTANTIVE_CATEGORIES + PROCEDURAL_CATEGORIES
 
 
 TOOL_DEFINITION: dict[str, Any] = {
@@ -51,14 +83,16 @@ TOOL_DEFINITION: dict[str, Any] = {
     "description": (
         "Submit your reviewer verdict on the cited claim. Endorse only "
         "if you can cite the verifying evidence by row/field/value; "
-        "Dissent otherwise."
+        "Dissent if the evidence is insufficient; Challenge only if you "
+        "can cite a specific value that violates the target tolerance "
+        "with its own bound and comparator."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "verdict": {
                 "type": "string",
-                "enum": ["endorse", "dissent"],
+                "enum": ["endorse", "dissent", "challenge"],
             },
             "checks": {
                 "type": "object",
@@ -85,6 +119,57 @@ TOOL_DEFINITION: dict[str, Any] = {
                     "rows, observed values from the digest. Avoid "
                     "generalities. Minimum 50 characters."
                 ),
+            },
+            "challenge": {
+                "type": ["object", "null"],
+                "description": (
+                    "Required when verdict == \"challenge\". For "
+                    "substantive categories, supply a violation tuple. "
+                    "For procedural categories, supply only the "
+                    "category. The agent constructs the backing claim "
+                    "from your violation; do NOT author the backing "
+                    "claim's tolerance directly."
+                ),
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "enum": list(CHALLENGE_CATEGORIES),
+                    },
+                    "target_criterion_id": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "The id (metric name) of the target's "
+                            "criterion you are contradicting. Required "
+                            "for substantive categories."
+                        ),
+                    },
+                    "violation": {
+                        "type": ["object", "null"],
+                        "description": (
+                            "Required for substantive categories. "
+                            "Report the target's own metric, bound, "
+                            "and comparator — not your inverse."
+                        ),
+                        "properties": {
+                            "metric": {"type": "string"},
+                            "observed_value": {"type": "number"},
+                            "bound": {"type": "number"},
+                            "comparator": {
+                                "type": "string",
+                                "enum": ["<", "<=", ">", ">="],
+                            },
+                            "citation": {"type": "string"},
+                        },
+                        "required": [
+                            "metric",
+                            "observed_value",
+                            "bound",
+                            "comparator",
+                            "citation",
+                        ],
+                    },
+                },
+                "required": ["category"],
             },
         },
         "required": ["verdict", "checks", "rationale"],

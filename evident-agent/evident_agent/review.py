@@ -31,13 +31,18 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-from .prompt import TOOL_DEFINITION, build_request
+from .prompt import (
+    PROCEDURAL_CATEGORIES,
+    SUBSTANTIVE_CATEGORIES,
+    TOOL_DEFINITION,
+    build_request,
+)
 
 LOGGER = logging.getLogger("evident_agent.review")
 
 MIN_RATIONALE_CHARS = 50
 CHECK_KEYS = ("metric_present", "within_tolerance", "outliers_checked", "reproducible_chain")
-VERDICT_VALUES = ("endorse", "dissent")
+VERDICT_VALUES = ("endorse", "dissent", "challenge")
 CHECK_VALUES = ("pass", "fail", "unknown")
 
 
@@ -48,12 +53,16 @@ class ReviewVerdict:
     """A validated submit_review tool input. The agent serializes this
     into a ``ReviewEventEntry`` for the sidecar."""
 
-    verdict: str  # "endorse" | "dissent"
+    verdict: str  # "endorse" | "dissent" | "challenge"
     checks: dict[str, str]  # CHECK_KEYS → CHECK_VALUES
     rationale: str
     observed_value: Optional[str] = None
     tolerance: Optional[str] = None
     failure_reason: Optional[str] = None
+    # Phase 2b: only populated when verdict == "challenge".
+    challenge_category: Optional[str] = None
+    challenge_target_criterion_id: Optional[str] = None
+    challenge_violation: Optional[dict[str, Any]] = None
     # Provenance fields populated by ``call_review``.
     model: str = ""
     request_id: str = ""
@@ -223,6 +232,60 @@ def _validate_tool_input(tool_input: dict[str, Any]) -> ReviewVerdict:
                 "verdict=endorse requires non-null observed_value and tolerance"
             )
 
+    # Phase 2b: Challenge verdict requires a challenge block.
+    challenge_category: Optional[str] = None
+    challenge_target_criterion_id: Optional[str] = None
+    challenge_violation: Optional[dict[str, Any]] = None
+
+    if verdict == "challenge":
+        challenge_block = tool_input.get("challenge")
+        if not isinstance(challenge_block, dict):
+            raise ReviewRejected(
+                "verdict=challenge requires a `challenge` block with category"
+            )
+
+        category = challenge_block.get("category")
+        if category not in PROCEDURAL_CATEGORIES and category not in SUBSTANTIVE_CATEGORIES:
+            raise ReviewRejected(
+                f"challenge.category {category!r} is not a known category"
+            )
+        challenge_category = category
+
+        if category in SUBSTANTIVE_CATEGORIES:
+            # Substantive Challenge needs target_criterion_id +
+            # violation. The deeper contradiction check happens in
+            # violation.validate_contradiction (called from the CLI
+            # where the target claim is in scope).
+            tcid = challenge_block.get("target_criterion_id")
+            if not isinstance(tcid, str) or not tcid:
+                raise ReviewRejected(
+                    f"substantive challenge category {category!r} requires "
+                    f"a non-empty target_criterion_id"
+                )
+            violation = challenge_block.get("violation")
+            if not isinstance(violation, dict):
+                raise ReviewRejected(
+                    f"substantive challenge category {category!r} requires "
+                    f"a violation tuple"
+                )
+            # Schema-level shape check; semantic contradiction logic
+            # lives in violation.validate_contradiction.
+            for req in ("metric", "observed_value", "bound", "comparator", "citation"):
+                if req not in violation:
+                    raise ReviewRejected(
+                        f"challenge.violation missing required field {req!r}"
+                    )
+            challenge_target_criterion_id = tcid
+            challenge_violation = dict(violation)
+        else:
+            # Procedural — must NOT carry violation (typed-trust
+            # rejects that, but catch it agent-side too).
+            if challenge_block.get("violation") is not None:
+                raise ReviewRejected(
+                    f"procedural challenge category {category!r} must not "
+                    f"carry a violation tuple"
+                )
+
     return ReviewVerdict(
         verdict=verdict,
         checks=dict(checks),
@@ -230,6 +293,9 @@ def _validate_tool_input(tool_input: dict[str, Any]) -> ReviewVerdict:
         observed_value=observed_value if observed_value else None,
         tolerance=tolerance if tolerance else None,
         failure_reason=failure_reason if failure_reason else None,
+        challenge_category=challenge_category,
+        challenge_target_criterion_id=challenge_target_criterion_id,
+        challenge_violation=challenge_violation,
     )
 
 
@@ -344,17 +410,51 @@ def verdict_to_sidecar_entry(
     author_name: str,
     author_version: str,
     author_context: Optional[str] = None,
+    target_claim: Optional[dict[str, Any]] = None,
 ) -> "ReviewEventEntry":  # noqa: F821 - forward ref to avoid cycle
     """Materialize the verdict into a sidecar entry suitable for
-    ``review_sidecar.append_events``. Kept in this module so the
-    canonical author-shape construction lives next to the validation
-    that produces ``ReviewVerdict``.
+    ``review_sidecar.append_events``.
+
+    For Endorse/Dissent: straight projection.
+
+    For Challenge: build the challenge block (and, for substantive
+    categories, the agent-constructed backing claim). ``target_claim``
+    is REQUIRED for substantive Challenges — the backing claim is
+    derived from it. The caller MUST run
+    ``violation.validate_contradiction`` first; this function trusts
+    its input.
     """
     from .review_sidecar import ReviewAuthor, ReviewEventEntry
+    from .violation import build_backing_claim
+
+    challenge_block: Optional[dict[str, Any]] = None
+    if verdict.verdict == "challenge":
+        if verdict.challenge_category is None:
+            raise ReviewRejected("challenge verdict missing category")
+        block: dict[str, Any] = {"category": verdict.challenge_category}
+        if verdict.challenge_category in SUBSTANTIVE_CATEGORIES:
+            if (
+                target_claim is None
+                or verdict.challenge_target_criterion_id is None
+                or verdict.challenge_violation is None
+            ):
+                raise ReviewRejected(
+                    "substantive challenge requires target_claim, "
+                    "target_criterion_id, and violation"
+                )
+            block["target_criterion_id"] = verdict.challenge_target_criterion_id
+            block["violation"] = dict(verdict.challenge_violation)
+            block["backing_claim"] = build_backing_claim(
+                target_claim,
+                verdict.challenge_target_criterion_id,
+                verdict.challenge_violation,
+                timestamp=verdict.timestamp,
+            )
+        challenge_block = block
 
     return ReviewEventEntry(
         claim_id=claim_id,
-        kind=verdict.verdict,  # "endorse" | "dissent"
+        kind=verdict.verdict,
         author=ReviewAuthor(
             kind="model",
             name=author_name,
@@ -367,6 +467,7 @@ def verdict_to_sidecar_entry(
         observed_value=verdict.observed_value,
         tolerance=verdict.tolerance,
         failure_reason=verdict.failure_reason,
+        challenge=challenge_block,
     )
 
 
