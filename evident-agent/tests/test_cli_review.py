@@ -151,6 +151,37 @@ def test_last_verified_commit_reaches_the_digest_header(tmp_path: Path) -> None:
     assert "deadbeefcafe1234" in rendered
 
 
+def test_record_path_sanitization_codex_3_cr1(tmp_path: Path) -> None:
+    """Codex F-CR3-1 regression: claim ids containing path separators
+    or traversal segments must be sanitized before becoming filename
+    components. The recorded file must land inside the requested
+    record dir."""
+    from evident_agent.cli import _safe_fixture_path
+
+    record_dir = tmp_path / "record"
+    record_dir.mkdir()
+
+    # Slash separators get replaced.
+    p = _safe_fixture_path(record_dir, "org/claim")
+    assert p.parent == record_dir.resolve()
+    assert p.name == "org_claim.json"
+
+    # Backslash separators get replaced too.
+    p = _safe_fixture_path(record_dir, "org\\claim")
+    assert p.name == "org_claim.json"
+
+    # Dot-prefixed traversal segments get neutralized.
+    p = _safe_fixture_path(record_dir, "../escape")
+    assert p.parent == record_dir.resolve()
+    assert ".." not in p.name
+
+    # Bare `.` and `..` become `_unnamed`-ish but stay inside.
+    p = _safe_fixture_path(record_dir, ".")
+    assert p.parent == record_dir.resolve()
+    p = _safe_fixture_path(record_dir, "..")
+    assert p.parent == record_dir.resolve()
+
+
 def test_review_skips_claim_with_no_evidence_artifact(tmp_path: Path) -> None:
     """A claim that lacks evidence.artifact is logged as a skip
     without raising."""
