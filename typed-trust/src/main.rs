@@ -19,6 +19,7 @@
 //! into a single sequence before translation. Paths in `include` are
 //! resolved relative to the top-level manifest's directory.
 
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -26,7 +27,7 @@ use std::process::ExitCode;
 
 use typed_trust::translate::{
     parse_manifest_file, translate_claim, translate_evidence, translate_tolerances, ManifestClaim,
-    TranslationContext,
+    ManifestLastVerified, TranslationContext,
 };
 use typed_trust::*;
 
@@ -34,6 +35,11 @@ use typed_trust::*;
 struct SkipReason {
     id: String,
     reason: String,
+    /// `true` when the skip indicates a manifest error (an unparseable
+    /// or invalid measurement claim) rather than a deliberate scope
+    /// boundary. Any fatal skip makes the CLI exit non-zero so CI gates
+    /// don't silently pass on broken inputs.
+    fatal: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -46,10 +52,13 @@ enum Format {
 
 fn main() -> ExitCode {
     let raw_args: Vec<String> = env::args().collect();
-    let (format, positional) = match parse_args(&raw_args) {
-        Some(parsed) => parsed,
+    let parsed = match parse_args(&raw_args) {
+        Some(p) => p,
         None => return ExitCode::from(2),
     };
+    let format = parsed.format;
+    let sidecar_path = parsed.sidecar;
+    let positional = parsed.positional;
 
     let Some(path) = positional.first() else {
         usage();
@@ -57,7 +66,7 @@ fn main() -> ExitCode {
     };
     let filter = positional.get(1).cloned();
 
-    let claims = match load_claims(path) {
+    let mut claims = match load_claims(path) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("{e}");
@@ -65,10 +74,30 @@ fn main() -> ExitCode {
         }
     };
 
+    // Overlay sidecar entries onto each claim's last_verified field
+    // before translation. Sidecar key is the claim id; value matches
+    // ManifestLastVerified's deserialization shape.
+    if let Some(sidecar_path) = &sidecar_path {
+        match load_sidecar(sidecar_path) {
+            Ok(overlay) => {
+                for cw in claims.iter_mut() {
+                    if let Some(lv) = overlay.get(&cw.claim.id) {
+                        cw.claim.last_verified = Some(lv.clone());
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
     let now: Timestamp = "1970-01-01T00:00:00Z".into();
 
     let mut reports: Vec<serde_json::Value> = Vec::new();
     let mut skipped: Vec<SkipReason> = Vec::new();
+    let mut filter_matched = false;
 
     for cw in claims.iter() {
         let mc = &cw.claim;
@@ -76,6 +105,7 @@ fn main() -> ExitCode {
             if mc.id != *f {
                 continue;
             }
+            filter_matched = true;
         }
         // Per-claim TranslationContext so the resulting SourceSpan
         // points at the originating manifest file (for `include:`
@@ -87,9 +117,13 @@ fn main() -> ExitCode {
         };
 
         if let Err(e) = translate_claim(&ctx, mc, &cw.span) {
+            // OutOfScope is a deliberate scope boundary (policy /
+            // reference claims); any other error is a manifest bug.
+            let fatal = !matches!(e, typed_trust::translate::TranslateError::OutOfScope { .. });
             skipped.push(SkipReason {
                 id: mc.id.clone(),
                 reason: format!("{e}"),
+                fatal,
             });
             continue;
         }
@@ -97,9 +131,14 @@ fn main() -> ExitCode {
         let criteria = match translate_tolerances(mc) {
             Ok(c) => c,
             Err(e) => {
+                // All translate_tolerances errors at this point are
+                // measurement-claim manifest bugs (UnknownOp,
+                // PartialTolerance, ProseOnlyOutsideResearch,
+                // MeasurementWithoutTolerances).
                 skipped.push(SkipReason {
                     id: mc.id.clone(),
                     reason: format!("{e}"),
+                    fatal: true,
                 });
                 continue;
             }
@@ -108,9 +147,11 @@ fn main() -> ExitCode {
         let evidence: Vec<Evidence> = match translate_evidence(&ctx, mc, &criteria) {
             Ok(opt) => opt.into_iter().collect(),
             Err(e) => {
+                // MeasurementWithoutEvidence is a manifest bug.
                 skipped.push(SkipReason {
                     id: mc.id.clone(),
                     reason: format!("{e}"),
+                    fatal: true,
                 });
                 continue;
             }
@@ -138,36 +179,83 @@ fn main() -> ExitCode {
         reports.push(augmented);
     }
 
-    match format {
+    // A filter that matched nothing is a manifest typo. CI gates with
+    // a stale claim id would otherwise see "0 reports, exit 0" and
+    // green-light a run that actually checked nothing.
+    if let Some(ref f) = filter {
+        if !filter_matched {
+            eprintln!(
+                "error: claim id {f:?} not found in manifest {path}"
+            );
+            return ExitCode::FAILURE;
+        }
+    }
+
+    let any_fatal = skipped.iter().any(|s| s.fatal);
+    if any_fatal {
+        eprintln!(
+            "error: {} manifest claim(s) failed translation; see `skipped` in the output",
+            skipped.iter().filter(|s| s.fatal).count()
+        );
+    }
+
+    let render_result = match format {
         Format::Json => emit_json(path, &now, &reports, &skipped),
         Format::Markdown => emit_markdown(path, &reports, &skipped),
         Format::Html => emit_html(path, &reports, &skipped),
         Format::Mermaid => emit_mermaid(&reports),
+    };
+
+    // Translation failures override a successful render. CI gates
+    // should NOT treat a broken manifest as a passing report.
+    if any_fatal {
+        ExitCode::FAILURE
+    } else {
+        render_result
     }
 }
 
-fn parse_args(args: &[String]) -> Option<(Format, Vec<String>)> {
+struct ParsedArgs {
+    format: Format,
+    positional: Vec<String>,
+    sidecar: Option<String>,
+}
+
+fn parse_args(args: &[String]) -> Option<ParsedArgs> {
     if args.len() < 2 || args.iter().any(|a| a == "-h" || a == "--help") {
         usage();
         return None;
     }
     let mut format = Format::Json;
     let mut positional: Vec<String> = Vec::new();
+    let mut sidecar: Option<String> = None;
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
         if let Some(value) = arg.strip_prefix("--format=") {
             format = parse_format_value(value)?;
         } else if arg == "--format" {
             let Some(value) = iter.next() else {
-                eprintln!("error: --format requires a value (json|md)");
+                eprintln!("error: --format requires a value (json|md|html|mermaid)");
                 return None;
             };
             format = parse_format_value(value)?;
+        } else if let Some(value) = arg.strip_prefix("--last-verified-sidecar=") {
+            sidecar = Some(value.to_string());
+        } else if arg == "--last-verified-sidecar" {
+            let Some(value) = iter.next() else {
+                eprintln!("error: --last-verified-sidecar requires a path");
+                return None;
+            };
+            sidecar = Some(value.clone());
         } else {
             positional.push(arg.clone());
         }
     }
-    Some((format, positional))
+    Some(ParsedArgs {
+        format,
+        positional,
+        sidecar,
+    })
 }
 
 fn parse_format_value(v: &str) -> Option<Format> {
@@ -186,7 +274,9 @@ fn parse_format_value(v: &str) -> Option<Format> {
 }
 
 fn usage() {
-    eprintln!("usage: typed-trust [--format json|md] <manifest.yaml> [claim_id]");
+    eprintln!(
+        "usage: typed-trust [--format json|md|html|mermaid] \\\n               [--last-verified-sidecar <path>] <manifest.yaml> [claim_id]"
+    );
     eprintln!();
     eprintln!("Translates each measurement-class claim, synthesizes a TrustReport,");
     eprintln!("applies the renderer-aux layer, and emits one of:");
@@ -194,6 +284,11 @@ fn usage() {
     eprintln!("  --format md             — markdown rollup for humans");
     eprintln!("  --format html           — self-contained HTML with Mermaid graph");
     eprintln!("  --format mermaid        — just the Mermaid attestation-graph source");
+    eprintln!();
+    eprintln!("  --last-verified-sidecar <path>");
+    eprintln!("    overlay sidecar JSON entries onto each claim's last_verified field");
+    eprintln!("    before translation. Sidecar shape: {{claim_id: {{commit, date, value,");
+    eprintln!("    corpus_sha}}}}. Matches workflow/evident.py's existing convention.");
     eprintln!();
     eprintln!("Manifests with a top-level `include:` list have each included file");
     eprintln!("merged in before translation.");
@@ -362,7 +457,11 @@ fn emit_html(
     println!("<!DOCTYPE html>");
     println!("<html lang=\"en\"><head><meta charset=\"utf-8\">");
     println!("<title>Typed Trust rollup</title>");
-    println!("<style>body{{font-family:-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;max-width:1100px;margin:2em auto;padding:0 1em;line-height:1.55;color:#2c3e50;background:#fafbfc;}}h1{{border-bottom:2px solid #2c3e50;padding-bottom:0.4em;}}h2{{margin-top:2.5em;border-bottom:1px solid #ccc;padding-bottom:0.3em;}}.rollup{{padding:1em;background:#fff;border-radius:4px;border:1px solid #dee2e6;}}.report{{margin:2em 0;padding-bottom:2em;border-bottom:1px solid #dee2e6;}}.skipped{{background:#f8f9fa;padding:1em;border-radius:4px;}}</style>");
+    // Reuse the same per-report CSS so embedded fragments style
+    // consistently, plus a few rollup-specific tweaks. Same Mermaid
+    // script the per-report HTML uses.
+    println!("<style>{}\n.rollup{{padding:1em;background:#fff;border-radius:4px;border:1px solid #dee2e6;}}\n.report{{margin:2em 0;padding-bottom:2em;border-bottom:1px solid #dee2e6;}}\n.skipped{{background:#f8f9fa;padding:1em;border-radius:4px;}}</style>", typed_trust::html_render::CSS);
+    println!("{}", typed_trust::html_render::MERMAID_SCRIPT);
     println!("</head><body>");
     println!("<h1>Typed Trust rollup</h1>");
     println!("<div class=\"rollup\">");
@@ -382,7 +481,11 @@ fn emit_html(
 
     for r in reports {
         println!("<div class=\"report\">");
-        println!("{}", typed_trust::render_html(r));
+        // Use the fragment renderer here — render_html() would nest a
+        // full <!DOCTYPE>/<html>/<head>/<body> document inside the
+        // rollup body, producing invalid HTML. The rollup's <head>
+        // above already supplies the CSS and Mermaid script tag.
+        println!("{}", typed_trust::render_html_fragment(r));
         println!("</div>");
     }
 
@@ -425,4 +528,15 @@ fn html_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+/// Load a sidecar JSON file mapping claim-id → ManifestLastVerified.
+/// The shape matches `workflow/evident.py`'s `last_verified.json`
+/// convention: each entry has `commit`, `date`, `value`, `corpus_sha`
+/// fields, all optional / nullable.
+fn load_sidecar(path: &str) -> Result<HashMap<String, ManifestLastVerified>, String> {
+    let bytes = fs::read_to_string(path)
+        .map_err(|e| format!("error reading sidecar {path}: {e}"))?;
+    serde_json::from_str(&bytes)
+        .map_err(|e| format!("error parsing sidecar {path}: {e}"))
 }

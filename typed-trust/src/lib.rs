@@ -53,4 +53,4 @@ pub use synthesize::{
 pub use render::{render_augmented, RenderInput};
 pub use human_render::render_markdown;
 pub use graph::render_mermaid_graph;
-pub use html_render::render_html;
+pub use html_render::{render_html, render_html_fragment};
