@@ -69,8 +69,10 @@ class ReviewEventEntry:
     observed_value: Optional[str] = None
     tolerance: Optional[str] = None
     failure_reason: Optional[str] = None
-    category: Optional[str] = None
-    backed_by: Optional[str] = None
+    # Phase 2b: structured challenge block for kind=challenge events.
+    # Always present (and required) when kind=challenge; absent for
+    # Endorse/Dissent. Shape mirrors typed-trust's ManifestChallengeBlock.
+    challenge: Optional[dict[str, Any]] = None
     protocol: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -90,8 +92,7 @@ class ReviewEventEntry:
             "observed_value",
             "tolerance",
             "failure_reason",
-            "category",
-            "backed_by",
+            "challenge",
             "protocol",
         ):
             if raw[k] is not None:
@@ -132,8 +133,7 @@ def canonical_event_id(entry: ReviewEventEntry) -> str:
         ("observed_value", entry.observed_value),
         ("tolerance", entry.tolerance),
         ("failure_reason", entry.failure_reason),
-        ("category", entry.category),
-        ("backed_by", entry.backed_by),
+        ("challenge", _canonical_challenge(entry.challenge)),
         ("protocol", entry.protocol),
     ):
         if val is not None:
@@ -241,7 +241,31 @@ def _entry_from_dict(d: dict[str, Any]) -> ReviewEventEntry:
         observed_value=d.get("observed_value"),
         tolerance=d.get("tolerance"),
         failure_reason=d.get("failure_reason"),
-        category=d.get("category"),
-        backed_by=d.get("backed_by"),
+        challenge=d.get("challenge"),
         protocol=d.get("protocol"),
     )
+
+
+def _canonical_challenge(challenge: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """Canonical projection of the challenge block for hashing.
+
+    Mirrors typed-trust's ``challenge_canonical_value`` byte-for-byte:
+    keep category + target_criterion_id + violation; deliberately
+    exclude the backing claim (whose id is derived from the violation
+    tuple, so it adds no discriminating info).
+    """
+    if challenge is None:
+        return None
+    out: dict[str, Any] = {"category": challenge["category"]}
+    if challenge.get("target_criterion_id") is not None:
+        out["target_criterion_id"] = challenge["target_criterion_id"]
+    if challenge.get("violation") is not None:
+        v = challenge["violation"]
+        out["violation"] = {
+            "metric": v["metric"],
+            "observed_value": float(v["observed_value"]),
+            "bound": float(v["bound"]),
+            "comparator": v["comparator"],
+            "citation": v["citation"],
+        }
+    return out

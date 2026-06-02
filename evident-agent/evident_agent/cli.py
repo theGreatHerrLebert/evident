@@ -24,7 +24,18 @@ from typing import Optional
 
 import click
 
-from . import docker, evidence, manifest, prompt as prompt_mod, review as review_mod, review_sidecar, scoring, sidecar, typed_trust
+from . import (
+    docker,
+    evidence,
+    manifest,
+    prompt as prompt_mod,
+    review as review_mod,
+    review_sidecar,
+    scoring,
+    sidecar,
+    typed_trust,
+    violation as violation_mod,
+)
 
 
 @click.group()
@@ -387,17 +398,51 @@ def review(
             click.echo(f"  skip: truncated digest, no citation: {exc}", err=True)
             continue
 
+        # Phase 2b: substantive Challenges need their violation
+        # contradiction-checked against the target before we
+        # materialize the backing claim. Procedural Challenges and
+        # Endorse/Dissent skip this step.
+        if (
+            verdict.verdict == "challenge"
+            and verdict.challenge_category in prompt_mod.SUBSTANTIVE_CATEGORIES
+        ):
+            try:
+                violation_mod.validate_contradiction(
+                    claim.raw,
+                    verdict.challenge_target_criterion_id or "",
+                    verdict.challenge_violation or {},
+                )
+            except violation_mod.ViolationRejected as exc:
+                click.echo(
+                    f"  skip: substantive challenge violation rejected: {exc}",
+                    err=True,
+                )
+                continue
+
         click.echo(
             f"  verdict: {verdict.verdict} "
             f"(rationale: {verdict.rationale[:80]}…)"
         )
-        entry = review_mod.verdict_to_sidecar_entry(
-            verdict,
-            claim_id=claim.id,
-            author_name=model,
-            author_version=model_version,
-            author_context="evident-agent review v0.2a",
-        )
+        try:
+            entry = review_mod.verdict_to_sidecar_entry(
+                verdict,
+                claim_id=claim.id,
+                author_name=model,
+                author_version=model_version,
+                author_context="evident-agent review v0.2b",
+                target_claim=claim.raw,
+            )
+        except review_mod.ReviewRejected as exc:
+            click.echo(f"  skip: sidecar construction rejected: {exc}", err=True)
+            continue
+
+        if verdict.verdict == "challenge" and entry.challenge is not None:
+            backing_id = (entry.challenge.get("backing_claim") or {}).get("id")
+            click.echo(
+                f"  challenge: category={verdict.challenge_category}"
+                + (f" backing={backing_id}" if backing_id else " (procedural, no backing)")
+            )
+
         new_entries.append(entry)
 
     if not new_entries:

@@ -26,10 +26,11 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use typed_trust::translate::{
-    parse_manifest_file, translate_claim, translate_evidence, translate_review_event,
-    translate_tolerances, ManifestClaim, ManifestLastVerified, ReviewEventSidecar,
-    TranslationContext,
+    backing_claim_for_event, parse_manifest_file, translate_claim, translate_evidence,
+    translate_review_event, translate_tolerances, ManifestClaim, ManifestLastVerified,
+    ReviewEventSidecar, TranslationContext,
 };
+use typed_trust::report::TrustReport;
 use typed_trust::review::ReviewEvent;
 use typed_trust::*;
 
@@ -104,18 +105,19 @@ fn main() -> ExitCode {
     // filter fix.
     let known_claim_ids: std::collections::HashSet<String> =
         claims.iter().map(|c| c.claim.id.clone()).collect();
-    let (review_events_by_claim, review_event_aux): (
+    let (review_events_by_claim, review_event_aux, backing_claims_by_target): (
         HashMap<String, Vec<ReviewEvent>>,
         HashMap<String, serde_json::Value>,
+        HashMap<String, Vec<ManifestClaim>>,
     ) = match review_sidecar_path.as_deref() {
         Some(path) => match load_review_sidecar(path, &known_claim_ids) {
-            Ok(pair) => pair,
+            Ok(triple) => triple,
             Err(e) => {
                 eprintln!("{e}");
                 return ExitCode::FAILURE;
             }
         },
-        None => (HashMap::new(), HashMap::new()),
+        None => (HashMap::new(), HashMap::new(), HashMap::new()),
     };
 
     let now: Timestamp = "1970-01-01T00:00:00Z".into();
@@ -187,12 +189,38 @@ fn main() -> ExitCode {
             .map(|v| v.as_slice())
             .unwrap_or(&[]);
 
+        // Phase 2b: synthesize a TrustReport for every backing claim
+        // attached to this target's substantive Challenge events. The
+        // backing reports flow into both synthesize() (so the target's
+        // render status flips to Contested when a backed Challenge
+        // sustains) and render_augmented() (so the rendered output
+        // surfaces the backing report under `_graph.backing_reports`).
+        //
+        // Translation failures on backing claims are surfaced as
+        // fatal skips on the target — a broken backing claim must
+        // not silently let the Challenge fail to sustain.
+        let backing_reports = match synthesize_backing_reports(
+            &ctx,
+            backing_claims_by_target.get(&mc.id).map(|v| v.as_slice()).unwrap_or(&[]),
+            &now,
+        ) {
+            Ok(rs) => rs,
+            Err(e) => {
+                skipped.push(SkipReason {
+                    id: mc.id.clone(),
+                    reason: format!("backing claim translation failed: {e}"),
+                    fatal: true,
+                });
+                continue;
+            }
+        };
+
         let report = synthesize(
             ClaimId::new(&mc.id),
             criteria,
             &evidence,
             events,
-            &[],
+            &backing_reports,
             &std::collections::HashSet::new(),
             now.clone(),
         );
@@ -201,7 +229,7 @@ fn main() -> ExitCode {
             report: &report,
             evidence: &evidence,
             related_events: events,
-            backing_reports: &[],
+            backing_reports: &backing_reports,
         cycle_contested: &std::collections::HashSet::new(),
         });
 
@@ -614,6 +642,7 @@ fn load_review_sidecar(
     (
         HashMap<String, Vec<ReviewEvent>>,
         HashMap<String, serde_json::Value>,
+        HashMap<String, Vec<ManifestClaim>>,
     ),
     String,
 > {
@@ -642,6 +671,7 @@ fn load_review_sidecar(
 
     let mut grouped: HashMap<String, Vec<ReviewEvent>> = HashMap::new();
     let mut aux: HashMap<String, serde_json::Value> = HashMap::new();
+    let mut backing: HashMap<String, Vec<ManifestClaim>> = HashMap::new();
     for entry in &parsed.events {
         let event = translate_review_event(entry)
             .map_err(|e| format!("error translating review event in {path}: {e}"))?;
@@ -656,8 +686,60 @@ fn load_review_sidecar(
                 aux.insert(event_id_str, aux_value);
             }
         }
+        // Phase 2b: collect inline backing claims keyed by target id.
+        // backing_claim_for_event returns None for procedural and
+        // non-Challenge events.
+        if let Some(bc) = backing_claim_for_event(entry) {
+            backing
+                .entry(entry.claim_id.clone())
+                .or_default()
+                .push(bc.clone());
+        }
     }
-    Ok((grouped, aux))
+    Ok((grouped, aux, backing))
+}
+
+/// Synthesize a `TrustReport` for each inline backing claim attached
+/// to a target's substantive Challenge events. Reuses the regular
+/// translation pipeline so backing claims go through the same
+/// validation as top-level manifest claims.
+///
+/// Translation errors are surfaced; if any backing claim fails to
+/// translate, the caller treats it as a fatal skip on the target
+/// (the Challenge cannot sustain a backing that doesn't exist).
+fn synthesize_backing_reports(
+    ctx: &TranslationContext,
+    backing_claims: &[ManifestClaim],
+    now: &Timestamp,
+) -> Result<Vec<TrustReport>, String> {
+    let mut out: Vec<TrustReport> = Vec::with_capacity(backing_claims.len());
+    for (idx, bc) in backing_claims.iter().enumerate() {
+        let span = format!("review_events_sidecar.events[?].challenge.backing_claim[{idx}]");
+        translate_claim(ctx, bc, &span)
+            .map_err(|e| format!("backing claim {}: {e}", bc.id))?;
+        let bc_criteria = translate_tolerances(bc)
+            .map_err(|e| format!("backing claim {}: {e}", bc.id))?;
+        let bc_evidence: Vec<Evidence> = translate_evidence(ctx, bc, &bc_criteria)
+            .map_err(|e| format!("backing claim {}: {e}", bc.id))?
+            .into_iter()
+            .collect();
+        let bc_report = synthesize(
+            ClaimId::new(&bc.id),
+            bc_criteria,
+            &bc_evidence,
+            // Backing claims in Phase 2b are leaves: no events of
+            // their own, no recursive backing. typed-trust would
+            // accept events here if we passed them in, but the
+            // schema rejects nested review_events on backing claims
+            // (depth > 1) at translation time.
+            &[],
+            &[],
+            &std::collections::HashSet::new(),
+            now.clone(),
+        );
+        out.push(bc_report);
+    }
+    Ok(out)
 }
 
 /// Build the JSON aux block (checks / observed_value / tolerance /
