@@ -788,7 +788,7 @@ impl std::error::Error for ReviewTranslateError {}
 pub fn translate_review_event(
     e: &ManifestReviewEvent,
 ) -> Result<crate::review::ReviewEvent, ReviewTranslateError> {
-    use crate::review::{ReviewEvent, ReviewKind, Target};
+    use crate::review::{ReviewEvent, ReviewKind};
 
     let kind = match e.kind.as_str() {
         "endorse" => ReviewKind::Endorse,
