@@ -1,0 +1,98 @@
+{
+  "claim": "proteon-sasa-vs-biopython-release-1k-pdbs",
+  "status": "current",
+  "criteria": [
+    {
+      "id": "proteon-sasa-vs-biopython-release-1k-pdbs-criterion-0",
+      "name": "Median rel err vs Biopython < 0.5%",
+      "tolerance": {
+        "metric": "median_relative_error",
+        "op": "<",
+        "value": 0.005,
+        "output": "total_sasa",
+        "against": "Biopython",
+        "prose": "Median(|proteon - biopython| / biopython) < 0.005"
+      },
+      "result": {
+        "value": {
+          "type": "pass"
+        },
+        "derivation": {
+          "type": "verified",
+          "data": {
+            "method": {
+              "command": "rule:Lt(observed, tolerance)",
+              "tool_version": "typed-trust-synth 0.1.0"
+            },
+            "ran_by": {
+              "kind": "automated",
+              "name": "evident-synthesizer"
+            }
+          }
+        },
+        "at": "2026-05-11T00:00:00Z"
+      }
+    },
+    {
+      "id": "proteon-sasa-vs-biopython-release-1k-pdbs-criterion-1",
+      "name": "Median rel err vs FreeSASA < 2%",
+      "tolerance": {
+        "metric": "median_relative_error",
+        "op": "<",
+        "value": 0.02,
+        "output": "total_sasa",
+        "against": "FreeSASA",
+        "prose": "Median(|proteon - freesasa| / freesasa) < 0.02"
+      },
+      "result": {
+        "value": {
+          "type": "pass"
+        },
+        "derivation": {
+          "type": "verified",
+          "data": {
+            "method": {
+              "command": "rule:Lt(observed, tolerance)",
+              "tool_version": "typed-trust-synth 0.1.0"
+            },
+            "ran_by": {
+              "kind": "automated",
+              "name": "evident-synthesizer"
+            }
+          }
+        },
+        "at": "2026-05-11T00:00:00Z"
+      }
+    },
+    {
+      "id": "proteon-sasa-vs-biopython-release-1k-pdbs-criterion-2",
+      "name": "Pass rate >= 95%",
+      "tolerance": {
+        "metric": "pass_rate",
+        "op": ">=",
+        "value": 0.95,
+        "output": "total_sasa",
+        "prose": "pass / (pass + warn + fail - loading.fail) >= 0.95"
+      },
+      "result": {
+        "value": {
+          "type": "pass"
+        },
+        "derivation": {
+          "type": "verified",
+          "data": {
+            "method": {
+              "command": "rule:GtEq(observed, tolerance)",
+              "tool_version": "typed-trust-synth 0.1.0"
+            },
+            "ran_by": {
+              "kind": "automated",
+              "name": "evident-synthesizer"
+            }
+          }
+        },
+        "at": "2026-05-11T00:00:00Z"
+      }
+    }
+  ]
+}

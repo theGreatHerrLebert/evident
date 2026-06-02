@@ -1,0 +1,29 @@
+{
+  "id": "rev-synthetic-electrostatic-band-too-wide",
+  "target": {
+    "type": "criterion",
+    "data": "charmm19-electrostatic-vs-ball-rel-err"
+  },
+  "by": {
+    "kind": "human",
+    "name": "synthetic-reviewer",
+    "details": [
+      {
+        "key": "context",
+        "value": "fit-test Part 4"
+      }
+    ]
+  },
+  "protocol": "typed-trust-fit-test-synthetic-review-v1",
+  "rationale": "25% band conflates BALL convention divergence with proteon-side convention errors of comparable magnitude.",
+  "at": "2026-06-01T00:00:00Z",
+  "kind": {
+    "type": "challenge",
+    "data": {
+      "category": {
+        "type": "weak_statistics"
+      },
+      "backed_by": "synthetic-charmm19-electrostatic-band-conflates-sources"
+    }
+  }
+}

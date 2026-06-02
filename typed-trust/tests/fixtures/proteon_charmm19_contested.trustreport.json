@@ -1,0 +1,50 @@
+{
+  "claim": "proteon-charmm19-vs-ball-ci",
+  "status": "contested",
+  "criteria": [
+    {
+      "id": "charmm19-electrostatic-vs-ball-rel-err",
+      "name": "Electrostatic relative_error < 25%",
+      "tolerance": {
+        "metric": "relative_error",
+        "op": "<",
+        "value": 0.25,
+        "output": "electrostatic",
+        "against": "BALL",
+        "prose": "|proteon - BALL| / |BALL| < 25% on electrostatic at NoCutoff."
+      },
+      "result": {
+        "value": {
+          "type": "pass"
+        },
+        "derivation": {
+          "type": "verified",
+          "data": {
+            "method": {
+              "command": "rule:Lt(observed, tolerance)",
+              "tool_version": "typed-trust-synth 0.1.0"
+            },
+            "ran_by": {
+              "kind": "automated",
+              "name": "evident-synthesizer"
+            }
+          }
+        },
+        "at": "2026-05-02T00:00:00Z"
+      }
+    }
+  ],
+  "challenges": [
+    "rev-synthetic-electrostatic-band-too-wide"
+  ],
+  "gaps": [
+    {
+      "description": "Tolerance band may not discriminate proteon-side convention errors from BALL convention divergence of comparable magnitude.",
+      "would_satisfy": [
+        "tighter electrostatic tolerance",
+        "split into vs-OpenMM (tight) + vs-BALL (wide) tolerances"
+      ],
+      "author_actionable": true
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "claim": "proteon-sasa-vs-biopython-release-1k-pdbs",
+  "criteria": [
+    {
+      "id": "proteon-sasa-vs-biopython-release-1k-pdbs-criterion-0",
+      "name": "median_relative_error < 0.005 on total_sasa vs Biopython",
+      "result": {
+        "at": "2026-06-01T00:00:00Z",
+        "criterion_status": "current",
+        "derivation": {
+          "data": {
+            "method": {
+              "command": "rule:Lt(observed=0.0017, tolerance=0.005) at 2026-05-11",
+              "tool_version": "typed-trust-synth 0.1.0"
+            },
+            "ran_by": {
+              "kind": "automated",
+              "name": "evident-synthesizer"
+            }
+          },
+          "type": "verified"
+        },
+        "observed_value": 0.0017,
+        "value": {
+          "type": "pass"
+        }
+      },
+      "tolerance": {
+        "against": "Biopython",
+        "metric": "median_relative_error",
+        "op": "<",
+        "output": "total_sasa",
+        "prose": "Median(|proteon - biopython| / biopython) < 0.005",
+        "value": 0.005
+      }
+    }
+  ],
+  "status": "current"
+}
