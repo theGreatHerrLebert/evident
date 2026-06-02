@@ -54,6 +54,10 @@ h3 { margin: 1.2em 0 0.4em; }
 }
 .review-event.endorsement { border-left-color: #28a745; background: #f1f9f3; }
 .review-event.dissent { border-left-color: #e67e22; background: #fef5ec; }
+.panel { background: #fff; padding: 0.75em 1.2em; border-left: 4px solid #6c757d; border-radius: 0 4px 4px 0; margin: 1em 0; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+.panel-list { list-style: none; padding-left: 0; }
+.panel-list li { margin: 0.35em 0; }
+.panel-footnote { color: #6c757d; font-size: 0.92em; margin-top: 0.7em; }
 .gap {
     background: #f8d7da; padding: 0.6em 1em; border-radius: 4px;
     margin: 0.6em 0; border-left: 4px solid #dc3545;
@@ -158,6 +162,14 @@ pub fn render_html_fragment(augmented_json: &Value) -> String {
             out.push_str("  <h2>Active challenges</h2>\n");
             for c in challenges {
                 render_challenge(&mut out, c);
+            }
+        }
+
+        // Phase 2c: panel section between challenges and per-kind
+        // detail. Only when n_reviewers > 1.
+        if let Some(panel) = augmented_json.pointer("/_graph/panel_summary") {
+            if panel["n_reviewers"].as_u64().unwrap_or(0) > 1 {
+                render_panel(&mut out, panel);
             }
         }
 
@@ -444,6 +456,84 @@ fn render_review(out: &mut String, e: &Value, verb: &str, kind_class: &str) {
         "    <div class=\"detail-row\"><span class=\"detail-label\">Rationale:</span> {}</div>\n",
         escape_html(rationale)
     ));
+    out.push_str("  </div>\n");
+}
+
+/// Phase 2c: HTML reviewer-panel section. Mirrors human_render's
+/// markdown layout.
+fn render_panel(out: &mut String, panel: &Value) {
+    let n_reviewers = panel["n_reviewers"].as_u64().unwrap_or(0);
+    let n_endorse = panel["n_endorse"].as_u64().unwrap_or(0);
+    let n_dissent = panel["n_dissent"].as_u64().unwrap_or(0);
+    let n_challenge = panel["n_challenge"].as_u64().unwrap_or(0);
+    let n_supersede = panel["n_supersede"].as_u64().unwrap_or(0);
+
+    out.push_str("  <h2>Reviewer panel</h2>\n");
+    out.push_str("  <div class=\"panel\">\n");
+
+    let kinds = [
+        ("endorsed", n_endorse),
+        ("dissented", n_dissent),
+        ("challenged", n_challenge),
+        ("superseded", n_supersede),
+    ];
+    let nonzero: Vec<&(&str, u64)> = kinds.iter().filter(|(_, n)| *n > 0).collect();
+    if nonzero.len() == 1 {
+        let (label, _) = nonzero[0];
+        out.push_str(&format!(
+            "    <p><strong>{n_reviewers} reviewers, all {label}.</strong></p>\n"
+        ));
+    } else {
+        let parts: Vec<String> = nonzero
+            .iter()
+            .map(|(label, n)| format!("{n} {label}"))
+            .collect();
+        out.push_str(&format!(
+            "    <p><strong>Panel divergent — {n_reviewers} reviewers:</strong> {}</p>\n",
+            escape_html(&parts.join(", "))
+        ));
+    }
+
+    if let Some(rows) = panel.get("verdicts_by_reviewer").and_then(|v| v.as_array()) {
+        out.push_str("    <ul class=\"panel-list\">\n");
+        for row in rows {
+            let kind = row["author"]["kind"].as_str().unwrap_or("?");
+            let name = row["author"]["name"].as_str().unwrap_or("?");
+            let version = row["author"].get("version").and_then(|v| v.as_str());
+            let verdict = row["kind"].as_str().unwrap_or("?");
+            let has_backing = row["has_backing"].as_bool().unwrap_or(false);
+            let backed_by = row["backed_by"].as_str();
+            let author_label = match version {
+                Some(v) => format!("{name} ({v})"),
+                None => name.to_string(),
+            };
+            let backing_fragment = if has_backing {
+                match backed_by {
+                    Some(b) => format!(
+                        ", backed_by=<code>{}</code>",
+                        escape_html(b)
+                    ),
+                    None => ", backed".into(),
+                }
+            } else {
+                String::new()
+            };
+            out.push_str(&format!(
+                "      <li><strong>{}</strong> <code>{}</code> — <em>{}</em>{}</li>\n",
+                escape_html(kind),
+                escape_html(&author_label),
+                escape_html(verdict),
+                backing_fragment
+            ));
+        }
+        out.push_str("    </ul>\n");
+    }
+
+    if n_supersede > 0 {
+        out.push_str(
+            "    <p class=\"panel-footnote\"><em>Panel reflects raw attestation log; supersedes not yet applied (Phase 2d).</em></p>\n",
+        );
+    }
     out.push_str("  </div>\n");
 }
 

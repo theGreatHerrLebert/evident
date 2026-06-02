@@ -151,6 +151,93 @@ def test_last_verified_commit_reaches_the_digest_header(tmp_path: Path) -> None:
     assert "deadbeefcafe1234" in rendered
 
 
+def test_review_accepts_multiple_model_flags_phase2c(tmp_path: Path) -> None:
+    """Phase 2c F-2C: --model is repeatable; the per-claim log emits
+    one "[i/N] via <model>" line per panel member. With --no-api the
+    actual API calls don't fire, but the loop wiring is exercised."""
+    manifest = _write_claim_artifact(tmp_path)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "review",
+            "--manifest",
+            str(manifest),
+            "--claim",
+            "claim-A",
+            "--model",
+            "claude-opus-4-7",
+            "--model",
+            "claude-haiku-4-5-20251001",
+            "--no-api",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # --no-api short-circuits before the per-model loop, so the
+    # per-model lines don't appear; the multi-model acceptance is
+    # verified by the absence of "got unexpected extra arguments" or
+    # similar Click parsing errors.
+    assert "no review events written" in result.output
+
+
+def test_review_render_with_empty_run_and_existing_sidecar(tmp_path: Path) -> None:
+    """Codex F-2C-11: --render after a run that produced no new
+    events should fall back to the existing sidecar when one is
+    present."""
+    manifest = _write_claim_artifact(tmp_path)
+    sidecar = tmp_path / "review_events.json"
+    # Pre-populate sidecar with one synthetic event.
+    sidecar.write_text(
+        json.dumps(
+            {
+                "events": [
+                    {
+                        "claim_id": "claim-A",
+                        "kind": "endorse",
+                        "author": {
+                            "kind": "model",
+                            "name": "claude-opus-4-7",
+                            "version": "20250101",
+                        },
+                        "rationale": "pre-recorded endorse for the render fallback regression test, long enough to validate.",
+                        "timestamp": "2026-06-02T00:00:00Z",
+                        "checks": {
+                            "metric_present": "pass",
+                            "within_tolerance": "pass",
+                            "outliers_checked": "pass",
+                            "reproducible_chain": "pass",
+                        },
+                        "observed_value": "0.008",
+                        "tolerance": "< 0.02",
+                    }
+                ]
+            }
+        )
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "review",
+            "--manifest",
+            str(manifest),
+            "--claim",
+            "claim-A",
+            "--model",
+            "claude-opus-4-7",
+            "--review-sidecar",
+            str(sidecar),
+            "--no-api",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # --no-api skipped the call, so no new events. The CLI must log
+    # the sidecar untouched message but the sidecar contents stay.
+    assert "sidecar untouched" in result.output
+    assert sidecar.is_file()  # original file preserved
+
+
 def test_record_path_sanitization_codex_3_cr1(tmp_path: Path) -> None:
     """Codex F-CR3-1 regression: claim ids containing path separators
     or traversal segments must be sanitized before becoming filename

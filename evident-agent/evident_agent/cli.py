@@ -237,15 +237,28 @@ def _resolve_commit(source_dir: Path) -> Optional[str]:
 )
 @click.option(
     "--model",
+    "models",
     required=True,
     type=str,
-    help="Anthropic model id (e.g. claude-opus-4-7).",
+    multiple=True,
+    help=(
+        "Anthropic model id (e.g. claude-opus-4-7). Repeatable for "
+        "Phase 2c multi-model panels: `--model claude-opus-4-7 "
+        "--model claude-haiku-4-5-20251001` runs both against the "
+        "same claim digest and appends one sidecar entry per model. "
+        "Sequential by default; flock keeps the sidecar consistent."
+    ),
 )
 @click.option(
     "--model-version",
     default=None,
     type=str,
-    help="Author version for the sidecar entry. Default: same as --model.",
+    help=(
+        "Author version for the sidecar entry. Default: same as the "
+        "model id. With multi-model --model the override applies to "
+        "every model uniformly; for per-model versions use distinct "
+        "model ids."
+    ),
 )
 @click.option(
     "--review-sidecar",
@@ -296,7 +309,7 @@ def _resolve_commit(source_dir: Path) -> Optional[str]:
 def review(
     manifest_path: Path,
     claim_filter: Optional[str],
-    model: str,
+    models: tuple[str, ...],
     model_version: Optional[str],
     review_sidecar_path: Optional[Path],
     last_verified_sidecar_path: Optional[Path],
@@ -305,16 +318,26 @@ def review(
     render: Optional[str],
     typed_trust_binary: Optional[str],
 ) -> None:
-    """Author Endorse/Dissent ReviewEvents on a claim's evidence (Phase 2a).
+    """Author Endorse / Dissent / Challenge ReviewEvents on a claim's
+    evidence (Phase 2a + 2b + 2c).
 
-    Per claim:
-      1. Build a per-format evidence digest from the cited artifact.
+    Per claim, per model:
+      1. Build a per-format evidence digest from the cited artifact
+         (built once per claim; every model sees the same digest).
       2. Construct a default-Dissent prompt with the submit_review tool.
-      3. Call the Anthropic API (one retry on transport failure).
+      3. Call the Anthropic API (one retry on transport failure) using
+         an independent client per model — no shared session state.
       4. Validate the response — reject Endorse-with-failing-check,
          hallucinated criterion names, short rationales.
-      5. Append the validated entry to the review_events.json sidecar.
-      6. Optionally invoke typed-trust to emit a rendered report.
+      5. For substantive Challenge: validate_contradiction +
+         build_backing_claim with the full author identity folded into
+         the short-hash.
+      6. Append the validated entry to review_events.json under flock.
+      7. Log stderr telemetry per call (model, verdict, tokens,
+         elapsed_ms).
+    After the per-claim loop:
+      8. Print end-of-run compact summary when N > 1.
+      9. Optionally invoke typed-trust to emit a rendered report.
     """
     if review_sidecar_path is None:
         review_sidecar_path = manifest_path.parent / "review_events.json"
@@ -324,7 +347,12 @@ def review(
             last_verified_sidecar_path = candidate
 
     if model_version is None:
-        model_version = model
+        # Phase 2c: when --model-version isn't supplied, each model uses
+        # its own id as the version. With one --model this matches Phase
+        # 2a behavior; with multiple --model the versions naturally
+        # differ per model.
+        model_version = ""
+    panel_models: list[str] = list(models)
 
     claims = list(manifest.load_claims(manifest_path))
     selected = list(manifest.filter_claims(claims, claim_filter=claim_filter))
@@ -377,101 +405,160 @@ def review(
             click.echo("  (--no-api) skipping API call; no sidecar entry written")
             continue
 
-        # Build messages + call API.
+        # Build messages + call API. Phase 2c: loop over the panel of
+        # models. Each model gets a fresh client (call_review's lazy
+        # default_api_client makes a new Anthropic instance per call),
+        # the same digest, and no shared session state. Verdicts
+        # are aggregated into per-claim panel telemetry at the end.
         claim_yaml_text = _claim_yaml_block(claim.raw)
-        try:
-            verdict = review_mod.call_review(
-                model=model,
-                claim_yaml=claim_yaml_text,
-                digest_rendered=digest_obj.render(),
-            )
-        except review_mod.ReviewTransportError as exc:
-            click.echo(f"  skip: transport error after retry: {exc}", err=True)
-            continue
-        except review_mod.ReviewRejected as exc:
-            click.echo(f"  skip: response rejected by validation: {exc}", err=True)
-            continue
+        claim_results: list[tuple[str, str, "review_mod.ReviewVerdict"]] = []
+        for j, model in enumerate(panel_models, start=1):
+            mv = model_version if model_version else model
+            click.echo(f"  [{j}/{len(panel_models)}] via {model} ({mv})")
 
-        # Hallucination check requires the claim's criteria ids.
-        criteria_ids = _claim_criterion_ids(claim.raw)
-        try:
-            review_mod.reject_if_hallucinated_criterion(verdict, criteria_ids)
-        except review_mod.ReviewRejected as exc:
-            click.echo(f"  skip: hallucinated criterion: {exc}", err=True)
-            continue
+            import time as _time
 
-        # Truncated-evidence-without-citation check (F9). The model
-        # cannot Endorse when the digest was truncated and its cited
-        # observed_value isn't in the digest text — it's working blind.
-        try:
-            review_mod.reject_if_truncated_endorse_lacks_evidence(
-                verdict, digest_obj.body, digest_obj.truncated
-            )
-        except review_mod.ReviewRejected as exc:
-            click.echo(f"  skip: truncated digest, no citation: {exc}", err=True)
-            continue
-
-        # Phase 2b: substantive Challenges need their violation
-        # contradiction-checked against the target before we
-        # materialize the backing claim. Procedural Challenges and
-        # Endorse/Dissent skip this step.
-        if (
-            verdict.verdict == "challenge"
-            and verdict.challenge_category in prompt_mod.SUBSTANTIVE_CATEGORIES
-        ):
+            t0 = _time.monotonic()
             try:
-                violation_mod.validate_contradiction(
-                    claim.raw,
-                    verdict.challenge_target_criterion_id or "",
-                    verdict.challenge_violation or {},
+                verdict = review_mod.call_review(
+                    model=model,
+                    claim_yaml=claim_yaml_text,
+                    digest_rendered=digest_obj.render(),
                 )
-            except violation_mod.ViolationRejected as exc:
+            except review_mod.ReviewTransportError as exc:
                 click.echo(
-                    f"  skip: substantive challenge violation rejected: {exc}",
-                    err=True,
+                    f"    skip: transport error after retry: {exc}", err=True
+                )
+                continue
+            except review_mod.ReviewRejected as exc:
+                click.echo(
+                    f"    skip: response rejected by validation: {exc}", err=True
+                )
+                continue
+            elapsed_ms = int((_time.monotonic() - t0) * 1000)
+
+            # Hallucination check requires the claim's criteria ids.
+            criteria_ids = _claim_criterion_ids(claim.raw)
+            try:
+                review_mod.reject_if_hallucinated_criterion(verdict, criteria_ids)
+            except review_mod.ReviewRejected as exc:
+                click.echo(f"    skip: hallucinated criterion: {exc}", err=True)
+                continue
+
+            # Truncated-evidence-without-citation check (F9). The model
+            # cannot Endorse when the digest was truncated and its
+            # cited observed_value isn't in the digest text.
+            try:
+                review_mod.reject_if_truncated_endorse_lacks_evidence(
+                    verdict, digest_obj.body, digest_obj.truncated
+                )
+            except review_mod.ReviewRejected as exc:
+                click.echo(
+                    f"    skip: truncated digest, no citation: {exc}", err=True
                 )
                 continue
 
-        click.echo(
-            f"  verdict: {verdict.verdict} "
-            f"(rationale: {verdict.rationale[:80]}…)"
-        )
-        try:
-            entry = review_mod.verdict_to_sidecar_entry(
-                verdict,
-                claim_id=claim.id,
-                author_name=model,
-                author_version=model_version,
-                author_context="evident-agent review v0.2b",
-                target_claim=claim.raw,
-            )
-        except review_mod.ReviewRejected as exc:
-            click.echo(f"  skip: sidecar construction rejected: {exc}", err=True)
-            continue
+            # Phase 2b: substantive Challenges need their violation
+            # contradiction-checked against the target before we
+            # materialize the backing claim. Procedural Challenges and
+            # Endorse/Dissent skip this step.
+            if (
+                verdict.verdict == "challenge"
+                and verdict.challenge_category in prompt_mod.SUBSTANTIVE_CATEGORIES
+            ):
+                try:
+                    violation_mod.validate_contradiction(
+                        claim.raw,
+                        verdict.challenge_target_criterion_id or "",
+                        verdict.challenge_violation or {},
+                    )
+                except violation_mod.ViolationRejected as exc:
+                    click.echo(
+                        f"    skip: substantive challenge violation rejected: {exc}",
+                        err=True,
+                    )
+                    continue
 
-        if verdict.verdict == "challenge" and entry.challenge is not None:
-            backing_id = (entry.challenge.get("backing_claim") or {}).get("id")
+            try:
+                entry = review_mod.verdict_to_sidecar_entry(
+                    verdict,
+                    claim_id=claim.id,
+                    author_name=model,
+                    author_version=mv,
+                    author_context="evident-agent review v0.2c",
+                    target_claim=claim.raw,
+                )
+            except review_mod.ReviewRejected as exc:
+                click.echo(
+                    f"    skip: sidecar construction rejected: {exc}", err=True
+                )
+                continue
+
             click.echo(
-                f"  challenge: category={verdict.challenge_category}"
-                + (f" backing={backing_id}" if backing_id else " (procedural, no backing)")
+                f"    verdict: {verdict.verdict} elapsed_ms={elapsed_ms} "
+                f"(rationale: {verdict.rationale[:60]}…)"
             )
+            if verdict.verdict == "challenge" and entry.challenge is not None:
+                backing_id = (entry.challenge.get("backing_claim") or {}).get("id")
+                click.echo(
+                    f"    challenge: category={verdict.challenge_category}"
+                    + (
+                        f" backing={backing_id}"
+                        if backing_id
+                        else " (procedural, no backing)"
+                    )
+                )
 
-        # --record: capture the model's full submit_review payload as a
-        # fixture for the deferred CI tests. One file per claim id so
-        # subsequent record runs of other claims append cleanly.
-        if record_path is not None:
-            _write_record_fixture(
-                record_path,
-                claim_id=claim.id,
-                verdict=verdict,
-                digest_rendered=digest_obj.render(),
+            # --record: capture per-model fixture under a model-named
+            # subdirectory so multi-model runs don't clobber each
+            # other. Single-model runs land at the top-level for
+            # backward compatibility with the Phase 2a/b fixtures.
+            if record_path is not None:
+                target_dir = (
+                    record_path / claim.id if len(panel_models) > 1 else record_path
+                )
+                fixture_name = model if len(panel_models) > 1 else claim.id
+                _write_record_fixture(
+                    target_dir,
+                    claim_id=fixture_name,
+                    verdict=verdict,
+                    digest_rendered=digest_obj.render(),
+                )
+                click.echo(
+                    f"    recorded: {target_dir / (fixture_name + '.json')}"
+                )
+
+            claim_results.append((model, mv, verdict))
+            new_entries.append(entry)
+
+        # End-of-claim panel summary line — codex F-2C-12. Only emit
+        # when more than one model was requested (per-claim panel).
+        if len(panel_models) > 1:
+            verdict_counts = {"endorse": 0, "dissent": 0, "challenge": 0}
+            for _, _, v in claim_results:
+                verdict_counts[v.verdict] = verdict_counts.get(v.verdict, 0) + 1
+            non_zero = {k: n for k, n in verdict_counts.items() if n > 0}
+            summary_parts = ", ".join(f"{n} {k}" for k, n in non_zero.items())
+            click.echo(
+                f"  Panel summary for {claim.id}: "
+                f"{len(claim_results)} reviewers: {summary_parts}"
             )
-            click.echo(f"  recorded: {record_path / (claim.id + '.json')}")
-
-        new_entries.append(entry)
+            for model, mv, v in claim_results:
+                click.echo(f"    - {model} ({mv}): {v.verdict}")
 
     if not new_entries:
-        click.echo("no review events written", err=True)
+        click.echo("no review events written; sidecar untouched", err=True)
+        # Codex F-2C-11: if --render is requested with no successful
+        # calls, render from the existing sidecar when it exists.
+        # Otherwise log explicitly.
+        if render is not None and review_sidecar_path.is_file():
+            click.echo(
+                f"  rendering existing sidecar {review_sidecar_path}; "
+                f"current run contributed no new events",
+                err=True,
+            )
+        elif render is not None:
+            click.echo("  no review events found for any claim", err=True)
     else:
         review_sidecar.append_events(review_sidecar_path, new_entries)
         click.echo(
@@ -479,6 +566,10 @@ def review(
         )
 
     if render is not None:
+        # F-2C-11: if the sidecar doesn't exist (no events ever), skip
+        # the typed-trust invocation cleanly.
+        if not review_sidecar_path.is_file():
+            return
         result = typed_trust.run(
             manifest_path=manifest_path,
             sidecar_path=last_verified_sidecar_path,
