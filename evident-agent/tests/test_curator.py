@@ -175,27 +175,77 @@ def test_promote_rejects_unknown_claim_id(tmp_path: Path):
     assert "does-not-exist" in str(exc.value)
 
 
-def test_promote_rejects_non_research_source_tier(tmp_path: Path):
-    """Multi-step promotion (research → ci → release) is deferred
-    per PR3 validator. The curator tool refuses to promote a
-    non-research claim."""
+def test_promote_research_to_ci_then_ci_to_release_succeeds(tmp_path: Path):
+    """Multi-step promotion: the curator promotes research -> ci,
+    then later promotes ci -> release. Both are valid. The
+    manifest ends at tier:release."""
+    manifest_path = _sample_manifest(tmp_path)
+    r1 = promote_claim(
+        manifest_path=manifest_path,
+        claim_id="test-claim-one",
+        to_tier="ci",
+        rationale="initial promotion",
+        curator="Jane",
+    )
+    assert r1.from_tier == "research"
+    assert r1.to_tier == "ci"
+    r2 = promote_claim(
+        manifest_path=manifest_path,
+        claim_id="test-claim-one",
+        to_tier="release",
+        rationale="release-readiness review",
+        curator="Jane",
+    )
+    assert r2.from_tier == "ci"
+    assert r2.to_tier == "release"
+    parsed = yaml.safe_load(manifest_path.read_text())
+    by_id = {c["id"]: c for c in parsed["claims"]}
+    assert by_id["test-claim-one"]["tier"] == "release"
+
+
+def test_promote_rejects_skipping_ci_rung(tmp_path: Path):
+    """Multi-step rule: each promotion must advance ONE rung. A
+    direct research -> release promotion is rejected because the
+    typed-trust validator requires an event for each leg."""
+    manifest_path = _sample_manifest(tmp_path)
+    with pytest.raises(CuratorError) as exc:
+        promote_claim(
+            manifest_path=manifest_path,
+            claim_id="test-claim-one",
+            to_tier="release",
+            rationale="skipping",
+            curator="Jane",
+        )
+    assert "adjacent" in str(exc.value) or "research" in str(exc.value)
+
+
+def test_promote_rejects_demotion(tmp_path: Path):
+    """Already at tier:release? Can't promote further (and no
+    demotion path exists in the ladder)."""
     manifest_path = _sample_manifest(tmp_path)
     promote_claim(
         manifest_path=manifest_path,
         claim_id="test-claim-one",
         to_tier="ci",
-        rationale="rationale",
+        rationale="step 1",
+        curator="Jane",
+    )
+    promote_claim(
+        manifest_path=manifest_path,
+        claim_id="test-claim-one",
+        to_tier="release",
+        rationale="step 2",
         curator="Jane",
     )
     with pytest.raises(CuratorError) as exc:
         promote_claim(
             manifest_path=manifest_path,
             claim_id="test-claim-one",
-            to_tier="release",
-            rationale="rationale",
+            to_tier="ci",
+            rationale="demote",
             curator="Jane",
         )
-    assert "research" in str(exc.value)
+    assert "not a valid promotion source" in str(exc.value) or "ladder" in str(exc.value)
 
 
 def test_promote_rejects_invalid_target_tier(tmp_path: Path):
@@ -407,6 +457,52 @@ def test_promoted_manifest_satisfies_typed_trust_validator(tmp_path: Path):
         f"typed-trust rejected the promoted manifest.\n"
         f"stderr:\n{result.stderr}\n"
         f"stdout:\n{result.stdout[:500]}"
+    )
+
+
+@pytest.mark.skipif(
+    _typed_trust_binary() is None,
+    reason="typed-trust binary not built",
+)
+def test_multi_step_promoted_manifest_satisfies_typed_trust_validator(
+    tmp_path: Path,
+):
+    """End-to-end: research -> ci -> release manifest with two
+    sidecar events must satisfy typed-trust's multi-step validator.
+    Proves the Python curator tooling and the Rust chain validator
+    are byte-compatible across two promotions."""
+    manifest_path = _sample_manifest(tmp_path)
+    promote_claim(
+        manifest_path=manifest_path,
+        claim_id="test-claim-one",
+        to_tier="ci",
+        rationale="leg 1",
+        curator="Jane Doe",
+    )
+    promote_claim(
+        manifest_path=manifest_path,
+        claim_id="test-claim-one",
+        to_tier="release",
+        rationale="leg 2",
+        curator="Jane Doe",
+    )
+    sidecar_path = tmp_path / "review_events.json"
+    binary = _typed_trust_binary()
+    assert binary is not None
+    result = subprocess.run(
+        [
+            str(binary),
+            str(manifest_path),
+            "--review-events-sidecar",
+            str(sidecar_path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, (
+        f"typed-trust rejected the multi-step promoted manifest.\n"
+        f"stderr:\n{result.stderr}\n"
     )
 
 

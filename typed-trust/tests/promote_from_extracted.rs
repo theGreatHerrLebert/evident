@@ -229,9 +229,14 @@ fn rule1_extracted_ci_claim_without_promotion_event_is_rejected() {
         PromotionError::MissingPromotionEvent {
             claim_id,
             current_tier,
+            missing_transition,
         } => {
             assert_eq!(claim_id, "cool-paper-rmsd-vs-baseline");
             assert_eq!(current_tier, "ci");
+            assert_eq!(
+                missing_transition,
+                ("research".into(), "ci".into()),
+            );
         }
         other => panic!("expected MissingPromotionEvent, got {other:?}"),
     }
@@ -565,6 +570,203 @@ fn structured_promote_from_extracted_block_rejects_unknown_field() {
         msg.contains("unknown_field") || msg.contains("unknown field"),
         "expected error naming the unknown field, got: {msg}"
     );
+}
+
+// ----------------------------------------------------------------------
+// Multi-step promotion: research -> ci -> release
+// ----------------------------------------------------------------------
+
+const EXTRACTED_RELEASE_MANIFEST_YAML: &str = r#"
+claims:
+  - id: cool-paper-rmsd-vs-baseline
+    title: Cool Paper claims median RMSD below 0.5 angstrom
+    kind: measurement
+    tier: release
+    case: source/cited.md#claim-1
+    source: ..
+    claim: median RMSD < 0.5 on BPTI suite
+    tolerances:
+      - metric: median_rmsd
+        op: "<"
+        value: 0.5
+        prose: |
+          paper Table 3 row ours: median RMSD = 0.42; bound 0.5 stated
+    evidence:
+      oracle: [Paper-Authority]
+      command: "no-replay-path"
+      artifact: source/cited.md#claim-1
+      replay_status: unavailable_artifacts
+      replay_reason: code_private
+    provenance:
+      kind: extracted-from-paper
+      source_id: arxiv:2501.12345v1
+      source_sha: deadbeef
+      extractor:
+        model: claude-opus-4-7
+        model_version: "20260601"
+        extracted_at: "2026-09-14T10:00:00Z"
+"#;
+
+#[test]
+fn multi_step_release_with_full_chain_passes() {
+    let manifest = parse_manifest_file(EXTRACTED_RELEASE_MANIFEST_YAML).unwrap();
+    let claim = &manifest.claims[0];
+    let ev_ci = promotion_event(
+        "cool-paper-rmsd-vs-baseline",
+        "research",
+        "ci",
+        "sha-1",
+        "2026-09-15T10:00:00Z",
+    );
+    let ev_release = promotion_event(
+        "cool-paper-rmsd-vs-baseline",
+        "ci",
+        "release",
+        "sha-2",
+        "2026-09-20T10:00:00Z",
+    );
+    validate_promotion_rules(claim, &[ev_ci, ev_release])
+        .expect("two-event chain should satisfy the release gate");
+}
+
+#[test]
+fn multi_step_release_missing_first_leg_is_rejected() {
+    let manifest = parse_manifest_file(EXTRACTED_RELEASE_MANIFEST_YAML).unwrap();
+    let claim = &manifest.claims[0];
+    let ev_release = promotion_event(
+        "cool-paper-rmsd-vs-baseline",
+        "ci",
+        "release",
+        "sha-2",
+        "2026-09-20T10:00:00Z",
+    );
+    let err =
+        validate_promotion_rules(claim, std::slice::from_ref(&ev_release)).unwrap_err();
+    match err {
+        PromotionError::MissingPromotionEvent {
+            missing_transition, ..
+        } => {
+            assert_eq!(
+                missing_transition,
+                ("research".into(), "ci".into()),
+            );
+        }
+        other => panic!("expected MissingPromotionEvent for first leg, got {other:?}"),
+    }
+}
+
+#[test]
+fn multi_step_release_missing_second_leg_is_rejected() {
+    let manifest = parse_manifest_file(EXTRACTED_RELEASE_MANIFEST_YAML).unwrap();
+    let claim = &manifest.claims[0];
+    let ev_ci = promotion_event(
+        "cool-paper-rmsd-vs-baseline",
+        "research",
+        "ci",
+        "sha-1",
+        "2026-09-15T10:00:00Z",
+    );
+    let err = validate_promotion_rules(claim, std::slice::from_ref(&ev_ci)).unwrap_err();
+    match err {
+        PromotionError::MissingPromotionEvent {
+            missing_transition, ..
+        } => {
+            assert_eq!(
+                missing_transition,
+                ("ci".into(), "release".into()),
+            );
+        }
+        other => panic!("expected MissingPromotionEvent for second leg, got {other:?}"),
+    }
+}
+
+#[test]
+fn multi_step_chain_out_of_order_is_rejected() {
+    // ci -> release event_date predates research -> ci event_date.
+    let manifest = parse_manifest_file(EXTRACTED_RELEASE_MANIFEST_YAML).unwrap();
+    let claim = &manifest.claims[0];
+    let ev_ci = promotion_event(
+        "cool-paper-rmsd-vs-baseline",
+        "research",
+        "ci",
+        "sha-1",
+        "2026-09-20T10:00:00Z",
+    );
+    let ev_release = promotion_event(
+        "cool-paper-rmsd-vs-baseline",
+        "ci",
+        "release",
+        "sha-2",
+        "2026-09-15T10:00:00Z", // before ev_ci
+    );
+    let err =
+        validate_promotion_rules(claim, &[ev_ci, ev_release]).unwrap_err();
+    match err {
+        PromotionError::PromotionChainOutOfOrder {
+            prior_transition,
+            next_transition,
+            ..
+        } => {
+            assert_eq!(prior_transition, ("research".into(), "ci".into()));
+            assert_eq!(next_transition, ("ci".into(), "release".into()));
+        }
+        other => panic!("expected PromotionChainOutOfOrder, got {other:?}"),
+    }
+}
+
+#[test]
+fn multi_step_research_to_release_direct_event_does_not_satisfy_gate() {
+    // The chain must use each linear step. A direct research ->
+    // release event is rejected because it doesn't match either
+    // (research, ci) or (ci, release).
+    let manifest = parse_manifest_file(EXTRACTED_RELEASE_MANIFEST_YAML).unwrap();
+    let claim = &manifest.claims[0];
+    let ev_direct = promotion_event(
+        "cool-paper-rmsd-vs-baseline",
+        "research",
+        "release",
+        "sha-1",
+        "2026-09-15T10:00:00Z",
+    );
+    let err = validate_promotion_rules(claim, std::slice::from_ref(&ev_direct)).unwrap_err();
+    match err {
+        PromotionError::MissingPromotionEvent {
+            missing_transition, ..
+        } => {
+            // Either leg of the chain could be missing first; the
+            // implementation reports whichever it checks first.
+            assert!(
+                missing_transition == ("research".into(), "ci".into())
+                    || missing_transition == ("ci".into(), "release".into()),
+                "unexpected missing_transition: {missing_transition:?}",
+            );
+        }
+        other => panic!("expected MissingPromotionEvent, got {other:?}"),
+    }
+}
+
+#[test]
+fn multi_step_chain_same_day_passes_with_eq_timestamps() {
+    // Edge case: both events at the same timestamp is allowed
+    // (chain ordering rule uses < not <=).
+    let manifest = parse_manifest_file(EXTRACTED_RELEASE_MANIFEST_YAML).unwrap();
+    let claim = &manifest.claims[0];
+    let ev_ci = promotion_event(
+        "cool-paper-rmsd-vs-baseline",
+        "research",
+        "ci",
+        "sha-1",
+        "2026-09-15T10:00:00Z",
+    );
+    let ev_release = promotion_event(
+        "cool-paper-rmsd-vs-baseline",
+        "ci",
+        "release",
+        "sha-2",
+        "2026-09-15T10:00:00Z",
+    );
+    validate_promotion_rules(claim, &[ev_ci, ev_release])
+        .expect("equal-timestamp chain should pass");
 }
 
 #[test]

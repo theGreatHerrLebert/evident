@@ -77,6 +77,25 @@ from .review_sidecar import ReviewAuthor, ReviewEventEntry, append_events
 
 VALID_TARGET_TIERS = ("ci", "release")
 
+# Multi-step linear tier ladder. The curator can promote one rung
+# at a time: research -> ci, then ci -> release. Skipping rungs
+# (research -> release directly) is rejected because typed-trust's
+# multi-step validator requires each leg to have its own event.
+_TIER_LADDER = ("research", "ci", "release")
+
+
+def _adjacent_promotion_target(from_tier: str) -> Optional[str]:
+    """Return the next tier up the linear ladder, or None if
+    ``from_tier`` is at or above the top.
+    """
+    try:
+        i = _TIER_LADDER.index(from_tier)
+    except ValueError:
+        return None
+    if i + 1 >= len(_TIER_LADDER):
+        return None
+    return _TIER_LADDER[i + 1]
+
 
 @dataclass
 class PromotionResult:
@@ -291,13 +310,25 @@ def promote_claim(
                     f"{manifest_path}"
                 )
             from_tier = target.get("tier", "")
-            # PR3 contract: from_tier MUST be 'research' for the
-            # first promotion. Multi-step promotions are deferred.
-            if from_tier != "research":
+            # Multi-step linear ladder: each promotion advances one
+            # rung. typed-trust's PR3+multi-step validator requires
+            # an event for EACH leg, so the curator can promote
+            # research -> ci then ci -> release as two separate
+            # operations, but skipping rungs (research -> release
+            # direct) is rejected.
+            expected_to = _adjacent_promotion_target(from_tier)
+            if expected_to is None:
                 raise CuratorError(
                     f"claim {claim_id!r} is at tier {from_tier!r}, "
-                    "not 'research'; the PR3 validator only accepts "
-                    "research → ci|release transitions"
+                    "which is not a valid promotion source; the "
+                    "promotion ladder is research -> ci -> release"
+                )
+            if to_tier != expected_to:
+                raise CuratorError(
+                    f"claim {claim_id!r} is at tier {from_tier!r}; the "
+                    f"adjacent target is {expected_to!r}, not {to_tier!r}. "
+                    "Multi-step promotions must advance one rung at a "
+                    "time (research -> ci, then ci -> release)."
                 )
             target["tier"] = to_tier
 
