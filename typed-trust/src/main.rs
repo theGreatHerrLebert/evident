@@ -672,10 +672,25 @@ fn load_review_sidecar(
     let mut grouped: HashMap<String, Vec<ReviewEvent>> = HashMap::new();
     let mut aux: HashMap<String, serde_json::Value> = HashMap::new();
     let mut backing: HashMap<String, Vec<ManifestClaim>> = HashMap::new();
+    // Phase 2d-i (codex F-2D-12): reject duplicate event_ids at
+    // load time. If two entries share the same id, Supersede
+    // semantics become ambiguous (Target::ReviewEvent(id) can't
+    // pick which event the Supersede applies to). Sources of
+    // duplicates: explicit event_id collisions in hand-authored
+    // sidecars, two truly-identical payloads producing identical
+    // canonical hashes, append-merge bugs. Loader treats all as
+    // hard errors.
+    let mut seen_event_ids: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     for entry in &parsed.events {
         let event = translate_review_event(entry)
             .map_err(|e| format!("error translating review event in {path}: {e}"))?;
         let event_id_str = event.id.as_str().to_string();
+        if !seen_event_ids.insert(event_id_str.clone()) {
+            return Err(format!(
+                "error: review-events sidecar {path} contains duplicate event_id {event_id_str:?} — ambiguity in Supersede target resolution would result"
+            ));
+        }
         grouped
             .entry(entry.claim_id.clone())
             .or_default()

@@ -436,7 +436,11 @@ fn markdown_panel_section_says_divergent_on_disagreement() {
 }
 
 #[test]
-fn markdown_panel_footnote_when_supersede_present() {
+fn markdown_panel_no_longer_emits_deferred_supersede_footnote_phase_2d() {
+    // Phase 2d-i replaced the Phase 2c "supersedes not yet applied"
+    // footnote with actual Supersede application. A panel with a
+    // claim-targeted Supersede event still renders cleanly but no
+    // longer carries the deferred-to-2d disclaimer.
     let claim = "x";
     let report = minimal_report(claim);
     let events = vec![
@@ -447,6 +451,8 @@ fn markdown_panel_footnote_when_supersede_present() {
             ReviewKind::Endorse,
             "2026-06-02T10:00:00Z",
         ),
+        // Claim-targeted Supersede (not a ReviewEvent-targeted one).
+        // This was the case that triggered the Phase 2c footnote.
         event(
             claim,
             "evt-2",
@@ -460,7 +466,234 @@ fn markdown_panel_footnote_when_supersede_present() {
     let augmented = render(&report, &events);
     let md = render_markdown(&augmented);
     assert!(
-        md.contains("Panel reflects raw attestation log"),
-        "supersede footnote missing; got:\n{md}"
+        !md.contains("Panel reflects raw attestation log"),
+        "the Phase 2c deferred-to-2d footnote should be gone now; got:\n{md}"
     );
+    assert!(
+        !md.contains("supersedes not yet applied"),
+        "the Phase 2c deferred-to-2d footnote should be gone now; got:\n{md}"
+    );
+}
+
+// ============================================================
+// Phase 2d-i: SupersedeProjection tests
+// ============================================================
+
+/// Build a ReviewEvent::Supersede targeting a prior event id.
+fn supersede(eid: &str, target_event: &str, author: Identity, at: &str) -> ReviewEvent {
+    ReviewEvent {
+        id: EventId::new(eid),
+        target: Target::ReviewEvent(EventId::new(target_event)),
+        by: author,
+        protocol: None,
+        rationale: "Reasonable Phase 2d test supersede rationale that is plenty long to pass downstream validation.".into(),
+        at: at.into(),
+        kind: ReviewKind::Supersede {
+            successor: typed_trust::ids::AttestedId::new("att-replacement"),
+        },
+    }
+}
+
+#[test]
+fn phase2d_endorse_supersede_pair_active_count_zero() {
+    // Endorse + Supersede(Endorse). Active set is empty.
+    // n_endorse_active = 0, n_supersede_raw = 1.
+    let claim = "x";
+    let report = minimal_report(claim);
+    let events = vec![
+        event(claim, "evt-endorse", model_author("a", "v"), ReviewKind::Endorse, "2026-06-02T10:00:00Z"),
+        supersede("evt-supersede", "evt-endorse", model_author("a", "v"), "2026-06-02T10:05:00Z"),
+    ];
+    let augmented = render(&report, &events);
+    let panel = &augmented["_graph"]["panel_summary"];
+    assert_eq!(panel["n_endorse"].as_u64(), Some(0));
+    assert_eq!(panel["n_reviewers"].as_u64(), Some(0));
+    assert_eq!(panel["n_supersede_raw"].as_u64(), Some(1));
+    assert_eq!(panel["n_events_active"].as_u64(), Some(0));
+    assert_eq!(panel["n_events_raw"].as_u64(), Some(2));
+}
+
+#[test]
+fn phase2d_unrelated_endorse_survives_supersede_on_another() {
+    // Two Endorses by different authors; Supersede targets only the
+    // first. The second Endorse stays active.
+    let claim = "x";
+    let report = minimal_report(claim);
+    let events = vec![
+        event(claim, "evt-1", model_author("a", "v"), ReviewKind::Endorse, "2026-06-02T10:00:00Z"),
+        event(claim, "evt-2", model_author("b", "v"), ReviewKind::Endorse, "2026-06-02T10:05:00Z"),
+        supersede("evt-3", "evt-1", model_author("a", "v"), "2026-06-02T10:10:00Z"),
+    ];
+    let augmented = render(&report, &events);
+    let panel = &augmented["_graph"]["panel_summary"];
+    assert_eq!(panel["n_endorse"].as_u64(), Some(1));
+    assert_eq!(panel["n_reviewers"].as_u64(), Some(1));
+    let row_authors: Vec<&str> = panel["verdicts_by_reviewer"]
+        .as_array().unwrap().iter()
+        .map(|r| r["author"]["name"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(row_authors, vec!["b"]);
+}
+
+#[test]
+fn phase2d_unresolved_supersede_when_target_missing() {
+    // Supersede targets an event id that's not in this slice.
+    // Should land in unresolved_supersedes; active set unchanged.
+    let claim = "x";
+    let report = minimal_report(claim);
+    let events = vec![
+        event(claim, "evt-1", model_author("a", "v"), ReviewKind::Endorse, "2026-06-02T10:00:00Z"),
+        supersede("evt-2", "evt-MISSING", model_author("b", "v"), "2026-06-02T10:05:00Z"),
+    ];
+    let augmented = render(&report, &events);
+    let panel = &augmented["_graph"]["panel_summary"];
+    assert_eq!(panel["n_endorse"].as_u64(), Some(1));
+    assert_eq!(panel["n_unresolved_supersede"].as_u64(), Some(1));
+    assert_eq!(
+        panel["unresolved_supersedes"].as_array().unwrap().len(),
+        1
+    );
+}
+
+#[test]
+fn phase2d_meta_supersede_is_invalid_no_reactivation() {
+    // A: Endorse. B: Supersede(A). C: Supersede(B).
+    // Phase 2d-i: B is filtered (Supersede event); C goes to
+    // invalid_supersedes (targets a Supersede event). A stays
+    // INACTIVE — we do NOT reactivate.
+    let claim = "x";
+    let report = minimal_report(claim);
+    let events = vec![
+        event(claim, "evt-a", model_author("a", "v"), ReviewKind::Endorse, "2026-06-02T10:00:00Z"),
+        supersede("evt-b", "evt-a", model_author("a", "v"), "2026-06-02T10:05:00Z"),
+        supersede("evt-c", "evt-b", model_author("c", "v"), "2026-06-02T10:10:00Z"),
+    ];
+    let augmented = render(&report, &events);
+    let panel = &augmented["_graph"]["panel_summary"];
+    // A is still inactive (was superseded by B).
+    assert_eq!(panel["n_endorse"].as_u64(), Some(0));
+    // C is invalid (meta-supersede).
+    assert_eq!(panel["n_invalid_supersede"].as_u64(), Some(1));
+    assert_eq!(panel["n_supersede_raw"].as_u64(), Some(2));
+}
+
+#[test]
+fn phase2d_cycle_a_b_both_invalid() {
+    // A supersedes B; B supersedes A. Cycle → both invalid.
+    // (Each is a Supersede targeting another Supersede.)
+    let claim = "x";
+    let report = minimal_report(claim);
+    let events = vec![
+        supersede("evt-a", "evt-b", model_author("a", "v"), "2026-06-02T10:00:00Z"),
+        supersede("evt-b", "evt-a", model_author("b", "v"), "2026-06-02T10:05:00Z"),
+    ];
+    let augmented = render(&report, &events);
+    let panel = &augmented["_graph"]["panel_summary"];
+    assert_eq!(panel["n_invalid_supersede"].as_u64(), Some(2));
+    assert_eq!(panel["n_supersede_raw"].as_u64(), Some(2));
+}
+
+#[test]
+fn phase2d_self_target_supersede_is_invalid() {
+    // A Supersede event whose target id is its own id.
+    let claim = "x";
+    let report = minimal_report(claim);
+    let events = vec![
+        supersede("evt-self", "evt-self", model_author("a", "v"), "2026-06-02T10:00:00Z"),
+    ];
+    let augmented = render(&report, &events);
+    let panel = &augmented["_graph"]["panel_summary"];
+    assert_eq!(panel["n_invalid_supersede"].as_u64(), Some(1));
+}
+
+#[test]
+fn phase2d_counter_compat_aliases_present() {
+    // Pre-2d consumers reading n_events / n_supersede must still see
+    // those keys for one release.
+    let claim = "x";
+    let report = minimal_report(claim);
+    let events = vec![
+        event(claim, "evt-1", model_author("a", "v"), ReviewKind::Endorse, "2026-06-02T10:00:00Z"),
+        supersede("evt-2", "evt-1", model_author("a", "v"), "2026-06-02T10:05:00Z"),
+    ];
+    let augmented = render(&report, &events);
+    let panel = &augmented["_graph"]["panel_summary"];
+    assert_eq!(panel["n_events"].as_u64(), panel["n_events_raw"].as_u64());
+    assert_eq!(panel["n_supersede"].as_u64(), panel["n_supersede_raw"].as_u64());
+}
+
+#[test]
+fn phase2d_audit_section_renders_with_provenance() {
+    // The ## Superseded Events section must surface author / time /
+    // successor / rationale for each pair (F-2D-6).
+    let claim = "x";
+    let report = minimal_report(claim);
+    let events = vec![
+        event(claim, "evt-original", model_author("opus", "20250101"), ReviewKind::Endorse, "2026-06-02T10:00:00Z"),
+        supersede("evt-super", "evt-original", model_author("opus", "20260601"), "2026-06-15T09:00:00Z"),
+    ];
+    let augmented = render(&report, &events);
+    let md = render_markdown(&augmented);
+    assert!(md.contains("## Superseded Events"), "section missing; got:\n{md}");
+    assert!(md.contains("Valid superseded pairs"), "subsection missing; got:\n{md}");
+    assert!(md.contains("evt-original"), "original event id missing");
+    assert!(md.contains("evt-super"), "supersede event id missing");
+    assert!(md.contains("att-replacement"), "successor id missing");
+    assert!(md.contains("Reasonable Phase 2d test supersede rationale"), "supersede rationale missing");
+    // Cross-author label should be ABSENT here (same author).
+    assert!(!md.contains("cross-author"), "cross-author label should not fire when authors share kind+name");
+}
+
+#[test]
+fn phase2d_audit_cross_author_label() {
+    // Human supersedes a model's Endorse — should be labeled
+    // cross-author.
+    let claim = "x";
+    let report = minimal_report(claim);
+    let events = vec![
+        event(claim, "evt-model-endorse", model_author("opus", "v"), ReviewKind::Endorse, "2026-06-02T10:00:00Z"),
+        supersede("evt-human-super", "evt-model-endorse", human_author("Jane"), "2026-06-15T09:00:00Z"),
+    ];
+    let augmented = render(&report, &events);
+    let md = render_markdown(&augmented);
+    assert!(md.contains("cross-author supersede"), "cross-author label missing; got:\n{md}");
+}
+
+#[test]
+fn phase2d_audit_subsection_ordering_fixed() {
+    // Valid → unresolved → invalid in that order. Spot-check by
+    // line index.
+    let claim = "x";
+    let report = minimal_report(claim);
+    let events = vec![
+        event(claim, "evt-original", model_author("a", "v"), ReviewKind::Endorse, "2026-06-02T10:00:00Z"),
+        supersede("evt-valid", "evt-original", model_author("a", "v"), "2026-06-02T10:05:00Z"),
+        supersede("evt-unresolved", "evt-MISSING", model_author("b", "v"), "2026-06-02T10:10:00Z"),
+        supersede("evt-self", "evt-self", model_author("c", "v"), "2026-06-02T10:15:00Z"),
+    ];
+    let augmented = render(&report, &events);
+    let md = render_markdown(&augmented);
+    let valid_idx = md.find("Valid superseded pairs").unwrap_or(usize::MAX);
+    let unresolved_idx = md.find("Unresolved supersedes").unwrap_or(usize::MAX);
+    let invalid_idx = md.find("Invalid supersede chain").unwrap_or(usize::MAX);
+    assert!(valid_idx < unresolved_idx, "valid should come before unresolved");
+    assert!(unresolved_idx < invalid_idx, "unresolved should come before invalid");
+}
+
+#[test]
+fn phase2d_same_author_endorse_dissent_no_supersede_both_active() {
+    // Same author submits Endorse and Dissent without any Supersede
+    // linking them. Phase 2d-i: BOTH active. n_reviewers == 1.
+    let claim = "x";
+    let report = minimal_report(claim);
+    let events = vec![
+        event(claim, "evt-1", model_author("a", "v"), ReviewKind::Endorse, "2026-06-02T10:00:00Z"),
+        event(claim, "evt-2", model_author("a", "v"), ReviewKind::Dissent, "2026-06-02T10:05:00Z"),
+    ];
+    let augmented = render(&report, &events);
+    let panel = &augmented["_graph"]["panel_summary"];
+    assert_eq!(panel["n_reviewers"].as_u64(), Some(1));
+    assert_eq!(panel["n_endorse"].as_u64(), Some(1));
+    assert_eq!(panel["n_dissent"].as_u64(), Some(1));
+    assert_eq!(panel["n_events_active"].as_u64(), Some(2));
 }

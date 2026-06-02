@@ -224,7 +224,10 @@ fn compute_render_status(
     backing_reports: &[TrustReport],
     cycle_contested: &HashSet<ClaimId>,
 ) -> RenderStatus {
-    // Supersede first.
+    // A Supersede event whose target is the report / a criterion /
+    // a criterion result still flips status to Superseded, same as
+    // before Phase 2d. ReviewEvent-targeted Supersedes (Phase 2d's
+    // new case) are handled by the active-verdicts projection below.
     if events.iter().any(|e| {
         matches!(&e.kind, ReviewKind::Supersede { .. })
             && target_touches_report(&e.target, claim_id, criteria, evidence)
@@ -232,14 +235,24 @@ fn compute_render_status(
         return RenderStatus::Superseded;
     }
 
-    // Then substantive challenges. The challenge moves render status if:
+    // Phase 2d-i (load-bearing fix per codex F-2D-1): a Challenge
+    // that has been superseded by a ReviewEvent-targeted Supersede
+    // event MUST NOT count toward contesting the report. Build the
+    // projection once and iterate ONLY active verdicts. Without
+    // this, panel_summary would say "Challenge superseded" while
+    // the report's status still read Contested.
+    let projection = crate::render::supersede_projection(events);
+
+    // Substantive challenges (active only). The challenge moves
+    // render status if:
     // - the category is procedural (closed list); or
-    // - backed_by points at a backing report that synthesizes to Current
-    //   (i.e., the backing claim's criteria pass on their own merits); or
-    // - backed_by points at a claim whose challenge graph contains a
-    //   cycle (per design §8 — the parent reaches a cycle through this
-    //   backing and inherits the contestation).
-    let has_sustained_challenge = events.iter().any(|e| match &e.kind {
+    // - backed_by points at a backing report that synthesizes to
+    //   Current (i.e., the backing claim's criteria pass on their
+    //   own merits); or
+    // - backed_by points at a claim whose challenge graph contains
+    //   a cycle (per design §8 — the parent reaches a cycle through
+    //   this backing and inherits the contestation).
+    let has_sustained_challenge = projection.active_verdicts.iter().any(|e| match &e.kind {
         ReviewKind::Challenge {
             category,
             backed_by,

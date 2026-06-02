@@ -529,11 +529,8 @@ fn render_panel(out: &mut String, panel: &Value) {
         out.push_str("    </ul>\n");
     }
 
-    if n_supersede > 0 {
-        out.push_str(
-            "    <p class=\"panel-footnote\"><em>Panel reflects raw attestation log; supersedes not yet applied (Phase 2d).</em></p>\n",
-        );
-    }
+    // Phase 2d-i removed the "supersedes not yet applied" footnote.
+    let _ = n_supersede;
     out.push_str("  </div>\n");
 }
 

@@ -603,10 +603,43 @@ pub struct ManifestReviewEvent {
     /// only; procedural categories carry only `category`.
     #[serde(default)]
     pub challenge: Option<ManifestChallengeBlock>,
+    /// Phase 2d: optional `target` block. When absent, the event
+    /// targets the entry's `claim_id` (Target::Claim). When present
+    /// with `type: review_event`, the event targets a prior
+    /// ReviewEvent. Phase 2d-i scopes the supported types to
+    /// `claim` and `review_event` only; other variants are
+    /// translator errors (F-2D-13).
+    #[serde(default)]
+    pub target: Option<ManifestTargetBlock>,
+    /// Phase 2d: required when `kind == "supersede"`. Carries the
+    /// successor `AttestedId` that replaces the targeted event's
+    /// attestation. Empty for any other `kind`.
+    #[serde(default)]
+    pub supersede: Option<ManifestSupersedeBlock>,
     /// Optional protocol pointer. Release-tier events must set this
     /// (invariant 10); validator enforcement is downstream.
     #[serde(default)]
     pub protocol: Option<String>,
+}
+
+/// Phase 2d sidecar `target` block. Codex F-2D-4: singular shape,
+/// no duplication with the per-variant fields (e.g., we do NOT
+/// also carry `supersede.target_event_id`). Phase 2d-i restricts
+/// `type` to `claim` and `review_event` (F-2D-13).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ManifestTargetBlock {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub id: String,
+}
+
+/// Phase 2d sidecar `supersede` block. Carries the successor
+/// `AttestedId` that replaces the targeted event's attestation.
+/// The targeted event id lives in the outer `target` block — codex
+/// F-2D-4 explicitly rejected duplicating it here.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ManifestSupersedeBlock {
+    pub successor: String,
 }
 
 /// Phase 2b challenge block carried by `kind: challenge` events.
@@ -685,6 +718,20 @@ pub enum ReviewTranslateError {
     /// Backing claim's `id` collides with the target claim's id, which
     /// would form a one-step cycle in the challenge-backing graph.
     BackingClaimMatchesTargetId { id: String },
+    /// Phase 2d-i: `kind: supersede` events must carry an explicit
+    /// `target` block (a Supersede defaulting to Target::Claim
+    /// would be a confused entry).
+    SupersedeMissingTarget { id: String },
+    /// Phase 2d-i: `kind: supersede` events must carry a non-empty
+    /// `supersede.successor` field (the AttestedId replacing the
+    /// targeted attestation).
+    SupersedeMissingSuccessor { id: String },
+    /// Phase 2d-i: `target.type` outside the supported set
+    /// (`claim`, `review_event`). Other Target variants
+    /// (CriterionResult, SupportRelation, ClaimAttestation,
+    /// Evidence, Provenance, TrustReport, Criterion) require schema
+    /// extensions deferred to Phase 2e+ (codex F-2D-13).
+    UnsupportedTargetType { id: String, target_type: String },
 }
 
 impl std::fmt::Display for ReviewTranslateError {
@@ -717,6 +764,15 @@ impl std::fmt::Display for ReviewTranslateError {
             ReviewTranslateError::BackingClaimMatchesTargetId { id } => {
                 write!(f, "review event for {id}: backing claim's `id` matches the target claim id — one-step cycle in the challenge-backing graph")
             }
+            ReviewTranslateError::SupersedeMissingTarget { id } => {
+                write!(f, "review event for {id}: kind=supersede requires an explicit `target` block (a Supersede must point at a prior event)")
+            }
+            ReviewTranslateError::SupersedeMissingSuccessor { id } => {
+                write!(f, "review event for {id}: kind=supersede requires a non-empty `supersede.successor` field (the AttestedId replacing the targeted attestation)")
+            }
+            ReviewTranslateError::UnsupportedTargetType { id, target_type } => {
+                write!(f, "review event for {id}: target.type {target_type:?} not supported in Phase 2d-i (supported: claim, review_event)")
+            }
         }
     }
 }
@@ -738,6 +794,7 @@ pub fn translate_review_event(
         "endorse" => ReviewKind::Endorse,
         "dissent" => ReviewKind::Dissent,
         "challenge" => translate_challenge_kind(e)?,
+        "supersede" => translate_supersede_kind(e)?,
         other => {
             return Err(ReviewTranslateError::UnknownKind {
                 id: e.claim_id.clone(),
@@ -753,14 +810,78 @@ pub fn translate_review_event(
         None => EventId::new(canonical_event_id(e)),
     };
 
+    // Phase 2d-i: target resolution. When `target` is present, route
+    // to the appropriate Target variant. Without `target`, default
+    // to Target::Claim (Phase 2a/b/c behavior, backward compatible).
+    let target = translate_target(&e.claim_id, e.target.as_ref(), &e.kind)?;
+
     Ok(ReviewEvent {
         id: event_id,
-        target: Target::Claim(ClaimId::new(&e.claim_id)),
+        target,
         by,
         protocol: e.protocol.clone(),
         rationale: e.rationale.clone(),
         at: e.timestamp.clone(),
         kind,
+    })
+}
+
+/// Phase 2d-i target resolution. Scoped to two supported types:
+/// `claim` (the implicit default) and `review_event` (the new
+/// case Phase 2d-i needs for Supersede). Other variants are
+/// translator errors with a clear message (codex F-2D-13).
+fn translate_target(
+    claim_id: &str,
+    target_block: Option<&ManifestTargetBlock>,
+    event_kind: &str,
+) -> Result<crate::review::Target, ReviewTranslateError> {
+    use crate::review::Target;
+
+    // Supersede MUST carry an explicit target. A Supersede defaulting
+    // to Target::Claim would be a confused entry: Supersede semantics
+    // operate on prior events, not on the claim itself.
+    if event_kind == "supersede" && target_block.is_none() {
+        return Err(ReviewTranslateError::SupersedeMissingTarget {
+            id: claim_id.into(),
+        });
+    }
+
+    let Some(block) = target_block else {
+        return Ok(Target::Claim(ClaimId::new(claim_id)));
+    };
+
+    match block.kind.as_str() {
+        "claim" => Ok(Target::Claim(ClaimId::new(&block.id))),
+        "review_event" => Ok(Target::ReviewEvent(EventId::new(&block.id))),
+        other => Err(ReviewTranslateError::UnsupportedTargetType {
+            id: claim_id.into(),
+            target_type: other.into(),
+        }),
+    }
+}
+
+/// Phase 2d-i `kind: supersede` translation. Requires the
+/// `supersede.successor` field; codex F-2D-4 explicitly forbids
+/// duplicating the targeted event id here (it lives in `target`).
+fn translate_supersede_kind(
+    e: &ManifestReviewEvent,
+) -> Result<crate::review::ReviewKind, ReviewTranslateError> {
+    use crate::ids::AttestedId;
+    use crate::review::ReviewKind;
+
+    let block = e
+        .supersede
+        .as_ref()
+        .ok_or_else(|| ReviewTranslateError::SupersedeMissingSuccessor {
+            id: e.claim_id.clone(),
+        })?;
+    if block.successor.trim().is_empty() {
+        return Err(ReviewTranslateError::SupersedeMissingSuccessor {
+            id: e.claim_id.clone(),
+        });
+    }
+    Ok(ReviewKind::Supersede {
+        successor: AttestedId::new(block.successor.clone()),
     })
 }
 
@@ -997,6 +1118,21 @@ fn canonical_event_value(e: &ManifestReviewEvent) -> serde_json::Value {
     }
     if let Some(ch) = &e.challenge {
         m.insert("challenge".into(), challenge_canonical_value(ch));
+    }
+    // Phase 2d-i: include target + supersede in the canonical hash
+    // ONLY when present. Pre-2d sidecars without these fields
+    // canonicalize to the exact same bytes as before (codex F-2D-5
+    // parity discipline).
+    if let Some(t) = &e.target {
+        let mut tm = serde_json::Map::new();
+        tm.insert("type".into(), Value::String(t.kind.clone()));
+        tm.insert("id".into(), Value::String(t.id.clone()));
+        m.insert("target".into(), Value::Object(tm));
+    }
+    if let Some(s) = &e.supersede {
+        let mut sm = serde_json::Map::new();
+        sm.insert("successor".into(), Value::String(s.successor.clone()));
+        m.insert("supersede".into(), Value::Object(sm));
     }
     if let Some(p) = &e.protocol {
         m.insert("protocol".into(), Value::String(p.clone()));
