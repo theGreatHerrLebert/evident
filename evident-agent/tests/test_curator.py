@@ -1,0 +1,358 @@
+"""Curator tooling tests.
+
+Covers the in-place manifest edit + sidecar append for promote/drop,
+the reviewed_extraction_sha discipline (pre-edit sha), and the
+cross-language integration: a promoted manifest must satisfy
+typed-trust's PR3 promotion validator at tier:ci.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+import yaml
+
+from evident_agent.curator import (
+    CuratorError,
+    drop_claim,
+    promote_claim,
+)
+from evident_agent.review_sidecar import read_events
+
+
+def _sample_manifest(tmp_path: Path) -> Path:
+    body = {
+        "version": "0.1",
+        "project": "extracted/test",
+        "claims": [
+            {
+                "id": "test-claim-one",
+                "title": "Test claim",
+                "kind": "measurement",
+                "tier": "research",
+                "source": "source/cited.md",
+                "case": "source/cited.md#test-claim-one",
+                "claim": "Our method achieves rmsd < 0.5.",
+                "tolerances": [
+                    {
+                        "metric": "rmsd",
+                        "op": "<",
+                        "value": 0.5,
+                        "prose": "stated 0.5",
+                    }
+                ],
+                "evidence": {
+                    "oracle": ["Paper-Authority"],
+                    "command": "no-replay-path",
+                    "artifact": "source/cited.md#test-claim-one",
+                    "replay_status": "unavailable_artifacts",
+                    "replay_reason": "code_private",
+                },
+                "provenance": {
+                    "kind": "extracted-from-paper",
+                    "source_id": "arxiv:2501.99999v1",
+                    "extractor": {
+                        "model": "claude-opus-4-7",
+                        "extracted_at": "2026-05-01T10:00:00Z",
+                    },
+                    "curator": None,
+                },
+            },
+            {
+                "id": "test-claim-two",
+                "title": "Test claim two",
+                "kind": "measurement",
+                "tier": "research",
+                "source": "source/cited.md",
+                "case": "source/cited.md#test-claim-two",
+                "claim": "Our method achieves throughput > 1000.",
+                "tolerances": [
+                    {
+                        "metric": "throughput",
+                        "op": ">",
+                        "value": 1000,
+                        "prose": "stated 1000",
+                    }
+                ],
+                "evidence": {
+                    "oracle": ["Paper-Authority"],
+                    "command": "no-replay-path",
+                    "artifact": "source/cited.md#test-claim-two",
+                    "replay_status": "unavailable_artifacts",
+                    "replay_reason": "code_private",
+                },
+                "provenance": {
+                    "kind": "extracted-from-paper",
+                    "source_id": "arxiv:2501.99999v1",
+                    "extractor": {
+                        "model": "claude-opus-4-7",
+                        "extracted_at": "2026-05-01T10:00:00Z",
+                    },
+                    "curator": None,
+                },
+            },
+        ],
+    }
+    path = tmp_path / "evident.yaml"
+    path.write_text(yaml.safe_dump(body, sort_keys=False))
+    return path
+
+
+# ---------------------------------------------------------------------
+# promote_claim
+# ---------------------------------------------------------------------
+
+
+def test_promote_updates_tier_in_manifest(tmp_path: Path):
+    manifest_path = _sample_manifest(tmp_path)
+    promote_claim(
+        manifest_path=manifest_path,
+        claim_id="test-claim-one",
+        to_tier="ci",
+        rationale="Reviewed and the bound 0.5 is stated clearly.",
+        curator="Jane Doe",
+    )
+    parsed = yaml.safe_load(manifest_path.read_text())
+    claims_by_id = {c["id"]: c for c in parsed["claims"]}
+    assert claims_by_id["test-claim-one"]["tier"] == "ci"
+    # Sibling claim is untouched.
+    assert claims_by_id["test-claim-two"]["tier"] == "research"
+
+
+def test_promote_appends_sidecar_event_with_pre_edit_sha(tmp_path: Path):
+    manifest_path = _sample_manifest(tmp_path)
+    pre_edit_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    promote_claim(
+        manifest_path=manifest_path,
+        claim_id="test-claim-one",
+        to_tier="ci",
+        rationale="rationale",
+        curator="Jane Doe",
+    )
+    events = read_events(tmp_path / "review_events.json")
+    assert len(events) == 1
+    e = events[0]
+    assert e.kind == "promote_from_extracted"
+    assert e.promote_from_extracted == {
+        "target_claim": "test-claim-one",
+        "from_tier": "research",
+        "to_tier": "ci",
+        "reviewed_extraction_sha": pre_edit_sha,
+    }
+    assert e.author.kind == "human"
+    assert e.author.name == "Jane Doe"
+
+
+def test_promote_with_orcid_in_curator_string(tmp_path: Path):
+    manifest_path = _sample_manifest(tmp_path)
+    promote_claim(
+        manifest_path=manifest_path,
+        claim_id="test-claim-one",
+        to_tier="ci",
+        rationale="rationale",
+        curator="Jane Doe <orcid:0000-0001-2345-6789>",
+    )
+    events = read_events(tmp_path / "review_events.json")
+    assert events[0].author.name == "Jane Doe"
+    assert events[0].author.orcid == "0000-0001-2345-6789"
+
+
+def test_promote_rejects_unknown_claim_id(tmp_path: Path):
+    manifest_path = _sample_manifest(tmp_path)
+    with pytest.raises(CuratorError) as exc:
+        promote_claim(
+            manifest_path=manifest_path,
+            claim_id="does-not-exist",
+            to_tier="ci",
+            rationale="rationale",
+            curator="Jane",
+        )
+    assert "does-not-exist" in str(exc.value)
+
+
+def test_promote_rejects_non_research_source_tier(tmp_path: Path):
+    """Multi-step promotion (research → ci → release) is deferred
+    per PR3 validator. The curator tool refuses to promote a
+    non-research claim."""
+    manifest_path = _sample_manifest(tmp_path)
+    promote_claim(
+        manifest_path=manifest_path,
+        claim_id="test-claim-one",
+        to_tier="ci",
+        rationale="rationale",
+        curator="Jane",
+    )
+    with pytest.raises(CuratorError) as exc:
+        promote_claim(
+            manifest_path=manifest_path,
+            claim_id="test-claim-one",
+            to_tier="release",
+            rationale="rationale",
+            curator="Jane",
+        )
+    assert "research" in str(exc.value)
+
+
+def test_promote_rejects_invalid_target_tier(tmp_path: Path):
+    manifest_path = _sample_manifest(tmp_path)
+    with pytest.raises(CuratorError):
+        promote_claim(
+            manifest_path=manifest_path,
+            claim_id="test-claim-one",
+            to_tier="invalid",
+            rationale="rationale",
+            curator="Jane",
+        )
+
+
+def test_promote_rejects_empty_rationale(tmp_path: Path):
+    manifest_path = _sample_manifest(tmp_path)
+    with pytest.raises(CuratorError):
+        promote_claim(
+            manifest_path=manifest_path,
+            claim_id="test-claim-one",
+            to_tier="ci",
+            rationale="   ",
+            curator="Jane",
+        )
+
+
+def test_promote_two_distinct_claims_produces_distinct_event_ids(
+    tmp_path: Path,
+):
+    manifest_path = _sample_manifest(tmp_path)
+    r1 = promote_claim(
+        manifest_path=manifest_path,
+        claim_id="test-claim-one",
+        to_tier="ci",
+        rationale="rationale one",
+        curator="Jane",
+        timestamp="2026-09-15T10:00:00Z",
+    )
+    r2 = promote_claim(
+        manifest_path=manifest_path,
+        claim_id="test-claim-two",
+        to_tier="ci",
+        rationale="rationale two",
+        curator="Jane",
+        timestamp="2026-09-15T10:00:00Z",
+    )
+    assert r1.event_id != r2.event_id
+
+
+# ---------------------------------------------------------------------
+# drop_claim
+# ---------------------------------------------------------------------
+
+
+def test_drop_removes_claim_from_manifest(tmp_path: Path):
+    manifest_path = _sample_manifest(tmp_path)
+    result = drop_claim(
+        manifest_path=manifest_path,
+        claim_id="test-claim-one",
+    )
+    assert result.remaining_claim_ids == ["test-claim-two"]
+    parsed = yaml.safe_load(manifest_path.read_text())
+    assert [c["id"] for c in parsed["claims"]] == ["test-claim-two"]
+
+
+def test_drop_rejects_unknown_claim_id(tmp_path: Path):
+    manifest_path = _sample_manifest(tmp_path)
+    with pytest.raises(CuratorError):
+        drop_claim(
+            manifest_path=manifest_path,
+            claim_id="does-not-exist",
+        )
+
+
+def test_drop_does_not_write_sidecar(tmp_path: Path):
+    manifest_path = _sample_manifest(tmp_path)
+    drop_claim(
+        manifest_path=manifest_path,
+        claim_id="test-claim-one",
+    )
+    assert not (tmp_path / "review_events.json").exists()
+
+
+# ---------------------------------------------------------------------
+# Cross-language integration with typed-trust PR3 validator
+# ---------------------------------------------------------------------
+
+
+def _typed_trust_binary() -> Path | None:
+    repo_root = Path(__file__).resolve().parents[2]
+    for p in (
+        repo_root / "typed-trust" / "target" / "debug" / "typed-trust",
+        repo_root / "typed-trust" / "target" / "release" / "typed-trust",
+    ):
+        if p.is_file():
+            return p
+    on_path = shutil.which("typed-trust")
+    return Path(on_path) if on_path else None
+
+
+@pytest.mark.skipif(
+    _typed_trust_binary() is None,
+    reason="typed-trust binary not built; run `cargo build` in typed-trust/",
+)
+def test_promoted_manifest_satisfies_typed_trust_validator(tmp_path: Path):
+    """End-to-end: a manifest promoted via the curator tool must
+    pass typed-trust's PR3 promotion validator at tier:ci. Proves
+    the Python sidecar format + typed-trust translation are
+    byte-compatible."""
+    manifest_path = _sample_manifest(tmp_path)
+    promote_claim(
+        manifest_path=manifest_path,
+        claim_id="test-claim-one",
+        to_tier="ci",
+        rationale="Verified the bound is stated.",
+        curator="Jane Doe <orcid:0000-0001-2345-6789>",
+    )
+    sidecar_path = tmp_path / "review_events.json"
+    binary = _typed_trust_binary()
+    assert binary is not None
+    result = subprocess.run(
+        [
+            str(binary),
+            str(manifest_path),
+            "--review-events-sidecar",
+            str(sidecar_path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, (
+        f"typed-trust rejected the promoted manifest.\n"
+        f"stderr:\n{result.stderr}\n"
+        f"stdout:\n{result.stdout[:500]}"
+    )
+
+
+@pytest.mark.skipif(
+    _typed_trust_binary() is None,
+    reason="typed-trust binary not built",
+)
+def test_unpromoted_extracted_claim_at_ci_tier_is_rejected(tmp_path: Path):
+    """Sanity check that the gate fires: hand-edit tier:research →
+    tier:ci on the extracted manifest WITHOUT writing a promotion
+    event. Typed-trust must reject."""
+    manifest_path = _sample_manifest(tmp_path)
+    body = manifest_path.read_text()
+    body = body.replace("tier: research", "tier: ci", 1)
+    manifest_path.write_text(body)
+    binary = _typed_trust_binary()
+    assert binary is not None
+    result = subprocess.run(
+        [str(binary), str(manifest_path)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode != 0
+    assert "promote_from_extracted" in result.stderr or "extracted" in result.stderr

@@ -60,7 +60,7 @@ class ReviewEventEntry:
     """
 
     claim_id: str
-    kind: str  # "endorse" | "dissent" | "challenge"
+    kind: str  # "endorse" | "dissent" | "challenge" | "promote_from_extracted"
     author: ReviewAuthor
     rationale: str
     timestamp: str
@@ -73,6 +73,10 @@ class ReviewEventEntry:
     # Always present (and required) when kind=challenge; absent for
     # Endorse/Dissent. Shape mirrors typed-trust's ManifestChallengeBlock.
     challenge: Optional[dict[str, Any]] = None
+    # Phase 5 PR3 / curator tooling: target_claim + from_tier + to_tier
+    # + reviewed_extraction_sha. Required when kind = "promote_from_extracted".
+    # Mirrors typed-trust's ManifestPromoteFromExtractedBlock.
+    promote_from_extracted: Optional[dict[str, Any]] = None
     protocol: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -93,6 +97,7 @@ class ReviewEventEntry:
             "tolerance",
             "failure_reason",
             "challenge",
+            "promote_from_extracted",
             "protocol",
         ):
             if raw[k] is not None:
@@ -242,6 +247,7 @@ def _entry_from_dict(d: dict[str, Any]) -> ReviewEventEntry:
         tolerance=d.get("tolerance"),
         failure_reason=d.get("failure_reason"),
         challenge=d.get("challenge"),
+        promote_from_extracted=d.get("promote_from_extracted"),
         protocol=d.get("protocol"),
     )
 
