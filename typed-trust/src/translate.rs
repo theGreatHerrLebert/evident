@@ -1218,6 +1218,12 @@ pub enum PromotionError {
     MissingPromotionEvent {
         claim_id: String,
         current_tier: String,
+        /// Multi-step follow-up: the specific transition that was
+        /// missing (`(from_tier, to_tier)`). For single-step
+        /// promotions this names `(research, claim.tier)`. For
+        /// `tier: release` claims it names whichever leg is
+        /// missing.
+        missing_transition: (String, String),
     },
     /// The matching event's `event_date` predates the claim's
     /// `provenance.extractor.extracted_at`. The curator cannot have
@@ -1227,6 +1233,17 @@ pub enum PromotionError {
         event_date: String,
         extracted_at: String,
     },
+    /// Multi-step follow-up: a later transition's event predates
+    /// the prior transition's event. The chain must be
+    /// chronologically ordered — a curator cannot have promoted
+    /// `ci -> release` before promoting `research -> ci`.
+    PromotionChainOutOfOrder {
+        claim_id: String,
+        prior_transition: (String, String),
+        prior_event_date: String,
+        next_transition: (String, String),
+        next_event_date: String,
+    },
 }
 
 impl std::fmt::Display for PromotionError {
@@ -1235,10 +1252,14 @@ impl std::fmt::Display for PromotionError {
             PromotionError::MissingPromotionEvent {
                 claim_id,
                 current_tier,
+                missing_transition,
             } => write!(
                 f,
                 "extracted claim {claim_id} at tier {current_tier:?} requires a \
-                 matching `promote_from_extracted` review event"
+                 matching `promote_from_extracted` review event for the \
+                 {from:?} -> {to:?} transition",
+                from = missing_transition.0,
+                to = missing_transition.1,
             ),
             PromotionError::PromotionPredatesExtraction {
                 claim_id,
@@ -1249,29 +1270,54 @@ impl std::fmt::Display for PromotionError {
                 "extracted claim {claim_id}: promote_from_extracted event_date \
                  {event_date} predates extracted_at {extracted_at}"
             ),
+            PromotionError::PromotionChainOutOfOrder {
+                claim_id,
+                prior_transition,
+                prior_event_date,
+                next_transition,
+                next_event_date,
+            } => write!(
+                f,
+                "extracted claim {claim_id}: promotion chain out of order — \
+                 {next_from:?} -> {next_to:?} event_date {next_event_date} \
+                 predates {prior_from:?} -> {prior_to:?} event_date \
+                 {prior_event_date}",
+                prior_from = prior_transition.0,
+                prior_to = prior_transition.1,
+                next_from = next_transition.0,
+                next_to = next_transition.1,
+            ),
         }
     }
 }
 
 impl std::error::Error for PromotionError {}
 
-/// Phase 5 PR3: enforce the five promotion-gate invariants on a
-/// single claim and the relevant sidecar events.
+/// Phase 5 PR3 + multi-step extension: enforce the promotion-gate
+/// invariants on a single claim and the relevant sidecar events.
 ///
 /// Rule 1 (gate-on-tier): the gate fires only when the claim is
 /// extracted AND `tier` is not `research`. Non-extracted claims and
 /// research-tier extracted claims pass without checking events.
 ///
-/// Rule 2 (matching): for the gated claim, at least one event must
-/// have a `PromoteFromExtracted` block whose `target_claim`,
-/// `from_tier == research` (or the prior promoted tier), and
-/// `to_tier == claim.tier` match.
+/// Rule 2 (chain matching): for the gated claim, the required chain
+/// of `PromoteFromExtracted` events must exist:
+/// - `tier: ci` requires one event (`research -> ci`).
+/// - `tier: release` requires two events (`research -> ci` and
+///   `ci -> release`).
+///   Each transition's latest event by `(timestamp, event_id)`
+///   wins.
 ///
-/// Rule 3 (ordering): the matching event's `event_date` must not
-/// predate `provenance.extractor.extracted_at`.
+/// Rule 3 (ordering): the first event's `event_date` must not
+/// predate `provenance.extractor.extracted_at`. Subsequent
+/// transitions must be chronologically after the prior one
+/// (you can't promote `ci -> release` before promoting
+/// `research -> ci`).
 ///
-/// Rule 4 (uniqueness / latest-event): if multiple matching events
-/// exist, the latest by `event_date` is authoritative.
+/// Rule 4 (uniqueness / latest-event): if multiple events exist
+/// for the same `(from_tier, to_tier)`, the latest by
+/// `event_date` (with `event_id` as deterministic tiebreaker) is
+/// authoritative.
 ///
 /// Rule 5 (Endorse-independence): Endorse / Dissent / Challenge
 /// events on the claim are silently ignored here — they're
@@ -1281,9 +1327,7 @@ pub fn validate_promotion_rules(
     claim: &ManifestClaim,
     events: &[ManifestReviewEvent],
 ) -> Result<(), PromotionError> {
-    // Rule 1a: only extracted claims are gated. A legacy
-    // (provenance: automatic) claim at tier:ci is the existing path
-    // and is not affected.
+    // Rule 1a: only extracted claims are gated.
     if !is_extracted_claim(claim) {
         return Ok(());
     }
@@ -1292,34 +1336,85 @@ pub fn validate_promotion_rules(
         return Ok(());
     }
 
-    // Rule 2: find matching PromoteFromExtracted events.
-    let matching: Vec<&ManifestReviewEvent> = events
-        .iter()
-        .filter(|e| matches_promotion_target(e, claim))
-        .collect();
-
-    let Some(authoritative) = pick_latest_by_event_date(&matching) else {
+    // Rule 2: determine the required chain of transitions for this
+    // claim's tier and check each step.
+    let Some(chain_transitions) = required_chain_for(&claim.tier) else {
+        // Codex F-MULTISTEP-CR1 (P2): an unknown gated tier (e.g.
+        // `staging`) without a chain definition would otherwise
+        // pass silently. Treat it as an unconditional missing-event
+        // error so the gate stays closed.
         return Err(PromotionError::MissingPromotionEvent {
             claim_id: claim.id.clone(),
             current_tier: claim.tier.clone(),
+            missing_transition: ("research".into(), claim.tier.clone()),
         });
     };
 
-    // Rule 3: ordering. The chosen event must not predate extraction.
     let extracted_at = claim
         .provenance
         .as_ref()
         .and_then(extracted_at_of_provenance);
-    if let Some(extracted_at) = extracted_at {
-        if authoritative.timestamp.as_str() < extracted_at {
-            return Err(PromotionError::PromotionPredatesExtraction {
+
+    let mut prior_step: Option<(&'static str, &'static str, String)> = None;
+    for &(from, to) in chain_transitions.iter() {
+        let matching: Vec<&ManifestReviewEvent> = events
+            .iter()
+            .filter(|e| matches_transition(e, claim, from, to))
+            .collect();
+        let Some(authoritative) = pick_latest_by_event_date(&matching) else {
+            return Err(PromotionError::MissingPromotionEvent {
                 claim_id: claim.id.clone(),
-                event_date: authoritative.timestamp.clone(),
-                extracted_at: extracted_at.to_string(),
+                current_tier: claim.tier.clone(),
+                missing_transition: (from.into(), to.into()),
             });
+        };
+        // First-event ordering: must not predate extracted_at.
+        if prior_step.is_none() {
+            if let Some(ext) = extracted_at {
+                if authoritative.timestamp.as_str() < ext {
+                    return Err(PromotionError::PromotionPredatesExtraction {
+                        claim_id: claim.id.clone(),
+                        event_date: authoritative.timestamp.clone(),
+                        extracted_at: ext.to_string(),
+                    });
+                }
+            }
         }
+        // Chain ordering: subsequent transitions must not predate
+        // the prior transition's event.
+        if let Some((prior_from, prior_to, ref prior_ts)) = prior_step {
+            if authoritative.timestamp.as_str() < prior_ts.as_str() {
+                return Err(PromotionError::PromotionChainOutOfOrder {
+                    claim_id: claim.id.clone(),
+                    prior_transition: (prior_from.into(), prior_to.into()),
+                    prior_event_date: prior_ts.clone(),
+                    next_transition: (from.into(), to.into()),
+                    next_event_date: authoritative.timestamp.clone(),
+                });
+            }
+        }
+        prior_step = Some((from, to, authoritative.timestamp.clone()));
     }
     Ok(())
+}
+
+/// The required chain of (from_tier, to_tier) transitions for a
+/// claim at the given target tier. PR3+multi-step: tiers are
+/// linear (research < ci < release) so the chain is uniquely
+/// determined.
+///
+/// Returns ``None`` for tiers outside the known ladder (e.g.
+/// ``staging``). The caller treats ``None`` as a gate-still-closed
+/// signal — codex F-MULTISTEP-CR1 P2 fix to prevent a malformed
+/// tier value from silently bypassing the validator.
+fn required_chain_for(
+    tier: &str,
+) -> Option<&'static [(&'static str, &'static str)]> {
+    match tier {
+        "ci" => Some(&[("research", "ci")]),
+        "release" => Some(&[("research", "ci"), ("ci", "release")]),
+        _ => None,
+    }
 }
 
 fn is_extracted_claim(claim: &ManifestClaim) -> bool {
@@ -1332,21 +1427,25 @@ fn is_extracted_claim(claim: &ManifestClaim) -> bool {
     )
 }
 
-/// Does this sidecar entry match `(target_claim, from_tier=research,
-/// to_tier=claim.tier)` of the given claim?
+/// Does this sidecar entry match a specific `(from_tier, to_tier)`
+/// transition for the given claim?
 ///
-/// Codex F-PR3-CR3: PR3 requires `from_tier == "research"` so an
-/// event can't claim an impossible transition like `release -> ci`
-/// to satisfy the gate. Multi-step promotion (`research -> ci` then
-/// `ci -> release`) is deferred to a follow-up that tracks prior
-/// tier state explicitly.
-fn matches_promotion_target(e: &ManifestReviewEvent, claim: &ManifestClaim) -> bool {
+/// Codex F-PR3-CR3 was the single-step version of this check. The
+/// multi-step extension parametrises the transition so the
+/// validator can require each leg of a `research -> ci -> release`
+/// chain independently.
+fn matches_transition(
+    e: &ManifestReviewEvent,
+    claim: &ManifestClaim,
+    from_tier: &str,
+    to_tier: &str,
+) -> bool {
     let Some(block) = e.promote_from_extracted.as_ref() else {
         return false;
     };
     block.target_claim == claim.id
-        && block.from_tier == "research"
-        && block.to_tier == claim.tier
+        && block.from_tier == from_tier
+        && block.to_tier == to_tier
 }
 
 /// Pick the latest matching event by `(timestamp, event_id)` —
