@@ -1,0 +1,28 @@
+{
+  "id": "msg_01NhUFytMvWCuscpAAjw7Zyp",
+  "tool_input": {
+    "verdict": "challenge",
+    "checks": {
+      "metric_present": "pass",
+      "within_tolerance": "fail",
+      "outliers_checked": "fail",
+      "reproducible_chain": "pass"
+    },
+    "observed_value": "max: 0.083, mean: 0.034, median: 0.031 (only min: 0.012 satisfies tolerance)",
+    "tolerance": "electrostatic_relative_error < 0.02",
+    "failure_reason": "The maximum electrostatic_relative_error is 0.083, which exceeds the required bound of 0.02. The mean (0.034) and median (0.031) also exceed the bound, indicating widespread violations across the corpus, not isolated outliers.",
+    "rationale": "The digest contains the exact metric named in the claim: `electrostatic_relative_error`. However, every reported summary statistic violates the stated tolerance of strictly less than 0.02 (2%). The minimum observed value is 0.012 (which does satisfy the tolerance), but the mean is 0.034, the median is 0.031, and the maximum is 0.083 \u2014 all of which exceed 0.02. The claim requires that the relative error stays strictly below 2% \"across all structures in the corpus,\" meaning every structure must satisfy the bound. The max value of 0.083 directly contradicts this requirement. Furthermore, the mean (0.034) and median (0.031) indicate that the majority of structures exceed the tolerance, not just edge cases.",
+    "challenge": {
+      "category": "confound",
+      "target_criterion_id": "electrostatic_relative_error",
+      "violation": {
+        "metric": "electrostatic_relative_error",
+        "observed_value": 0.083,
+        "bound": 0.02,
+        "comparator": "<",
+        "citation": "digest summary.electrostatic_relative_error.max"
+      }
+    }
+  },
+  "digest": "<digest header=\"{\"commit\": \"fixturecommit\", \"format\": \"json\", \"metric_present\": \"pass\", \"source\": \"results.json\", \"truncated\": false}\">\n{\n  \"summary\": {\n    \"electrostatic_relative_error\": {\n      \"max\": 0.083,\n      \"mean\": 0.034,\n      \"median\": 0.031,\n      \"min\": 0.012\n    }\n  }\n}\n</digest>"
+}

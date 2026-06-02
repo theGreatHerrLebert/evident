@@ -843,3 +843,180 @@ def test_fixture8_backing_claim_id_matching_target_id_rejected(
     )
     assert result.returncode != 0
     assert "matches the target" in result.stderr or "cycle" in result.stderr.lower()
+
+
+# ============================================================
+# Phase 2c — recorded panel fixture (consensus on Challenge)
+# ============================================================
+
+PANEL_DIR = Path(__file__).parent / "fixtures" / "review" / "ball-electrostatic-synthetic-challenge"
+PANEL_MODELS = (
+    "claude-opus-4-7",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5-20251001",
+)
+
+
+def test_recorded_ball_panel_consensus_on_challenge(tmp_path: Path) -> None:
+    """Phase 2c: three models reviewing the BALL adversarial fixture.
+
+    Recorded outcome (consensus, not divergence — codex F-2C-8 says
+    name the test for what actually happened):
+      - all three Challenge
+      - each produces a distinct backing claim id (F-2C-1 author-fold
+        verified against real model output)
+      - each violation tuple validates against the target tolerance
+        (F-CR3-2 strengthened assertion applied per reviewer)
+
+    Skipped when fixtures are absent.
+    """
+    if not PANEL_DIR.is_dir():
+        pytest.skip(f"recorded panel fixtures not present at {PANEL_DIR}")
+
+    backing_ids: list[str] = []
+    target_claim = _read_target_claim_for_fixture(
+        "ball_challenge", "ball-electrostatic-synthetic-challenge"
+    )
+
+    for model in PANEL_MODELS:
+        fixture = PANEL_DIR / f"{model}.json"
+        if not fixture.is_file():
+            pytest.skip(f"missing panel fixture for {model}")
+        recorded = json.loads(fixture.read_text())
+        response = FakeResponse(
+            id=recorded.get("id", "msg_recorded"),
+            content=[
+                FakeBlock(
+                    type="tool_use",
+                    name="submit_review",
+                    input=recorded["tool_input"],
+                )
+            ],
+        )
+        client = FakeClient([response])
+        verdict = call_review(
+            model=model,
+            claim_yaml="id: ball-electrostatic-synthetic-challenge\n",
+            digest_rendered=recorded.get("digest", "<digest></digest>"),
+            api_client=client,
+        )
+        # Recorded outcome: every reviewer Challenged.
+        assert verdict.verdict == "challenge", (
+            f"{model} verdict was {verdict.verdict!r}, expected challenge"
+        )
+        assert verdict.challenge_violation is not None
+        # F-CR3-2 carried forward: the violation must contradict the
+        # target tolerance, not just have the right shape.
+        validate_contradiction(
+            target_claim,
+            verdict.challenge_target_criterion_id,
+            verdict.challenge_violation,
+        )
+
+        # F-2C-1 verified end-to-end: each reviewer's backing claim id
+        # is distinct. Build the backing claim with the author identity
+        # the agent would supply (kind=model, name=model, version=model).
+        from evident_agent.violation import build_backing_claim
+
+        backing = build_backing_claim(
+            target_claim,
+            verdict.challenge_target_criterion_id,
+            verdict.challenge_violation,
+            timestamp=verdict.timestamp,
+            author={"kind": "model", "name": model, "version": model},
+        )
+        backing_ids.append(backing["id"])
+
+    # All three backing ids distinct — F-2C-1's load-bearing property.
+    assert len(set(backing_ids)) == len(backing_ids), (
+        f"backing ids collided across panel: {backing_ids}"
+    )
+
+
+def test_recorded_ball_panel_renders_consensus_section(tmp_path: Path) -> None:
+    """Phase 2c: end-to-end through typed-trust — the three recorded
+    panel events render as a Reviewer Panel section with consensus.
+
+    Skipped when typed-trust binary or fixtures absent.
+    """
+    binary = _typed_trust_binary()
+    if not binary.is_file():
+        pytest.skip(f"typed-trust binary not built at {binary}")
+    if not PANEL_DIR.is_dir():
+        pytest.skip(f"recorded panel fixtures not present at {PANEL_DIR}")
+
+    # Build a panel sidecar from the three recorded fixtures by
+    # replaying each through the agent's verdict_to_sidecar_entry
+    # path. This exercises the full Phase 2c construction (validation,
+    # contradiction check, agent-built backing claim with author-fold)
+    # before any typed-trust touches the file.
+    from evident_agent.review import verdict_to_sidecar_entry
+    from evident_agent.review_sidecar import append_events
+
+    target_claim = _read_target_claim_for_fixture(
+        "ball_challenge", "ball-electrostatic-synthetic-challenge"
+    )
+
+    sidecar_entries = []
+    for model in PANEL_MODELS:
+        fixture = PANEL_DIR / f"{model}.json"
+        recorded = json.loads(fixture.read_text())
+        response = FakeResponse(
+            id=recorded.get("id", "msg_recorded"),
+            content=[
+                FakeBlock(
+                    type="tool_use",
+                    name="submit_review",
+                    input=recorded["tool_input"],
+                )
+            ],
+        )
+        client = FakeClient([response])
+        verdict = call_review(
+            model=model,
+            claim_yaml="id: ball-electrostatic-synthetic-challenge\n",
+            digest_rendered=recorded.get("digest", "<digest></digest>"),
+            api_client=client,
+        )
+        entry = verdict_to_sidecar_entry(
+            verdict,
+            claim_id="ball-electrostatic-synthetic-challenge",
+            author_name=model,
+            author_version=model,
+            author_context="evident-agent review v0.2c",
+            target_claim=target_claim,
+        )
+        sidecar_entries.append(entry)
+
+    sidecar_path = tmp_path / "review_events.json"
+    append_events(sidecar_path, sidecar_entries)
+
+    manifest = (
+        Path(__file__).parent
+        / "fixtures"
+        / "adversarial"
+        / "ball_challenge"
+        / "evident.yaml"
+    )
+    result = subprocess.run(
+        [
+            str(binary),
+            "--format",
+            "md",
+            "--review-events-sidecar",
+            str(sidecar_path),
+            str(manifest),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    md = result.stdout
+    # Panel section present.
+    assert "## Reviewer Panel" in md, f"panel section missing; got:\n{md[:600]}"
+    # Consensus phrasing: "3 reviewers, all challenged."
+    assert "3 reviewers, all challenged" in md, (
+        f"consensus phrasing missing; got:\n{md[:600]}"
+    )
+    # Target status flipped to Contested.
+    assert "Contested" in md

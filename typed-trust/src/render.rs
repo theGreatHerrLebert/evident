@@ -192,6 +192,19 @@ fn build_graph_aux(input: &RenderInput) -> Option<Value> {
             .map(|e| serde_json::to_value(e).expect("serialize ReviewEvent"))
             .collect();
         graph.insert("review_events".into(), Value::Array(events));
+
+        // Phase 2c: panel_summary is a per-claim projection over
+        // related_events that surfaces the reviewer panel as a single
+        // queryable block. Author-symmetric (humans and models in
+        // one list, broken down by identity kind for accounting),
+        // distinguishes events from distinct reviewers, deterministic
+        // sort. Operates on raw related_events; supersede semantics
+        // are deferred to Phase 2d and called out via a footnote
+        // marker when n_supersede > 0.
+        graph.insert(
+            "panel_summary".into(),
+            build_panel_summary(input.related_events),
+        );
     }
     if !input.backing_reports.is_empty() {
         let reports: Vec<Value> = input
@@ -206,6 +219,169 @@ fn build_graph_aux(input: &RenderInput) -> Option<Value> {
     } else {
         Some(Value::Object(graph))
     }
+}
+
+/// Build the Phase 2c panel_summary aux block from a slice of
+/// ReviewEvents. The projection is pure and side-effect-free so the
+/// markdown / HTML renderers can read its fields without traversing
+/// the event slice themselves.
+fn build_panel_summary(events: &[ReviewEvent]) -> Value {
+    // Distinct authors keyed by the full canonical identity: kind +
+    // name + every detail. Codex F-CR2C-2: keying on (kind, name,
+    // version) alone collapses two distinct authors who share name
+    // but differ in other identity fields (e.g., two humans named
+    // "John Smith" with different orcids, or two model reviewers
+    // with different contexts). Use the same projection used for
+    // identity-sensitive hashing elsewhere (canonical_event_id's
+    // author block, build_backing_claim's short-hash).
+    let mut seen_reviewers: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
+    let mut by_kind: std::collections::BTreeMap<&'static str, usize> =
+        std::collections::BTreeMap::new();
+    for k in ["human", "model", "automated", "organization", "anonymous"] {
+        by_kind.insert(k, 0);
+    }
+    let mut n_endorse = 0usize;
+    let mut n_dissent = 0usize;
+    let mut n_challenge = 0usize;
+    let mut n_supersede = 0usize;
+
+    for e in events.iter() {
+        let kind_str = identity_kind_label(&e.by.kind);
+        let key = canonical_identity_key(&e.by);
+        let is_new_reviewer = seen_reviewers.insert(key);
+        if is_new_reviewer {
+            *by_kind.entry(kind_str).or_default() += 1;
+        }
+        match &e.kind {
+            ReviewKind::Endorse => n_endorse += 1,
+            ReviewKind::Dissent => n_dissent += 1,
+            ReviewKind::Challenge { .. } => n_challenge += 1,
+            ReviewKind::Supersede { .. } => n_supersede += 1,
+        }
+    }
+    let n_reviewers = seen_reviewers.len();
+    let n_events = events.len();
+
+    // verdicts_by_reviewer rows. Stable sort by
+    // (kind, name, version, timestamp, event_id) — codex F-2C-13.
+    // Note: the sort key intentionally remains the "human-readable"
+    // projection (not the full canonical identity used for the
+    // dedup key above), so the rendered output orders rows by the
+    // fields a human reads first.
+    let mut rows: Vec<(String, String, String, String, String, Value)> = events
+        .iter()
+        .map(|e| {
+            let kind_str = identity_kind_label(&e.by.kind).to_string();
+            let name = e.by.name.clone();
+            let version = identity_version(&e.by).unwrap_or_default();
+            let timestamp = e.at.to_string();
+            let event_id = e.id.as_str().to_string();
+            let row = build_panel_row(e, &kind_str);
+            (kind_str, name, version, timestamp, event_id, row)
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        (&a.0, &a.1, &a.2, &a.3, &a.4).cmp(&(&b.0, &b.1, &b.2, &b.3, &b.4))
+    });
+    let verdicts_by_reviewer: Vec<Value> = rows.into_iter().map(|(_, _, _, _, _, v)| v).collect();
+
+    let mut summary = Map::new();
+    summary.insert("n_events".into(), Value::Number(n_events.into()));
+    summary.insert("n_reviewers".into(), Value::Number(n_reviewers.into()));
+    summary.insert("n_endorse".into(), Value::Number(n_endorse.into()));
+    summary.insert("n_dissent".into(), Value::Number(n_dissent.into()));
+    summary.insert("n_challenge".into(), Value::Number(n_challenge.into()));
+    summary.insert("n_supersede".into(), Value::Number(n_supersede.into()));
+    let mut by_kind_obj = Map::new();
+    for (k, v) in by_kind {
+        by_kind_obj.insert(k.into(), Value::Number(v.into()));
+    }
+    summary.insert("by_kind".into(), Value::Object(by_kind_obj));
+    summary.insert(
+        "verdicts_by_reviewer".into(),
+        Value::Array(verdicts_by_reviewer),
+    );
+    Value::Object(summary)
+}
+
+fn identity_kind_label(kind: &crate::identity::IdentityKind) -> &'static str {
+    use crate::identity::IdentityKind;
+    match kind {
+        IdentityKind::Human => "human",
+        IdentityKind::Model => "model",
+        IdentityKind::Automated => "automated",
+        IdentityKind::Organization => "organization",
+        IdentityKind::Anonymous => "anonymous",
+    }
+}
+
+fn identity_version(identity: &crate::identity::Identity) -> Option<String> {
+    identity
+        .details
+        .iter()
+        .find(|d| d.key == "version")
+        .map(|d| d.value.clone())
+}
+
+/// Canonical identity key for the panel reviewer-dedup set.
+///
+/// Codex F-CR2C-2: two authors who share kind + name but differ in
+/// any structured detail (version, orcid, affiliation, context, …)
+/// are distinct reviewers. Collapsing them undercounts
+/// `n_reviewers` and can hide the Reviewer Panel section entirely.
+///
+/// The projection is canonical-JSON over kind + name + a sorted
+/// list of (key, value) details. Same projection shape used by
+/// `canonical_event_id`'s author block.
+fn canonical_identity_key(identity: &crate::identity::Identity) -> String {
+    let kind = identity_kind_label(&identity.kind);
+    let mut details: Vec<(&str, &str)> = identity
+        .details
+        .iter()
+        .map(|d| (d.key.as_str(), d.value.as_str()))
+        .collect();
+    details.sort();
+    // Build a deterministic string. Separators chosen so that no
+    // collision can arise between e.g. {name: "a", details: "b"}
+    // and {name: "ab"}.
+    let detail_str: String = details
+        .iter()
+        .map(|(k, v)| format!("|{k}\u{1f}{v}"))
+        .collect();
+    format!("{kind}\u{1f}{}{detail_str}", identity.name)
+}
+
+fn build_panel_row(event: &ReviewEvent, kind_str: &str) -> Value {
+    let mut author = Map::new();
+    author.insert("kind".into(), Value::String(kind_str.to_string()));
+    author.insert("name".into(), Value::String(event.by.name.clone()));
+    if let Some(v) = identity_version(&event.by) {
+        author.insert("version".into(), Value::String(v));
+    }
+
+    let (kind_label, has_backing, backed_by) = match &event.kind {
+        ReviewKind::Endorse => ("endorse", false, None),
+        ReviewKind::Dissent => ("dissent", false, None),
+        ReviewKind::Challenge { backed_by, .. } => {
+            let has = backed_by.is_some();
+            let bb = backed_by.as_ref().map(|c| c.as_str().to_string());
+            ("challenge", has, bb)
+        }
+        ReviewKind::Supersede { .. } => ("supersede", false, None),
+    };
+
+    let mut row = Map::new();
+    row.insert("author".into(), Value::Object(author));
+    row.insert("kind".into(), Value::String(kind_label.into()));
+    row.insert("event_id".into(), Value::String(event.id.as_str().into()));
+    row.insert("timestamp".into(), Value::String(event.at.to_string()));
+    row.insert("has_backing".into(), Value::Bool(has_backing));
+    row.insert(
+        "backed_by".into(),
+        backed_by.map(Value::String).unwrap_or(Value::Null),
+    );
+    Value::Object(row)
 }
 
 fn status_label(s: &RenderStatus) -> &'static str {

@@ -206,6 +206,7 @@ def build_backing_claim(
     violation: dict[str, Any],
     *,
     timestamp: Optional[str] = None,
+    author: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Construct a backing claim YAML from the target + violation.
 
@@ -215,7 +216,7 @@ def build_backing_claim(
     - Inherits ``source`` from the target.
     - Has a deterministic id ``<target_id>-counter-<short-hash>``
       where ``short-hash`` is the first 8 hex of sha256 over the
-      canonical violation tuple.
+      canonical ``(target, criterion, violation, author)`` payload.
     - Carries a single structured tolerance: target's metric,
       *inverted* comparator (e.g., target's ``<`` becomes backing
       ``>=``), and target's bound. With the violation's
@@ -231,6 +232,16 @@ def build_backing_claim(
       observation to the criterion.
     - Is structurally a leaf: no ``review_events`` field, no
       ``challenge`` field (typed-trust rejects depth > 1).
+
+    Phase 2c: ``author`` (kind + name + version + context + orcid +
+    affiliation) is included in the short-hash so two distinct
+    reviewers challenging the same claim with identical violation
+    tuples produce distinct backing claim ids. Without this,
+    typed-trust's translator would synthesize the second backing as
+    a duplicate of the first and route Challenge#1's ``backed_by``
+    to the wrong report. ``author=None`` reproduces the Phase 2b
+    behavior (single-reviewer agent, no panel) — used by callers
+    that haven't migrated yet.
     """
     metric = violation["metric"]
     observed = float(violation["observed_value"])
@@ -240,7 +251,7 @@ def build_backing_claim(
 
     target_id = target_claim["id"]
     inverse_op = _LOGICAL_INVERSE[comparator]
-    short_hash = _violation_short_hash(target_id, target_criterion_id, violation)
+    short_hash = _violation_short_hash(target_id, target_criterion_id, violation, author)
     backing_id = f"{target_id}-counter-{short_hash}"
 
     date = timestamp[:10] if timestamp else dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
@@ -306,13 +317,24 @@ def _observed_violates(observed: float, op: str, bound: float) -> bool:
 
 
 def _violation_short_hash(
-    target_id: str, target_criterion_id: str, violation: dict[str, Any]
+    target_id: str,
+    target_criterion_id: str,
+    violation: dict[str, Any],
+    author: Optional[dict[str, Any]] = None,
 ) -> str:
-    """First 8 hex chars of sha256 over the canonical-JSON violation
-    tuple. Deterministic and collision-resistant for the backing-id
-    namespace under a single target.
+    """First 8 hex chars of sha256 over the canonical-JSON
+    ``(target, criterion, violation, author)`` payload.
+
+    Phase 2c folds ``author`` into the payload so distinct reviewers
+    submitting identical violations produce distinct backing ids.
+    The author projection mirrors ``review_sidecar.canonical_event_id``
+    /typed-trust ``canonical_event_value``: ``kind`` + ``name`` are
+    always serialized; optional fields are included only when
+    non-None, in a fixed key order. ``author=None`` reproduces the
+    Phase 2b hash exactly so callers that haven't migrated yet keep
+    their backing-id stability.
     """
-    payload = {
+    payload: dict[str, Any] = {
         "target_id": target_id,
         "target_criterion_id": target_criterion_id,
         "metric": violation["metric"],
@@ -321,8 +343,28 @@ def _violation_short_hash(
         "comparator": violation["comparator"],
         "citation": violation["citation"],
     }
+    if author is not None:
+        payload["author"] = _canonical_author_for_hash(author)
     encoded = json.dumps(payload, sort_keys=False, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:8]
+
+
+def _canonical_author_for_hash(author: dict[str, Any]) -> dict[str, Any]:
+    """Canonical author projection for inclusion in the backing-id
+    short-hash. Same key order as
+    ``review_sidecar._canonical_challenge``'s author projection and
+    typed-trust's ``canonical_event_value`` author block — ``kind``
+    and ``name`` always; optional fields only when non-None.
+    """
+    out: dict[str, Any] = {
+        "kind": author.get("kind", ""),
+        "name": author.get("name", ""),
+    }
+    for key in ("version", "context", "orcid", "affiliation"):
+        v = author.get(key)
+        if v is not None:
+            out[key] = v
+    return out
 
 
 def _violates_phrase(observed: float, op: str, bound: float) -> str:

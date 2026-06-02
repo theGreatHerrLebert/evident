@@ -299,6 +299,76 @@ def _multi_tolerance_target() -> dict:
     }
 
 
+# ---------- F-2C-1: full author identity in backing-hash ----------
+
+def _model_author(name: str = "claude-opus-4-7", version: str = "20250101") -> dict:
+    return {"kind": "model", "name": name, "version": version, "context": "panel"}
+
+
+def test_backing_id_distinct_for_two_models_with_same_violation() -> None:
+    """Phase 2c F-2C-1 load-bearing case: two distinct reviewers
+    challenging the same claim with the same violation tuple must
+    produce distinct backing claim ids. Otherwise typed-trust's
+    translator would synthesize duplicates and route the wrong
+    backed_by.
+    """
+    target = _target_claim()
+    v = _violation_valid()
+    a = build_backing_claim(target, "electrostatic_error", v, author=_model_author("claude-opus-4-7"))
+    b = build_backing_claim(target, "electrostatic_error", v, author=_model_author("claude-haiku-4-5"))
+    assert a["id"] != b["id"]
+
+
+def test_backing_id_distinct_for_same_name_different_version() -> None:
+    """Same model name with different versions are distinct
+    reviewers (F-2C-7)."""
+    target = _target_claim()
+    v = _violation_valid()
+    a = build_backing_claim(target, "electrostatic_error", v, author=_model_author(version="20250101"))
+    b = build_backing_claim(target, "electrostatic_error", v, author=_model_author(version="20260601"))
+    assert a["id"] != b["id"]
+
+
+def test_backing_id_stable_for_same_author_and_violation() -> None:
+    """Determinism property: the same (target, violation, author)
+    must always produce the same backing id across calls."""
+    target = _target_claim()
+    v = _violation_valid()
+    author = _model_author()
+    a = build_backing_claim(target, "electrostatic_error", v, author=author)
+    b = build_backing_claim(target, "electrostatic_error", v, author=author)
+    assert a["id"] == b["id"]
+
+
+def test_backing_id_distinct_for_different_orcid() -> None:
+    """Two human reviewers with the same name but different orcid
+    (or affiliation) are distinct identities — F-2C-1's edge case
+    for author kinds that don't have a `version` field."""
+    target = _target_claim()
+    v = _violation_valid()
+    a = build_backing_claim(
+        target, "electrostatic_error", v,
+        author={"kind": "human", "name": "Jane Doe", "orcid": "0000-0001"},
+    )
+    b = build_backing_claim(
+        target, "electrostatic_error", v,
+        author={"kind": "human", "name": "Jane Doe", "orcid": "0000-0002"},
+    )
+    assert a["id"] != b["id"]
+
+
+def test_backing_id_unchanged_when_author_is_none() -> None:
+    """Backward compatibility: callers that haven't migrated to
+    passing `author=` should see Phase 2b hash stability — same
+    backing id whether the function is called with no author kwarg
+    or with author=None explicitly. (Both are the Phase 2b path.)"""
+    target = _target_claim()
+    v = _violation_valid()
+    a = build_backing_claim(target, "electrostatic_error", v)
+    b = build_backing_claim(target, "electrostatic_error", v, author=None)
+    assert a["id"] == b["id"]
+
+
 def test_disambiguates_duplicate_metric_by_bound() -> None:
     """Two tolerances share metric=relative_error; the violation against
     the *max* tolerance (bound=0.05) must select the second, not the

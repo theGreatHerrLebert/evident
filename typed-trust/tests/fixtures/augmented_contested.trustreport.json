@@ -31,6 +31,34 @@
         "status": "current"
       }
     ],
+    "panel_summary": {
+      "by_kind": {
+        "anonymous": 0,
+        "automated": 0,
+        "human": 1,
+        "model": 0,
+        "organization": 0
+      },
+      "n_challenge": 1,
+      "n_dissent": 0,
+      "n_endorse": 0,
+      "n_events": 1,
+      "n_reviewers": 1,
+      "n_supersede": 0,
+      "verdicts_by_reviewer": [
+        {
+          "author": {
+            "kind": "human",
+            "name": "reviewer"
+          },
+          "backed_by": "backing-claim-id",
+          "event_id": "rev-challenge-electrostatic",
+          "has_backing": true,
+          "kind": "challenge",
+          "timestamp": "2026-06-01T00:00:00Z"
+        }
+      ]
+    },
     "review_events": [
       {
         "at": "2026-06-01T00:00:00Z",

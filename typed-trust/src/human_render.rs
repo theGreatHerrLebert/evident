@@ -50,6 +50,20 @@ pub fn render_markdown(augmented_json: &Value) -> String {
             }
         }
 
+        // Phase 2c: reviewer panel. Only rendered when more than one
+        // distinct reviewer authored events on this claim. The panel
+        // section surfaces convergence vs divergence at a glance;
+        // per-event detail still appears below in the kind-specific
+        // sections.
+        if let Some(panel) = augmented_json
+            .get("_graph")
+            .and_then(|g| g.get("panel_summary"))
+        {
+            if panel["n_reviewers"].as_u64().unwrap_or(0) > 1 {
+                render_panel_section(&mut out, panel);
+            }
+        }
+
         // Phase 2a: reviewer endorsements and dissents are surfaced
         // here so model-authored attestations are visible in the
         // rendered report. Dissents are framed as "reviewer found the
@@ -290,6 +304,76 @@ fn render_review_event(out: &mut String, e: &Value, verb: &str) {
         out.push_str(&format!("  - **Rationale:** {rationale}\n"));
     }
     out.push('\n');
+}
+
+/// Phase 2c: render the reviewer-panel section from `panel_summary`.
+/// Only called when `n_reviewers > 1`; the caller gates that.
+fn render_panel_section(out: &mut String, panel: &Value) {
+    let n_reviewers = panel["n_reviewers"].as_u64().unwrap_or(0);
+    let n_endorse = panel["n_endorse"].as_u64().unwrap_or(0);
+    let n_dissent = panel["n_dissent"].as_u64().unwrap_or(0);
+    let n_challenge = panel["n_challenge"].as_u64().unwrap_or(0);
+    let n_supersede = panel["n_supersede"].as_u64().unwrap_or(0);
+
+    out.push_str("## Reviewer Panel\n\n");
+
+    // Consensus: a single kind > 0 means all reviewers agreed.
+    let kinds_nonzero = [
+        ("endorsed", n_endorse),
+        ("dissented", n_dissent),
+        ("challenged", n_challenge),
+        ("superseded", n_supersede),
+    ];
+    let nonzero_kinds: Vec<&(&str, u64)> = kinds_nonzero.iter().filter(|(_, n)| *n > 0).collect();
+    if nonzero_kinds.len() == 1 {
+        let (label, _) = nonzero_kinds[0];
+        out.push_str(&format!(
+            "**{n_reviewers} reviewers, all {label}.**\n\n"
+        ));
+    } else {
+        out.push_str(&format!(
+            "**Panel divergent — {n_reviewers} reviewers:** "
+        ));
+        let parts: Vec<String> = nonzero_kinds
+            .iter()
+            .map(|(label, n)| format!("{n} {label}"))
+            .collect();
+        out.push_str(&parts.join(", "));
+        out.push_str(".\n\n");
+    }
+
+    if let Some(rows) = panel.get("verdicts_by_reviewer").and_then(|v| v.as_array()) {
+        for row in rows {
+            let kind = row["author"]["kind"].as_str().unwrap_or("?");
+            let name = row["author"]["name"].as_str().unwrap_or("?");
+            let version = row["author"].get("version").and_then(|v| v.as_str());
+            let verdict = row["kind"].as_str().unwrap_or("?");
+            let has_backing = row["has_backing"].as_bool().unwrap_or(false);
+            let backed_by = row["backed_by"].as_str();
+
+            let author_label = match version {
+                Some(v) => format!("{name} ({v})"),
+                None => name.to_string(),
+            };
+            let mut line = format!("- **{kind}** `{author_label}` — _{verdict}_");
+            if has_backing {
+                if let Some(b) = backed_by {
+                    line.push_str(&format!(", backed_by=`{b}`"));
+                } else {
+                    line.push_str(", backed");
+                }
+            }
+            line.push('\n');
+            out.push_str(&line);
+        }
+        out.push('\n');
+    }
+
+    if n_supersede > 0 {
+        out.push_str(
+            "_Panel reflects raw attestation log; supersedes not yet applied (Phase 2d)._\n\n",
+        );
+    }
 }
 
 fn render_gap(out: &mut String, g: &Value) {

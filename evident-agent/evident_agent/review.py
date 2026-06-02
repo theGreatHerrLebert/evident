@@ -451,11 +451,22 @@ def verdict_to_sidecar_entry(
                 )
             block["target_criterion_id"] = verdict.challenge_target_criterion_id
             block["violation"] = dict(verdict.challenge_violation)
+            # Phase 2c: pass the author into the backing-claim
+            # construction so multi-model panels with identical
+            # violation tuples produce distinct backing ids
+            # (codex F-2C-1).
+            author_for_hash = {
+                "kind": "model",
+                "name": author_name,
+                "version": author_version,
+                "context": author_context,
+            }
             block["backing_claim"] = build_backing_claim(
                 target_claim,
                 verdict.challenge_target_criterion_id,
                 verdict.challenge_violation,
                 timestamp=verdict.timestamp,
+                author=author_for_hash,
             )
         challenge_block = block
 

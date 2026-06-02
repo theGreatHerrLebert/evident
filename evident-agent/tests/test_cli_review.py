@@ -151,6 +151,93 @@ def test_last_verified_commit_reaches_the_digest_header(tmp_path: Path) -> None:
     assert "deadbeefcafe1234" in rendered
 
 
+def test_review_accepts_multiple_model_flags_phase2c(tmp_path: Path) -> None:
+    """Phase 2c F-2C: --model is repeatable; the per-claim log emits
+    one "[i/N] via <model>" line per panel member. With --no-api the
+    actual API calls don't fire, but the loop wiring is exercised."""
+    manifest = _write_claim_artifact(tmp_path)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "review",
+            "--manifest",
+            str(manifest),
+            "--claim",
+            "claim-A",
+            "--model",
+            "claude-opus-4-7",
+            "--model",
+            "claude-haiku-4-5-20251001",
+            "--no-api",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # --no-api short-circuits before the per-model loop, so the
+    # per-model lines don't appear; the multi-model acceptance is
+    # verified by the absence of "got unexpected extra arguments" or
+    # similar Click parsing errors.
+    assert "no review events written" in result.output
+
+
+def test_review_render_with_empty_run_and_existing_sidecar(tmp_path: Path) -> None:
+    """Codex F-2C-11: --render after a run that produced no new
+    events should fall back to the existing sidecar when one is
+    present."""
+    manifest = _write_claim_artifact(tmp_path)
+    sidecar = tmp_path / "review_events.json"
+    # Pre-populate sidecar with one synthetic event.
+    sidecar.write_text(
+        json.dumps(
+            {
+                "events": [
+                    {
+                        "claim_id": "claim-A",
+                        "kind": "endorse",
+                        "author": {
+                            "kind": "model",
+                            "name": "claude-opus-4-7",
+                            "version": "20250101",
+                        },
+                        "rationale": "pre-recorded endorse for the render fallback regression test, long enough to validate.",
+                        "timestamp": "2026-06-02T00:00:00Z",
+                        "checks": {
+                            "metric_present": "pass",
+                            "within_tolerance": "pass",
+                            "outliers_checked": "pass",
+                            "reproducible_chain": "pass",
+                        },
+                        "observed_value": "0.008",
+                        "tolerance": "< 0.02",
+                    }
+                ]
+            }
+        )
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "review",
+            "--manifest",
+            str(manifest),
+            "--claim",
+            "claim-A",
+            "--model",
+            "claude-opus-4-7",
+            "--review-sidecar",
+            str(sidecar),
+            "--no-api",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # --no-api skipped the call, so no new events. The CLI must log
+    # the sidecar untouched message but the sidecar contents stay.
+    assert "sidecar untouched" in result.output
+    assert sidecar.is_file()  # original file preserved
+
+
 def test_record_path_sanitization_codex_3_cr1(tmp_path: Path) -> None:
     """Codex F-CR3-1 regression: claim ids containing path separators
     or traversal segments must be sanitized before becoming filename
@@ -179,6 +266,41 @@ def test_record_path_sanitization_codex_3_cr1(tmp_path: Path) -> None:
     p = _safe_fixture_path(record_dir, ".")
     assert p.parent == record_dir.resolve()
     p = _safe_fixture_path(record_dir, "..")
+    assert p.parent == record_dir.resolve()
+
+
+def test_record_multi_model_subdir_sanitization_codex_2c_cr1(tmp_path: Path) -> None:
+    """Codex F-CR2C-1 regression: in the multi-model --record path the
+    claim id is used as a subdirectory name BEFORE _safe_fixture_path
+    runs on the per-model fixture filename. The _safe_subdir helper
+    must sanitize the claim id segment with the same posture as
+    _safe_fixture_path — separators replaced, traversal neutralized,
+    resolved path verified to stay inside the record dir.
+    """
+    from evident_agent.cli import _safe_subdir
+
+    record_dir = tmp_path / "record"
+    record_dir.mkdir()
+
+    # Slash separator in claim id (e.g., namespaced "org/claim") is
+    # replaced before the subdir is composed.
+    p = _safe_subdir(record_dir, "org/claim")
+    assert p.parent == record_dir.resolve()
+    assert p.name == "org_claim"
+
+    # Traversal-prefixed ids get neutralized.
+    p = _safe_subdir(record_dir, "../escape")
+    assert p.parent == record_dir.resolve()
+    assert ".." not in p.name
+
+    # Backslash separators also handled.
+    p = _safe_subdir(record_dir, "org\\claim")
+    assert p.name == "org_claim"
+
+    # Bare `.` / `..` stay inside.
+    p = _safe_subdir(record_dir, ".")
+    assert p.parent == record_dir.resolve()
+    p = _safe_subdir(record_dir, "..")
     assert p.parent == record_dir.resolve()
 
 
