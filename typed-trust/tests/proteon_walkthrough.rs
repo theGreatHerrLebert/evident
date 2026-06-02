@@ -176,6 +176,8 @@ fn proteon_sasa_release_walkthrough() {
             },
             at: pass_at.clone(),
         },
+        replay_status: Default::default(),
+        replay_reason: None,
     };
 
     // §6 — Peer endorsement of the SupportRelation

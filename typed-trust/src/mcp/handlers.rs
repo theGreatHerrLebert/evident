@@ -188,12 +188,28 @@ fn list_claims(state: &ServerState, args: Value) -> Result<Value, ToolError> {
     let items: Vec<Value> = slice
         .iter()
         .map(|c| {
-            json!({
+            let mut item = json!({
                 "claim_id": c.claim.id,
                 "title": c.claim.title,
                 "tier": c.claim.tier,
                 "kind": c.claim.kind,
-            })
+                // Phase 5: surface replay_status so consumers can
+                // filter on "extracted but no replay path." Absent
+                // means default (not_attempted); we project that
+                // explicitly so consumers don't have to special-case.
+                "replay_status": c.claim.evidence.as_ref()
+                    .and_then(|e| e.replay_status.clone())
+                    .unwrap_or_else(|| "not_attempted".into()),
+            });
+            if let Some(reason) = c.claim.evidence.as_ref()
+                .and_then(|e| e.replay_reason.clone())
+            {
+                item.as_object_mut().unwrap().insert(
+                    "replay_reason".into(),
+                    json!(reason),
+                );
+            }
+            item
         })
         .collect();
     let truncated = end < total;
