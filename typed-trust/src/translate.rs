@@ -1338,7 +1338,17 @@ pub fn validate_promotion_rules(
 
     // Rule 2: determine the required chain of transitions for this
     // claim's tier and check each step.
-    let chain_transitions = required_chain_for(&claim.tier);
+    let Some(chain_transitions) = required_chain_for(&claim.tier) else {
+        // Codex F-MULTISTEP-CR1 (P2): an unknown gated tier (e.g.
+        // `staging`) without a chain definition would otherwise
+        // pass silently. Treat it as an unconditional missing-event
+        // error so the gate stays closed.
+        return Err(PromotionError::MissingPromotionEvent {
+            claim_id: claim.id.clone(),
+            current_tier: claim.tier.clone(),
+            missing_transition: ("research".into(), claim.tier.clone()),
+        });
+    };
 
     let extracted_at = claim
         .provenance
@@ -1392,13 +1402,18 @@ pub fn validate_promotion_rules(
 /// claim at the given target tier. PR3+multi-step: tiers are
 /// linear (research < ci < release) so the chain is uniquely
 /// determined.
-fn required_chain_for(tier: &str) -> &'static [(&'static str, &'static str)] {
+///
+/// Returns ``None`` for tiers outside the known ladder (e.g.
+/// ``staging``). The caller treats ``None`` as a gate-still-closed
+/// signal — codex F-MULTISTEP-CR1 P2 fix to prevent a malformed
+/// tier value from silently bypassing the validator.
+fn required_chain_for(
+    tier: &str,
+) -> Option<&'static [(&'static str, &'static str)]> {
     match tier {
-        "ci" => &[("research", "ci")],
-        "release" => &[("research", "ci"), ("ci", "release")],
-        // Unknown tier — return empty so the gate fails with a
-        // missing-event error rather than silently passing.
-        _ => &[],
+        "ci" => Some(&[("research", "ci")]),
+        "release" => Some(&[("research", "ci"), ("ci", "release")]),
+        _ => None,
     }
 }
 

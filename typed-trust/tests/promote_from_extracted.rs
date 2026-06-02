@@ -770,6 +770,110 @@ fn multi_step_chain_same_day_passes_with_eq_timestamps() {
 }
 
 #[test]
+fn multi_step_unknown_tier_does_not_silently_pass() {
+    // Codex F-MULTISTEP-CR1 (P2): an extracted claim at a tier
+    // outside the known ladder (research/ci/release) — e.g.
+    // `staging` — must NOT pass silently. The validator now
+    // returns a MissingPromotionEvent error.
+    let yaml = r#"
+claims:
+  - id: extracted-staging-claim
+    title: extracted claim at unknown tier
+    kind: measurement
+    tier: staging
+    case: source/cited.md#claim-1
+    source: ..
+    claim: extracted claim at unknown tier
+    tolerances:
+      - metric: x
+        op: "<"
+        value: 1.0
+        prose: stated
+    evidence:
+      oracle: [Paper-Authority]
+      command: "no-replay-path"
+      artifact: source/cited.md#claim-1
+      replay_status: unavailable_artifacts
+      replay_reason: code_private
+    provenance:
+      kind: extracted-from-paper
+      extractor:
+        extracted_at: "2026-09-14T10:00:00Z"
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let claim = &manifest.claims[0];
+    // Plenty of events — but none would match the unknown chain.
+    let event = promotion_event(
+        "extracted-staging-claim",
+        "research",
+        "staging",
+        "sha-1",
+        "2026-09-15T10:00:00Z",
+    );
+    let err = validate_promotion_rules(claim, std::slice::from_ref(&event))
+        .unwrap_err();
+    match err {
+        PromotionError::MissingPromotionEvent {
+            current_tier,
+            missing_transition,
+            ..
+        } => {
+            assert_eq!(current_tier, "staging");
+            // The error names the (research, staging) transition.
+            assert_eq!(
+                missing_transition,
+                ("research".into(), "staging".into()),
+            );
+        }
+        other => panic!("expected MissingPromotionEvent, got {other:?}"),
+    }
+}
+
+#[test]
+fn multi_step_later_first_leg_event_breaks_the_chain() {
+    // Codex note (latest-event consequence): if a later
+    // research→ci event exists AFTER the ci→release event, the
+    // validator picks the later research→ci as authoritative.
+    // The chain-ordering rule then fires because the
+    // authoritative first-leg event predates... wait, actually
+    // the AUTHORITATIVE first leg is now AFTER the release leg,
+    // so the chain rule rejects (second leg event_date <
+    // first leg event_date).
+    let manifest = parse_manifest_file(EXTRACTED_RELEASE_MANIFEST_YAML).unwrap();
+    let claim = &manifest.claims[0];
+    let ev_ci_early = promotion_event(
+        "cool-paper-rmsd-vs-baseline",
+        "research",
+        "ci",
+        "sha-early",
+        "2026-09-15T10:00:00Z",
+    );
+    let ev_release = promotion_event(
+        "cool-paper-rmsd-vs-baseline",
+        "ci",
+        "release",
+        "sha-release",
+        "2026-09-16T10:00:00Z",
+    );
+    let ev_ci_late = promotion_event(
+        "cool-paper-rmsd-vs-baseline",
+        "research",
+        "ci",
+        "sha-late",
+        "2026-09-20T10:00:00Z", // AFTER ev_release
+    );
+    let err = validate_promotion_rules(
+        claim,
+        &[ev_ci_early, ev_release, ev_ci_late],
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, PromotionError::PromotionChainOutOfOrder { .. }),
+        "expected PromotionChainOutOfOrder, got {err:?}",
+    );
+}
+
+#[test]
 fn extracted_at_helper_reaches_through_provenance_block() {
     let manifest = parse_manifest_file(EXTRACTED_CI_MANIFEST_YAML).unwrap();
     let claim = &manifest.claims[0];

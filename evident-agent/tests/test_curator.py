@@ -510,6 +510,54 @@ def test_multi_step_promoted_manifest_satisfies_typed_trust_validator(
     _typed_trust_binary() is None,
     reason="typed-trust binary not built",
 )
+def test_release_tier_with_only_one_promotion_event_is_rejected(
+    tmp_path: Path,
+):
+    """Codex note: the Python curator's ladder enforcement
+    prevents a curator from CREATING this state, but the Rust
+    validator must also reject it if the state appears on disk
+    (hand-edited manifest, byzantine curator, etc.). Promote
+    research → ci normally, then hand-edit the manifest to
+    tier:release WITHOUT writing the second sidecar event.
+    """
+    manifest_path = _sample_manifest(tmp_path)
+    promote_claim(
+        manifest_path=manifest_path,
+        claim_id="test-claim-one",
+        to_tier="ci",
+        rationale="leg 1",
+        curator="Jane",
+    )
+    # Hand-edit the manifest to claim tier:release without writing
+    # the second sidecar event.
+    body = manifest_path.read_text()
+    body = body.replace("tier: ci", "tier: release", 1)
+    manifest_path.write_text(body)
+
+    binary = _typed_trust_binary()
+    assert binary is not None
+    result = subprocess.run(
+        [
+            str(binary),
+            str(manifest_path),
+            "--review-events-sidecar",
+            str(tmp_path / "review_events.json"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode != 0
+    assert "ci" in result.stderr and "release" in result.stderr, (
+        f"expected error naming the missing ci→release leg, got: "
+        f"{result.stderr}"
+    )
+
+
+@pytest.mark.skipif(
+    _typed_trust_binary() is None,
+    reason="typed-trust binary not built",
+)
 def test_unpromoted_extracted_claim_at_ci_tier_is_rejected(tmp_path: Path):
     """Sanity check that the gate fires: hand-edit tier:research →
     tier:ci on the extracted manifest WITHOUT writing a promotion
