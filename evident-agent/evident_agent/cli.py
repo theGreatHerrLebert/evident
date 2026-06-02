@@ -989,7 +989,13 @@ def promote(
 def drop(manifest_path: Path, claim_id: str) -> None:
     """Remove an extracted claim from the manifest entirely.
 
-    No sidecar event is written — the audit trail comes from git.
+    Drop is **pre-curation cleanup**: removing extractor noise from
+    a draft extraction before formal curation, NOT registering a
+    "curator reviewed and rejected" decision. No sidecar event is
+    written; the audit trail comes from git. If the curator wants
+    to record a typed reviewed-and-rejected decision, use
+    `evident-agent review` (separate command, follow-up PR) which
+    authors a typed Dissent event instead of mutating the manifest.
     """
     try:
         result = curator_mod.drop_claim(

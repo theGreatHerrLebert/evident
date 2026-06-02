@@ -222,6 +222,82 @@ def test_promote_rejects_empty_rationale(tmp_path: Path):
         )
 
 
+def test_promote_rejects_unknown_angle_bracket_curator_token(tmp_path: Path):
+    """Codex F-CURATOR-CR2 (P2): an email or other unknown token
+    inside angle brackets must be rejected rather than silently
+    dropped. ReviewAuthor has no email field today."""
+    manifest_path = _sample_manifest(tmp_path)
+    with pytest.raises(CuratorError) as exc:
+        promote_claim(
+            manifest_path=manifest_path,
+            claim_id="test-claim-one",
+            to_tier="ci",
+            rationale="rationale",
+            curator="Jane Doe <jane@example.com>",
+        )
+    assert "angle-bracket" in str(exc.value) or "orcid" in str(exc.value)
+
+
+def test_promote_partial_commit_on_sidecar_failure_keeps_manifest_at_research(
+    tmp_path: Path, monkeypatch,
+):
+    """Codex F-CURATOR-CR1 (P1): if the sidecar append fails AFTER
+    we've already written the manifest at tier:ci, the gate would
+    have been violated. The fix is to append the sidecar FIRST. This
+    test patches append_events to fail and verifies the manifest
+    stays at tier:research — gate invariant preserved."""
+    from evident_agent import curator as curator_mod
+
+    manifest_path = _sample_manifest(tmp_path)
+
+    def _failing_append(*args, **kwargs):
+        raise RuntimeError("simulated sidecar IO failure")
+
+    monkeypatch.setattr(curator_mod, "append_events", _failing_append)
+
+    with pytest.raises(RuntimeError):
+        promote_claim(
+            manifest_path=manifest_path,
+            claim_id="test-claim-one",
+            to_tier="ci",
+            rationale="rationale",
+            curator="Jane",
+        )
+
+    parsed = yaml.safe_load(manifest_path.read_text())
+    target = next(c for c in parsed["claims"] if c["id"] == "test-claim-one")
+    assert target["tier"] == "research", (
+        "manifest must stay at tier:research when the sidecar append fails"
+    )
+
+
+def test_promote_distinct_curators_get_distinct_event_ids(tmp_path: Path):
+    """Codex F-CURATOR-CR3 (P2): same claim, same tiers, same
+    second, same sha — but different curators — must produce
+    distinct event_ids. Each is an independent audit record."""
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    manifest_path_a = _sample_manifest(tmp_path / "a")
+    manifest_path_b = _sample_manifest(tmp_path / "b")
+    r1 = promote_claim(
+        manifest_path=manifest_path_a,
+        claim_id="test-claim-one",
+        to_tier="ci",
+        rationale="rationale",
+        curator="Alice",
+        timestamp="2026-05-15T10:00:00Z",
+    )
+    r2 = promote_claim(
+        manifest_path=manifest_path_b,
+        claim_id="test-claim-one",
+        to_tier="ci",
+        rationale="rationale",
+        curator="Bob",
+        timestamp="2026-05-15T10:00:00Z",
+    )
+    assert r1.event_id != r2.event_id
+
+
 def test_promote_two_distinct_claims_produces_distinct_event_ids(
     tmp_path: Path,
 ):

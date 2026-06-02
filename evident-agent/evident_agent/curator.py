@@ -7,16 +7,55 @@ After ``evident-agent extract`` produces a draft manifest at
   authored as a ``PromoteFromExtracted`` event (Phase 5 PR3),
   with ``reviewed_extraction_sha`` recording the sha of the
   manifest the curator actually reviewed.
-- **Drops** a claim from the manifest entirely. No sidecar event
-  needed; the audit trail comes from git.
+- **Drops** a claim from the manifest as pre-curation cleanup.
+  No sidecar event is written; the audit trail comes from git.
+  Drops happen on draft extractions before formal curation —
+  removing extractor noise, not registering a "curator reviewed
+  and rejected" decision. (Codex F-CURATOR-CR4 P2.)
 
-Both operations are atomic against concurrent writes (flock on a
-sidecar lockfile + atomic rename for the manifest).
+Both operations are atomic against concurrent writes (flock on
+a curator lockfile + atomic rename for the manifest).
 
-The promotion event ships with an explicit ``event_id`` computed
-from sha256 of ``(target_claim, from_tier, to_tier,
-reviewed_extraction_sha, timestamp)``. Two distinct promotions
-get distinct ids even if their other fields collide.
+## Architectural note: manifest mutation
+
+The pre-Phase-5 evident-agent contract was "never mutate claim
+YAMLs" (mirroring proteon's design philosophy). The curator
+tool deliberately breaks this for **extracted manifests only** —
+extracted manifests are draft documents the curator is meant
+to refine, NOT immutable inputs from upstream. Hand-authored
+manifests stay immutable.
+
+The pre-edit sha recorded in ``reviewed_extraction_sha`` makes
+each promotion reversible at the audit-trail level: a
+verifier can recover the exact bytes the curator reviewed by
+checking out the git ref where the manifest had that sha.
+Codex F-CURATOR-CR-architecture flagged this as a deliberate
+contract change and recommended the design note.
+
+## Partial-commit discipline (codex F-CURATOR-CR1 P1)
+
+The promotion writes the sidecar FIRST, then the manifest. The
+reverse order would leave the manifest at tier:ci with no
+matching event if the sidecar append failed — exactly the
+gate-violating state PR3's validator is meant to catch.
+
+The failure mode the chosen order produces — sidecar written,
+manifest not — leaves an orphan event but does NOT violate the
+gate: typed-trust sees the manifest still at tier:research, so
+the orphan event is benign. A subsequent retry re-uses the same
+event_id (idempotent on identical inputs), so re-running the
+promotion converges cleanly.
+
+## Event id semantics (codex F-CURATOR-CR3 P2)
+
+``_compute_promotion_event_id`` hashes ``(target_claim,
+from_tier, to_tier, reviewed_extraction_sha, timestamp,
+curator_name)``. Including curator_name means two different
+curators filing the SAME promotion at the SAME second get
+distinct event_ids — independent audit records. The same
+curator re-filing the same promotion at the same second is
+the duplicate-by-design case and gets deduped by
+append_events.
 """
 
 from __future__ import annotations
@@ -89,14 +128,22 @@ def _compute_promotion_event_id(
     to_tier: str,
     reviewed_extraction_sha: str,
     timestamp: str,
+    curator_name: str,
 ) -> str:
     """Stable id for a promotion event. sha256 of the tuple that
     distinguishes one promotion from another.
 
+    Codex F-CURATOR-CR3 (P2): includes ``curator_name`` so two
+    different curators filing the same promotion at the same
+    second get distinct event_ids — they're independent audit
+    records. The same curator re-filing the same promotion at the
+    same second is the duplicate-by-design case and gets deduped
+    by ``append_events``.
+
     Typed-trust's canonical hash (PR3) does NOT include
     ``promote_from_extracted`` fields. The curator-side explicit
-    event_id ensures two semantically distinct promotions never
-    collide on id; typed-trust honours the explicit value.
+    event_id is what distinguishes one promotion from another;
+    typed-trust honours the explicit value.
     """
     payload = {
         "target_claim": target_claim,
@@ -104,15 +151,25 @@ def _compute_promotion_event_id(
         "to_tier": to_tier,
         "reviewed_extraction_sha": reviewed_extraction_sha,
         "timestamp": timestamp,
+        "curator_name": curator_name,
     }
     blob = json.dumps(payload, sort_keys=True).encode("utf-8")
     return f"sha256:{hashlib.sha256(blob).hexdigest()}"
 
 
 def _parse_curator(curator_arg: str) -> ReviewAuthor:
-    """Parse a curator string like ``"Jane Doe"``,
-    ``"Jane Doe <orcid:0000-0001-...>"``, or
-    ``"Jane Doe <jane@example.com>"`` into a ReviewAuthor.
+    """Parse a curator string into a ``ReviewAuthor``.
+
+    Supported forms:
+    - ``Jane Doe`` — name only
+    - ``Jane Doe <orcid:0000-0001-2345-6789>`` — name + ORCID
+
+    Codex F-CURATOR-CR2 (P2): unknown angle-bracket tokens are
+    rejected with a clear error rather than silently dropped.
+    Email tokens in particular are not part of the audit-identity
+    schema today; adding them would require a typed-trust schema
+    change. Until then, the curator must use one of the supported
+    forms.
     """
     s = curator_arg.strip()
     if not s:
@@ -125,6 +182,13 @@ def _parse_curator(curator_arg: str) -> ReviewAuthor:
         token = rest[:-1].strip()
         if token.startswith("orcid:"):
             orcid = token.split(":", 1)[1].strip()
+        else:
+            raise CuratorError(
+                f"curator identity {curator_arg!r}: unknown "
+                f"angle-bracket token {token!r}. Supported: "
+                "'<orcid:...>'. (email/affiliation tokens need a "
+                "schema change to ReviewAuthor.)"
+            )
     if not name:
         raise CuratorError(
             f"curator identity {curator_arg!r} has no name"
@@ -141,8 +205,19 @@ def _atomic_write_text(path: Path, content: str) -> None:
         suffix=".tmp",
         dir=str(path.parent),
     )
+    # Codex F-CURATOR-CR-note: take ownership of the fd immediately.
+    # If fdopen fails, raw fd would otherwise leak.
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f = os.fdopen(fd, "w", encoding="utf-8")
+    except Exception:
+        os.close(fd)
+        try:
+            os.unlink(tmp_path_str)
+        except FileNotFoundError:
+            pass
+        raise
+    try:
+        with f:
             f.write(content)
         os.replace(tmp_path_str, str(path))
     except Exception:
@@ -232,6 +307,7 @@ def promote_claim(
                 to_tier=to_tier,
                 reviewed_extraction_sha=reviewed_sha,
                 timestamp=ts,
+                curator_name=author.name,
             )
 
             entry = ReviewEventEntry(
@@ -249,11 +325,20 @@ def promote_claim(
                 },
             )
 
+            # Codex F-CURATOR-CR1 (P1): append sidecar FIRST. If the
+            # sidecar append fails (duplicate event_id, IO error,
+            # etc.) and we'd already written the promoted manifest,
+            # the manifest would sit at tier:ci with no corresponding
+            # event — exactly the gate-violating state PR3's
+            # validator guards against. Reverse order leaves an
+            # orphan event but doesn't violate the gate (typed-trust
+            # sees the manifest still at tier:research; the orphan
+            # event is benign).
+            append_events(sidecar_path, [entry])
             new_yaml = yaml.safe_dump(
                 manifest, sort_keys=False, default_flow_style=False,
             )
             _atomic_write_text(manifest_path, new_yaml)
-            append_events(sidecar_path, [entry])
         finally:
             fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
 
