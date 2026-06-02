@@ -217,6 +217,16 @@ _PREPRINT_HOSTS = (
     r"sciencedirect\.com",
     r"nature\.com/articles",
     r"science\.org/doi",
+    # Codex F-PR5-CR3 additions: publisher / paper-surface domains
+    # that are realistic claim-attribution risks.
+    r"onlinelibrary\.wiley\.com",
+    r"academic\.oup\.com",
+    r"cambridge\.org/core",
+    r"thelancet\.com",
+    r"nejm\.org",
+    r"bmj\.com",
+    r"researchgate\.net",
+    r"academia\.edu",
 )
 _PREPRINT_RE = re.compile(
     r"https?://(?:www\.)?(?:" + "|".join(_PREPRINT_HOSTS) + r")[^\s)\]]*",
@@ -224,18 +234,57 @@ _PREPRINT_RE = re.compile(
 )
 
 
-# Bibliography heading detection. Conservative — only matches
-# headings whose normalised text is exactly `references`,
-# `bibliography`, or `works cited`. Does NOT match `citation` /
-# `how to cite` (codex v2 explicit false-positive guard).
-_BIB_HEADING_RE = re.compile(
-    r"^(#{1,6})\s+(references|bibliography|works\s+cited)\s*$",
+# Bibliography heading detection. Codex F-PR5-CR1 (P1) relaxed:
+# matches common markdown variants but still excludes
+# `Citation` / `How to Cite` (research-software convention for
+# how-to-cite-this-repo).
+#
+# Supported forms:
+#   ATX:                  `## References` / `# Bibliography`
+#   ATX with trailing punctuation:  `## References:`
+#   ATX with compound name:         `## References and Resources`
+#   ATX closed style:               `## References ##`
+#   Setext (underline ====/----):   `References\n==========`
+#
+# Excluded by design:
+#   `## Citation` / `## Citations` / `## How to Cite`
+#   `## See Also` / `## Acknowledgments`
+_BIB_HEADING_KEYWORDS = r"(?:references|bibliography|works\s+cited)"
+_BIB_HEADING_ATX_RE = re.compile(
+    # `## References` with optional compound suffix
+    # ("References and Resources"), optional trailing colon/period
+    # ("References:"), optional ATX-closed `##` ("References ##").
+    rf"^(?P<hashes>#{{1,6}})\s+(?P<keyword>{_BIB_HEADING_KEYWORDS})"
+    r"(?:\s+(?:and|&)\s+\S[^\n]*)?"   # compound: "and Resources"
+    r"(?:[:.\-]+|\s*#{1,6})?\s*$",     # trailing punct or closed ATX
+    re.IGNORECASE | re.MULTILINE,
+)
+_BIB_HEADING_SETEXT_RE = re.compile(
+    rf"^(?P<keyword>{_BIB_HEADING_KEYWORDS})\s*\n[=\-]{{2,}}\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
 
 
-# Next-heading detector (any markdown heading depth).
-_ANY_HEADING_RE = re.compile(r"^#{1,6}\s+.+$", re.MULTILINE)
+# Next-heading detector (any markdown heading depth) — ATX or
+# Setext form.
+_ANY_HEADING_RE = re.compile(
+    r"^(?:#{1,6}\s+.+|.+\n[=\-]{2,})$",
+    re.MULTILINE,
+)
+
+
+def _find_bibliography_heading(text: str) -> re.Match[str] | None:
+    """Find the first bibliography heading, ATX or Setext. Returns
+    the match whose ``start()`` is earlier (the bibliography starts
+    there).
+    """
+    atx = _BIB_HEADING_ATX_RE.search(text)
+    setext = _BIB_HEADING_SETEXT_RE.search(text)
+    if atx is None:
+        return setext
+    if setext is None:
+        return atx
+    return atx if atx.start() <= setext.start() else setext
 
 
 # Inline citation markers — applied only after a bibliography was
@@ -273,19 +322,67 @@ _INLINE_AUTHOR_YEAR_RE = re.compile(
 )
 
 
+# Codex F-PR5-CR2 (P2): trailing punctuation / unmatched closing
+# bracket can leak into a URL/DOI match (e.g. the sentence-ending
+# `.` in "see https://doi.org/10.1234/foo." or the closing `)` in
+# "(https://doi.org/10.1234/foo)"). Post-trim these, but only when
+# the brackets are unmatched within the matched substring — DOI
+# bodies can contain balanced parens like "10.1002/(SICI)..." and
+# those must stay.
+_TRIM_TRAIL_PUNCT = ".,;:!?"
+
+
+def _trim_trailing_url_noise(s: str) -> str:
+    """Strip trailing sentence punctuation and unmatched closing
+    brackets from a matched URL/DOI substring.
+    """
+    while s and (s[-1] in _TRIM_TRAIL_PUNCT or s[-1] in ")]>"):
+        if s[-1] == ")":
+            if s.count("(") >= s.count(")"):
+                break
+            s = s[:-1]
+            continue
+        if s[-1] == "]":
+            if s.count("[") >= s.count("]"):
+                break
+            s = s[:-1]
+            continue
+        if s[-1] == ">":
+            if s.count("<") >= s.count(">"):
+                break
+            s = s[:-1]
+            continue
+        s = s[:-1]
+    return s
+
+
 def _redact_pattern(
     text: str,
     pattern: re.Pattern[str],
     kind: str,
     section_path: str,
     redactions: list[Redaction],
+    trim_url_noise: bool = False,
 ) -> str:
     """Replace each match of ``pattern`` in ``text`` with the
     marker ``[external reference omitted: <kind>]`` and record the
-    redaction. Operates on a single section."""
+    redaction. Operates on a single section.
+
+    Codex F-PR5-CR2: when ``trim_url_noise`` is true, the matched
+    span is post-trimmed of sentence-ending punctuation and
+    unmatched closing brackets so the redaction marker doesn't
+    swallow the punctuation that ends the sentence.
+    """
     out: list[str] = []
     pos = 0
     for match in pattern.finditer(text):
+        original = match.group(0)
+        end = match.end()
+        if trim_url_noise:
+            trimmed = _trim_trailing_url_noise(original)
+            if len(trimmed) < len(original):
+                end = match.start() + len(trimmed)
+                original = trimmed
         out.append(text[pos:match.start()])
         marker = f"[external reference omitted: {kind}]"
         out.append(marker)
@@ -293,12 +390,12 @@ def _redact_pattern(
             Redaction(
                 section_path=section_path,
                 span_start=match.start(),
-                span_end=match.end(),
+                span_end=end,
                 reason=kind,
-                original=match.group(0),
+                original=original,
             )
         )
-        pos = match.end()
+        pos = end
     out.append(text[pos:])
     return "".join(out)
 
@@ -316,7 +413,7 @@ def _redact_bibliography_section(
     `## Citation` / `## How to Cite` are NOT bibliography (they
     explain how to cite the repo itself).
     """
-    bib_match = _BIB_HEADING_RE.search(text)
+    bib_match = _find_bibliography_heading(text)
     if bib_match is None:
         return text, False
     start = bib_match.start()
@@ -357,13 +454,16 @@ def redact(
         text, section_path, redactions
     )
     text = _redact_pattern(
-        text, _DOI_RE, REDACTION_DOI, section_path, redactions
+        text, _DOI_RE, REDACTION_DOI, section_path, redactions,
+        trim_url_noise=True,
     )
     text = _redact_pattern(
-        text, _ARXIV_RE, REDACTION_ARXIV, section_path, redactions
+        text, _ARXIV_RE, REDACTION_ARXIV, section_path, redactions,
+        trim_url_noise=True,
     )
     text = _redact_pattern(
-        text, _PREPRINT_RE, REDACTION_PREPRINT, section_path, redactions
+        text, _PREPRINT_RE, REDACTION_PREPRINT, section_path, redactions,
+        trim_url_noise=True,
     )
     if bib_redacted:
         # Conservative inline-citation pass — only fires when a

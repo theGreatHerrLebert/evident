@@ -26,12 +26,25 @@ from .repo import WalkedSource, assemble_for_model
 
 
 def _section_summary(walked: WalkedSource) -> list[dict]:
+    """Per-section audit fields.
+
+    Codex F-PR5-CR5 (P2): also include a sha256 of the RAW
+    (pre-redaction) section text so a curator running a later
+    live-extraction can detect whether the source changed in
+    spans that the dry-run audit hid via redaction.
+    """
     return [
         {
             "path": s.path,
             "kind": s.kind,
             "raw_bytes": len(s.text_raw.encode("utf-8")),
+            "raw_sha256": hashlib.sha256(
+                s.text_raw.encode("utf-8")
+            ).hexdigest(),
             "post_redaction_bytes": len(s.text.encode("utf-8")),
+            "post_redaction_sha256": hashlib.sha256(
+                s.text.encode("utf-8")
+            ).hexdigest(),
             "truncated": s.truncated,
         }
         for s in walked.sections

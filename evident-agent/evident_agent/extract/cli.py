@@ -167,22 +167,36 @@ def _model_rejections(tool_input: dict) -> Iterable[RejectedCandidate]:
 
 
 # Validator kind discriminators are stable but their names don't
-# exactly match the model-rejection enum from framing.py. Map them.
+# exactly match the model-rejection enum from framing.py. Codex
+# F-PR5-CR4 (P2): keep the kinds DISTINCT so the curator can read
+# the precise failure mode. Each validator KIND_* maps to a
+# qualified reason string that preserves the original discriminator
+# rather than collapsing several modes into `bound_not_stated`.
 _VALIDATOR_TO_REJECTION_REASON = {
-    "missing_source_span": "bound_not_stated",
+    "missing_source_span": "validator_missing_source_span",
     "missing_metric": "metric_not_named",
-    "missing_comparator": "bound_not_stated",
-    "missing_value": "bound_not_stated",
-    "missing_subject": "comparator_bound_to_wrong_subject",
-    "comparator_direction_mismatch": "bound_not_stated",
+    "missing_comparator": "validator_missing_comparator",
+    "missing_value": "validator_missing_value",
+    "missing_subject": "validator_missing_subject",
+    "comparator_direction_mismatch": "validator_comparator_direction_mismatch",
     "comparator_bound_to_wrong_subject": "comparator_bound_to_wrong_subject",
 }
 
 
 def _map_validator_kind_to_rejection_reason(kind: str) -> str:
-    """Lift a validator KIND_* into a rejection enum the
-    EXTRACTION.md renderer understands."""
-    return _VALIDATOR_TO_REJECTION_REASON.get(kind, "bound_not_stated")
+    """Lift a validator KIND_* into a render-layer rejection reason.
+
+    Validator-side rejections are prefixed `validator_*` (except the
+    two that map onto model-side enum values, `metric_not_named`
+    and `comparator_bound_to_wrong_subject`) so the curator can
+    distinguish "model emitted a tolerance that the validator
+    rejected" from "model said don't extract this candidate." The
+    EXTRACTION.md writer groups by reason, so the prefix gives
+    curators a clean axis to filter on.
+    """
+    return _VALIDATOR_TO_REJECTION_REASON.get(
+        kind, f"validator_{kind}"
+    )
 
 
 # ---------------------------------------------------------------------

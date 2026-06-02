@@ -119,6 +119,31 @@ def test_dry_run_json_is_structured_audit(tmp_path: Path):
     assert "bibliography" in kinds
 
 
+def test_dry_run_json_includes_per_section_raw_and_redacted_sha(tmp_path: Path):
+    """Codex F-PR5-CR5 (P2): a later live-run might re-redact the
+    same source, but if the curator wants to confirm the SOURCE
+    text didn't change between dry-run and live-run, they need the
+    raw sha — the post-redaction one only proves what was sent to
+    the model.
+    """
+    out = tmp_path / "out"
+    cli.run_extract_repo(
+        repo_path=FIXTURES / "cites_paper_repo",
+        output_dir=out,
+        dry_run=True,
+    )
+    payload = json.loads((out / "dry_run.json").read_text())
+    sections = payload["sections_included"]
+    assert sections, "expected at least one section recorded"
+    for s in sections:
+        assert "raw_sha256" in s
+        assert "post_redaction_sha256" in s
+        # The two hashes must differ (the cites_paper_repo has
+        # bibliography content that gets redacted).
+        if s["path"] == "README.md":
+            assert s["raw_sha256"] != s["post_redaction_sha256"]
+
+
 # ---------------------------------------------------------------------
 # Response processor — the validator's hook
 # ---------------------------------------------------------------------
@@ -402,6 +427,67 @@ def test_end_to_end_conflict_repo_emits_two_claims_with_distinct_spans(
 # ---------------------------------------------------------------------
 # Mocking pattern: framing.build_request stays unmocked
 # ---------------------------------------------------------------------
+
+
+def test_end_to_end_future_tense_repo_is_validator_blind(tmp_path: Path):
+    """Codex F-PR5-CR-future-tense (note): future-tense rejection
+    is MODEL-SIDE only. If the model treats "will achieve <0.5s"
+    as a real claim and emits a tolerance whose source_span
+    contains all four elements, the validator accepts it. This test
+    documents that risk explicitly so anyone changing the framing
+    sees it.
+    """
+    out = tmp_path / "out"
+    future_claim = {
+        "id": "future-tense-latency",
+        "title": "Future-tense latency",
+        "claim": "We will achieve latency below 0.5s in v2.",
+        "subject_aliases": ["we", "our system"],
+        "tolerances": [
+            {
+                "metric": "latency",
+                "op": "<",
+                "value": 0.5,
+                # All four elements are in the same sentence —
+                # the validator can't detect "will" is future tense.
+                "source_span": (
+                    "we will achieve latency below 0.5 seconds on "
+                    "the production cluster"
+                ),
+                "prose": "future-tense roadmap claim",
+            }
+        ],
+    }
+    response = _tool_response(claims=[future_claim])
+    client = _FakeClient(response)
+    result = cli.run_extract_repo(
+        repo_path=FIXTURES / "future_tense_repo",
+        output_dir=out,
+        api_client=client,
+        extracted_at="2026-09-14T10:00:00Z",
+    )
+    # The validator accepts this — future-tense detection is the
+    # model's job (default-deny framing in the system prompt).
+    assert len(result.claims) == 1
+
+
+def test_run_extract_repo_request_carries_extract_tool_schema(tmp_path: Path):
+    """Codex F-PR5-CR-mock-assertion (note): assert the request the
+    walker built actually carries the PR4 tool schema. Prevents
+    accidental schema drift between framing.py and the CLI."""
+    from evident_agent.extract import framing
+    out = tmp_path / "out"
+    response = _tool_response(claims=[])
+    client = _FakeClient(response)
+    cli.run_extract_repo(
+        repo_path=FIXTURES / "clean_repo",
+        output_dir=out,
+        api_client=client,
+        extracted_at="2026-09-14T10:00:00Z",
+    )
+    request = client.messages.last_request
+    assert request["tools"] == [framing.TOOL_DEFINITION]
+    assert request["tool_choice"]["name"] == framing.TOOL_DEFINITION["name"]
 
 
 def test_run_extract_repo_passes_redacted_text_to_model(tmp_path: Path):

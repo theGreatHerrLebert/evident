@@ -201,6 +201,109 @@ def test_redact_inline_only_fires_after_bibliography():
     assert "[1]" in redacted
 
 
+@pytest.mark.parametrize(
+    "heading_form",
+    [
+        "## References",
+        "## References:",
+        "## References.",
+        "## References and Resources",
+        "## References ##",
+        "# References & Acknowledgments",
+    ],
+)
+def test_redact_recognises_atx_bibliography_variants(heading_form):
+    """Codex F-PR5-CR1 (P1): the v1 regex only matched bare
+    `## References`. v2 also matches trailing-punctuation, compound,
+    and closed-ATX forms."""
+    text = (
+        "## Body\n\nHello.\n\n"
+        f"{heading_form}\n\n"
+        "[1] Smith et al.\n"
+    )
+    _, redactions = repo.redact(text, "README.md")
+    bib = [r for r in redactions if r.reason == repo.REDACTION_BIBLIOGRAPHY]
+    assert bib, f"failed to redact bibliography heading {heading_form!r}"
+
+
+def test_redact_recognises_setext_bibliography_heading():
+    """Codex F-PR5-CR1 (P1): Setext-style headings
+    `References\\n========` must also trigger bibliography
+    redaction."""
+    text = (
+        "## Body\n\nHello.\n\n"
+        "References\n"
+        "----------\n\n"
+        "[1] Smith et al.\n"
+    )
+    _, redactions = repo.redact(text, "README.md")
+    bib = [r for r in redactions if r.reason == repo.REDACTION_BIBLIOGRAPHY]
+    assert bib, "failed to redact Setext-style bibliography heading"
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "see https://doi.org/10.1145/3637528.3671624.",
+        "(see https://doi.org/10.1145/3637528.3671624) for details",
+        "see arXiv:2501.12345.",
+        "(arXiv:2501.12345)",
+    ],
+)
+def test_redact_trims_trailing_url_noise(snippet):
+    """Codex F-PR5-CR2 (P2): the matched span must not eat the
+    sentence-ending period or the closing paren that wraps the
+    citation."""
+    redacted, redactions = repo.redact(snippet, "README.md")
+    assert redactions, "expected at least one redaction"
+    # The trailing punctuation must survive in the post-redaction
+    # text.
+    last_orig = redactions[-1].original
+    assert not last_orig.endswith(".")
+    assert not last_orig.endswith(")")
+    # Check the text after redaction still has the surrounding
+    # punctuation in the right place.
+    if snippet.endswith("."):
+        assert redacted.rstrip().endswith(".")
+    if "(" in snippet and snippet.split(")", 1)[1]:
+        # Closing paren was part of the wrapper, must remain.
+        assert ")" in redacted
+
+
+def test_redact_preserves_balanced_parens_inside_doi_body():
+    """DOI bodies can legitimately contain balanced parentheses
+    like `10.1002/(SICI)1097-...`. Those must NOT be trimmed."""
+    text = "see doi:10.1002/(SICI)1097-4571(199505)46:4 here"
+    redacted, redactions = repo.redact(text, "README.md")
+    assert any(r.reason == repo.REDACTION_DOI for r in redactions)
+    # The redacted original keeps the balanced parens.
+    assert "(SICI)" in redactions[0].original
+    assert "(199505)" in redactions[0].original
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "see https://onlinelibrary.wiley.com/doi/10.1002/abc",
+        "see https://academic.oup.com/journal/article-pdf/123",
+        "see https://www.cambridge.org/core/journals/abc",
+        "see https://www.thelancet.com/journals/lanonc/article",
+        "see https://www.nejm.org/doi/10.1056/foo",
+        "see https://www.bmj.com/content/123/bmj.xyz",
+        "see https://www.researchgate.net/publication/123_paper",
+        "see https://www.academia.edu/45678/paper",
+    ],
+)
+def test_redact_covers_publisher_paper_domains(snippet):
+    """Codex F-PR5-CR3 (P2): publisher / paper-surface hosts must
+    be redacted, otherwise the model can claim things attributed
+    to journal papers."""
+    redacted, redactions = repo.redact(snippet, "README.md")
+    assert any(
+        r.reason == repo.REDACTION_PREPRINT for r in redactions
+    ), f"missed publisher host in {snippet!r}: got {redactions!r}"
+
+
 def test_redact_bibliography_drops_through_next_heading():
     text = (
         "## Body\n\n"
