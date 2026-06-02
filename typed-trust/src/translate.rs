@@ -1012,6 +1012,10 @@ pub enum ReviewTranslateError {
     /// `promote_from_extracted` block (target_claim, from_tier,
     /// to_tier, reviewed_extraction_sha).
     PromoteFromExtractedMissingBlock { id: String },
+    /// Phase 5 PR3 (codex F-PR3-CR4): `reviewed_extraction_sha` must
+    /// be non-empty — the whole point is to pin the curator's review
+    /// to a specific extraction sha.
+    PromoteFromExtractedEmptySha { id: String },
 }
 
 impl std::fmt::Display for ReviewTranslateError {
@@ -1055,6 +1059,9 @@ impl std::fmt::Display for ReviewTranslateError {
             }
             ReviewTranslateError::PromoteFromExtractedMissingBlock { id } => {
                 write!(f, "review event for {id}: kind=promote_from_extracted requires a `promote_from_extracted` block with target_claim, from_tier, to_tier, reviewed_extraction_sha")
+            }
+            ReviewTranslateError::PromoteFromExtractedEmptySha { id } => {
+                write!(f, "review event for {id}: kind=promote_from_extracted requires a non-empty `reviewed_extraction_sha` (the field pins the curator's review to a specific extraction)")
             }
         }
     }
@@ -1172,7 +1179,8 @@ fn translate_supersede_kind(
 /// Phase 5 PR3: translate a `kind: promote_from_extracted` sidecar
 /// entry into the typed `ReviewKind::PromoteFromExtracted` variant.
 /// Requires the `promote_from_extracted` block — the entry is
-/// rejected otherwise.
+/// rejected otherwise. Also rejects empty `reviewed_extraction_sha`
+/// (codex F-PR3-CR4: the field must pin a specific extraction).
 fn translate_promote_from_extracted_kind(
     e: &ManifestReviewEvent,
 ) -> Result<crate::review::ReviewKind, ReviewTranslateError> {
@@ -1183,6 +1191,11 @@ fn translate_promote_from_extracted_kind(
             id: e.claim_id.clone(),
         }
     })?;
+    if block.reviewed_extraction_sha.trim().is_empty() {
+        return Err(ReviewTranslateError::PromoteFromExtractedEmptySha {
+            id: e.claim_id.clone(),
+        });
+    }
     Ok(ReviewKind::PromoteFromExtracted {
         target_claim: ClaimId::new(&block.target_claim),
         from_tier: block.from_tier.clone(),
@@ -1319,23 +1332,50 @@ fn is_extracted_claim(claim: &ManifestClaim) -> bool {
     )
 }
 
-/// Does this sidecar entry match `(target_claim, to_tier)` of the
-/// given claim? `from_tier` is permissive for now (any prior tier);
-/// the strict from_tier check is enforced when we add multi-step
-/// promotions in a follow-up.
+/// Does this sidecar entry match `(target_claim, from_tier=research,
+/// to_tier=claim.tier)` of the given claim?
+///
+/// Codex F-PR3-CR3: PR3 requires `from_tier == "research"` so an
+/// event can't claim an impossible transition like `release -> ci`
+/// to satisfy the gate. Multi-step promotion (`research -> ci` then
+/// `ci -> release`) is deferred to a follow-up that tracks prior
+/// tier state explicitly.
 fn matches_promotion_target(e: &ManifestReviewEvent, claim: &ManifestClaim) -> bool {
     let Some(block) = e.promote_from_extracted.as_ref() else {
         return false;
     };
-    block.target_claim == claim.id && block.to_tier == claim.tier
+    block.target_claim == claim.id
+        && block.from_tier == "research"
+        && block.to_tier == claim.tier
 }
 
+/// Pick the latest matching event by `(timestamp, event_id)` —
+/// timestamp is primary, canonical event_id is the deterministic
+/// tiebreaker for same-timestamp duplicates (codex F-PR3-CR2).
+///
+/// Tiebreaker rationale: when two curators emit
+/// PromoteFromExtracted events at the same wall-clock second with
+/// different `reviewed_extraction_sha`, we need a deterministic
+/// winner so that re-running the validator on a re-ordered sidecar
+/// produces the same result. The canonical event_id (sha256 of the
+/// payload) is a stable, content-addressed tiebreaker.
+///
+/// Timestamp comparison itself is still string-lexicographic.
+/// That's correct for normalized UTC strings ending in `Z` but
+/// would mis-order mixed-timezone offsets. The framework's
+/// timestamp fields are strings throughout; a chrono migration is
+/// a separate codebase-wide concern (codex F-PR3-CR1 flagged this
+/// for follow-up).
 fn pick_latest_by_event_date<'a>(
     matching: &[&'a ManifestReviewEvent],
 ) -> Option<&'a ManifestReviewEvent> {
     matching
         .iter()
-        .max_by(|a, b| a.timestamp.cmp(&b.timestamp))
+        .max_by(|a, b| {
+            a.timestamp
+                .cmp(&b.timestamp)
+                .then_with(|| canonical_event_id(a).cmp(&canonical_event_id(b)))
+        })
         .copied()
 }
 

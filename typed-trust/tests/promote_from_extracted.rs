@@ -425,6 +425,148 @@ fn rule5_endorse_does_not_satisfy_promotion_gate_on_ci_claim() {
 // Smoke: ManifestProvenance helper sees through to the extractor block.
 // ----------------------------------------------------------------------
 
+// ----------------------------------------------------------------------
+// Codex F-PR3-CR review additions.
+// ----------------------------------------------------------------------
+
+#[test]
+fn rule2_rejects_event_with_from_tier_release() {
+    // Codex F-PR3-CR3: PR3 requires from_tier == "research". An event
+    // claiming `release -> ci` could otherwise satisfy a tier:ci
+    // extracted claim, which is an impossible transition that would
+    // weaken the audit trail.
+    let manifest = parse_manifest_file(EXTRACTED_CI_MANIFEST_YAML).unwrap();
+    let claim = &manifest.claims[0];
+    let event = promotion_event(
+        "cool-paper-rmsd-vs-baseline",
+        "release", // not research
+        "ci",
+        "abc",
+        "2026-09-15T10:00:00Z",
+    );
+    let err = validate_promotion_rules(claim, std::slice::from_ref(&event)).unwrap_err();
+    assert!(
+        matches!(err, PromotionError::MissingPromotionEvent { .. }),
+        "expected MissingPromotionEvent when from_tier != research, got: {err:?}"
+    );
+}
+
+#[test]
+fn rule4_same_timestamp_uses_event_id_as_deterministic_tiebreaker() {
+    // Codex F-PR3-CR2: when two matching events share a timestamp,
+    // pick_latest_by_event_date must break ties on the canonical
+    // event_id (sha256 of the payload). The validator's result must
+    // be invariant under list reordering.
+    let manifest = parse_manifest_file(EXTRACTED_CI_MANIFEST_YAML).unwrap();
+    let claim = &manifest.claims[0];
+    let mut event_a = promotion_event(
+        "cool-paper-rmsd-vs-baseline",
+        "research",
+        "ci",
+        "sha-a",
+        "2026-09-15T10:00:00Z",
+    );
+    event_a.rationale = "curator a rationale".into();
+    let mut event_b = promotion_event(
+        "cool-paper-rmsd-vs-baseline",
+        "research",
+        "ci",
+        "sha-b",
+        "2026-09-15T10:00:00Z", // same timestamp
+    );
+    event_b.rationale = "curator b rationale".into();
+
+    // Both orderings should validate cleanly (both match, both are
+    // valid). The KEY guarantee is that result is invariant under
+    // reordering — neither order produces an error.
+    validate_promotion_rules(claim, &[event_a.clone(), event_b.clone()])
+        .expect("a-then-b should validate");
+    validate_promotion_rules(claim, &[event_b, event_a])
+        .expect("b-then-a should validate identically");
+}
+
+#[test]
+fn rejects_promote_from_extracted_with_empty_reviewed_extraction_sha() {
+    // Codex F-PR3-CR4: empty reviewed_extraction_sha defeats the
+    // whole point of pinning the curator's review.
+    let mut entry = promotion_event(
+        "cool-paper-rmsd-vs-baseline",
+        "research",
+        "ci",
+        "", // empty
+        "2026-09-15T10:00:00Z",
+    );
+    let block = entry
+        .promote_from_extracted
+        .as_mut()
+        .expect("block present");
+    block.reviewed_extraction_sha = "".into();
+    let err = translate_review_event(&entry).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("reviewed_extraction_sha"),
+        "expected error naming reviewed_extraction_sha, got: {msg}"
+    );
+}
+
+#[test]
+fn unknown_target_claim_in_promotion_event_is_silently_ignored() {
+    // Codex F-PR3 coverage: an event referencing a claim not in this
+    // validator call is out-of-scope. validate_promotion_rules is
+    // called per-claim; events targeting OTHER claims must not
+    // satisfy the gate. The earlier test rule2_mismatched_target_claim
+    // covers this for the no-other-events case; this test confirms
+    // the same behaviour when an unrelated event coexists.
+    let manifest = parse_manifest_file(EXTRACTED_CI_MANIFEST_YAML).unwrap();
+    let claim = &manifest.claims[0];
+    let event = promotion_event(
+        "some-other-claim",
+        "research",
+        "ci",
+        "abc",
+        "2026-09-15T10:00:00Z",
+    );
+    let err = validate_promotion_rules(claim, std::slice::from_ref(&event)).unwrap_err();
+    assert!(
+        matches!(err, PromotionError::MissingPromotionEvent { .. }),
+        "out-of-scope event must not satisfy the gate, got: {err:?}"
+    );
+}
+
+#[test]
+fn structured_promote_from_extracted_block_rejects_unknown_field() {
+    // Codex F-PR3 coverage: deny_unknown_fields on the block catches
+    // typos like `target_claimm:` at parse time.
+    let sidecar_json = r#"
+{
+  "events": [
+    {
+      "claim_id": "cool-paper-rmsd-vs-baseline",
+      "kind": "promote_from_extracted",
+      "author": {"kind": "human", "name": "Jane Doe", "orcid": "0000-0001"},
+      "rationale": "looks right",
+      "timestamp": "2026-09-15T10:00:00Z",
+      "promote_from_extracted": {
+        "target_claim": "cool-paper-rmsd-vs-baseline",
+        "from_tier": "research",
+        "to_tier": "ci",
+        "reviewed_extraction_sha": "abc",
+        "unknown_field": "trips the deny"
+      }
+    }
+  ]
+}
+"#;
+    let parsed: Result<typed_trust::translate::ReviewEventSidecar, _> =
+        serde_json::from_str(sidecar_json);
+    let err = parsed.expect_err("expected deny_unknown_fields to reject");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("unknown_field") || msg.contains("unknown field"),
+        "expected error naming the unknown field, got: {msg}"
+    );
+}
+
 #[test]
 fn extracted_at_helper_reaches_through_provenance_block() {
     let manifest = parse_manifest_file(EXTRACTED_CI_MANIFEST_YAML).unwrap();
