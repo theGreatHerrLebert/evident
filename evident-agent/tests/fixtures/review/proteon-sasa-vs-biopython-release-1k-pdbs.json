@@ -1,0 +1,17 @@
+{
+  "id": "msg_01L6HcKFA8SaL8Uo275tah5y",
+  "tool_input": {
+    "verdict": "endorse",
+    "checks": {
+      "metric_present": "pass",
+      "within_tolerance": "pass",
+      "outliers_checked": "pass",
+      "reproducible_chain": "pass"
+    },
+    "observed_value": "0.0017",
+    "tolerance": "median_relative_error < 0.005",
+    "failure_reason": null,
+    "rationale": "The digest from results.json at commit 4d6ddbec reports median_relative_error = 0.0017, which is strictly less than the tolerance bound of 0.005 (0.5%). The metric name matches exactly. Max relative error (0.0091) and p95 (0.0048) are higher but the tolerance is on median only, so these do not contradict the headline. 27 structures were skipped out of 1000, but the claim's tolerance does not specify a minimum N, and 973 scored structures still constitute a corpus-level median. Digest is not truncated. Commit and command are reproducible from the header."
+  },
+  "digest": "<digest header=\"{\"commit\": \"4d6ddbec100b810b85c0d2104ecd63d78ac848ec\", \"format\": \"json\", \"metric_present\": \"pass\", \"source\": \"results.json\", \"truncated\": false}\">\n{\n  \"summary\": {\n    \"max_relative_error\": 0.0091,\n    \"mean_relative_error\": 0.0023,\n    \"median_relative_error\": 0.0017,\n    \"n_structures_scored\": 973,\n    \"n_structures_skipped\": 27,\n    \"p95_relative_error\": 0.0048\n  }\n}\n</digest>"
+}

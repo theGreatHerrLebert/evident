@@ -1,0 +1,12 @@
+{
+  "n_structures": 12,
+  "elapsed_s": 47.3,
+  "summary": {
+    "loading": {"pass": 12, "fail": 0},
+    "convergence": {"pass": 11, "fail": 0, "warn": 1}
+  },
+  "notes": [
+    "Test harness ran successfully but did not export electrostatic energy comparisons.",
+    "Per-structure energy fields were not written to this artifact; see ball-electrostatic-comparison.csv for the comparison data (not included in this run)."
+  ]
+}

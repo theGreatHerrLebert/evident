@@ -1,0 +1,25 @@
+{
+  "n_structures": 1000,
+  "elapsed_s": 686.7,
+  "corpus_sha": "b319c47c59871ed3990f81fb025c6ae90abba6adcff0b91ff7f118e41c730a53",
+  "summary": {
+    "median_relative_error": 0.0017,
+    "mean_relative_error": 0.0023,
+    "max_relative_error": 0.0091,
+    "p95_relative_error": 0.0048,
+    "n_structures_scored": 973,
+    "n_structures_skipped": 27
+  },
+  "per_structure_sample": [
+    {"pdb": "1crn", "proteon_total_sasa": 4392.1, "biopython_total_sasa": 4400.7, "relative_error": 0.00195},
+    {"pdb": "1ubq", "proteon_total_sasa": 5018.4, "biopython_total_sasa": 5027.2, "relative_error": 0.00175},
+    {"pdb": "2gb1", "proteon_total_sasa": 3210.0, "biopython_total_sasa": 3215.3, "relative_error": 0.00165},
+    {"pdb": "1l2y", "proteon_total_sasa": 1844.2, "biopython_total_sasa": 1849.6, "relative_error": 0.00292},
+    {"pdb": "1bba", "proteon_total_sasa": 6311.4, "biopython_total_sasa": 6315.8, "relative_error": 0.00070}
+  ],
+  "notes": [
+    "Run on the 1000-structure validation corpus pinned by corpus_sha.",
+    "Headline metric (median_relative_error = 0.0017) is well within the 0.005 tolerance bound.",
+    "Max relative error across the corpus is 0.0091 — also under 0.01."
+  ]
+}

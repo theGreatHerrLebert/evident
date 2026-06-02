@@ -1,0 +1,30 @@
+version: 0.1
+project: sasa-endorse-fixture
+claims:
+  - id: proteon-sasa-vs-biopython-release-1k-pdbs
+    kind: measurement
+    tier: release
+    source: .
+    title: Proteon SASA matches Biopython within 0.5 percent across 1000 structures
+    claim: |
+      Proteon's solvent-accessible-surface-area (SASA) calculation matches
+      the Biopython reference implementation within 0.5 percent median
+      relative error across a 1000-structure validation corpus, measured
+      as |proteon_total - biopython_total| / biopython_total on each
+      structure, then aggregated by median.
+    tolerances:
+      - metric: median_relative_error
+        op: "<"
+        value: 0.005
+        prose: |
+          Median relative error on total_sasa must stay strictly below
+          0.5 percent across the corpus.
+    evidence:
+      oracle: [Biopython, FreeSASA]
+      command: "pytest tests/test_sasa.py::TestBiopythonOracle::test_corpus_1k -v"
+      artifact: results.json
+    last_verified:
+      commit: "4d6ddbec100b810b85c0d2104ecd63d78ac848ec"
+      date: "2026-05-11"
+      value: 0.0017
+      corpus_sha: "b319c47c59871ed3990f81fb025c6ae90abba6adcff0b91ff7f118e41c730a53"

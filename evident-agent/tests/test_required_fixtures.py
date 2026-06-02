@@ -353,15 +353,64 @@ def test_recorded_ball_dissent_e2e(tmp_path: Path) -> None:
     client = FakeClient([response])
     verdict = call_review(
         model="claude-opus-4-7",
+        claim_yaml="id: ball-electrostatic-synthetic-dissent\n",
+        digest_rendered=recorded.get("digest", "<digest></digest>"),
+        api_client=client,
+    )
+    # The load-bearing 2a fixture: model must Dissent when the
+    # digest is vague / insufficient — no specific contradicting
+    # value to cite would warrant Challenge.
+    assert verdict.verdict == "dissent"
+    assert verdict.failure_reason
+    assert any(verdict.checks[k] != "pass" for k in CHECK_KEYS)
+
+
+def test_recorded_ball_challenge_e2e(tmp_path: Path) -> None:
+    """Phase 2b's load-bearing recorded fixture: when the digest
+    contains a specific observed value that violates the target
+    tolerance, the model must escalate to Challenge with a violation
+    tuple naming the exact metric / bound / comparator / observed
+    value / citation.
+
+    Skipped until the fixture is recorded via ``evident-agent review
+    --record``.
+    """
+    fixture = _fixture_dir() / "ball_electrostatic_challenge.json"
+    if not fixture.is_file():
+        pytest.skip(f"recorded BALL challenge fixture not present at {fixture}")
+    recorded = json.loads(fixture.read_text())
+    response = FakeResponse(
+        id=recorded.get("id", "msg_recorded"),
+        content=[
+            FakeBlock(
+                type="tool_use",
+                name="submit_review",
+                input=recorded["tool_input"],
+            )
+        ],
+    )
+    client = FakeClient([response])
+    verdict = call_review(
+        model="claude-opus-4-7",
         claim_yaml="id: ball-electrostatic-synthetic-challenge\n",
         digest_rendered=recorded.get("digest", "<digest></digest>"),
         api_client=client,
     )
-    # The load-bearing fixture: model must Dissent on the BALL
-    # synthetic adversarial case and name the specific defect.
-    assert verdict.verdict == "dissent"
-    assert verdict.failure_reason
-    assert any(verdict.checks[k] != "pass" for k in CHECK_KEYS)
+    assert verdict.verdict == "challenge", (
+        f"expected challenge, got {verdict.verdict}; rationale: {verdict.rationale[:200]}"
+    )
+    # Substantive Challenge requires a violation tuple naming the
+    # exact target metric and bound.
+    assert verdict.challenge_target_criterion_id is not None
+    assert verdict.challenge_violation is not None
+    for required in ("metric", "observed_value", "bound", "comparator", "citation"):
+        assert required in verdict.challenge_violation, (
+            f"violation missing required field {required!r}"
+        )
+    # The reported bound + comparator must match the target's own —
+    # codex F-2B-3/4 (target-contradicting, not threshold-drift).
+    # We do not assert exact values here; that's the role of
+    # validate_contradiction in the live record run.
 
 
 # ============================================================
