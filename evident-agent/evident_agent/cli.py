@@ -25,6 +25,7 @@ from typing import Optional
 import click
 
 from . import (
+    curator as curator_mod,
     docker,
     evidence,
     manifest,
@@ -888,6 +889,125 @@ def extract(
     click.echo(
         f"extracted {len(result.claims)} claim(s), "
         f"{len(result.rejections)} rejection(s) — output in {output_dir}"
+    )
+
+
+@main.command()
+@click.option(
+    "--manifest",
+    "manifest_path",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Path to the extracted evident.yaml.",
+)
+@click.option(
+    "--claim",
+    "claim_id",
+    required=True,
+    help="Claim id to promote.",
+)
+@click.option(
+    "--to-tier",
+    "to_tier",
+    required=True,
+    type=click.Choice(["ci", "release"]),
+    help="Target tier for the promotion.",
+)
+@click.option(
+    "--rationale",
+    required=True,
+    help="Curator's rationale (required by PR3 contract).",
+)
+@click.option(
+    "--curator",
+    required=True,
+    help=(
+        "Curator identity. Examples: 'Jane Doe', "
+        "'Jane Doe <orcid:0000-0001-2345-6789>'."
+    ),
+)
+@click.option(
+    "--sidecar",
+    "sidecar_path",
+    default=None,
+    type=click.Path(path_type=Path),
+    help=(
+        "Sidecar path. Default: manifest.parent/review_events.json"
+    ),
+)
+def promote(
+    manifest_path: Path,
+    claim_id: str,
+    to_tier: str,
+    rationale: str,
+    curator: str,
+    sidecar_path: Optional[Path],
+) -> None:
+    """Promote an extracted claim from tier:research to ci|release.
+
+    Edits the manifest in place (atomic) AND appends a
+    PromoteFromExtracted event to the sidecar. The recorded
+    reviewed_extraction_sha is the sha256 of the manifest's
+    pre-edit bytes — what the curator actually reviewed.
+    """
+    try:
+        result = curator_mod.promote_claim(
+            manifest_path=manifest_path,
+            claim_id=claim_id,
+            to_tier=to_tier,
+            rationale=rationale,
+            curator=curator,
+            sidecar_path=sidecar_path,
+        )
+    except curator_mod.CuratorError as exc:
+        click.echo(f"error: {exc}", err=True)
+        sys.exit(2)
+    click.echo(
+        f"promoted {result.claim_id} {result.from_tier} -> "
+        f"{result.to_tier}\n"
+        f"  manifest: {result.manifest_path}\n"
+        f"  sidecar:  {result.sidecar_path}\n"
+        f"  event_id: {result.event_id}\n"
+        f"  reviewed_extraction_sha: {result.reviewed_extraction_sha}"
+    )
+
+
+@main.command()
+@click.option(
+    "--manifest",
+    "manifest_path",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Path to the extracted evident.yaml.",
+)
+@click.option(
+    "--claim",
+    "claim_id",
+    required=True,
+    help="Claim id to remove.",
+)
+def drop(manifest_path: Path, claim_id: str) -> None:
+    """Remove an extracted claim from the manifest entirely.
+
+    Drop is **pre-curation cleanup**: removing extractor noise from
+    a draft extraction before formal curation, NOT registering a
+    "curator reviewed and rejected" decision. No sidecar event is
+    written; the audit trail comes from git. If the curator wants
+    to record a typed reviewed-and-rejected decision, use
+    `evident-agent review` (separate command, follow-up PR) which
+    authors a typed Dissent event instead of mutating the manifest.
+    """
+    try:
+        result = curator_mod.drop_claim(
+            manifest_path=manifest_path,
+            claim_id=claim_id,
+        )
+    except curator_mod.CuratorError as exc:
+        click.echo(f"error: {exc}", err=True)
+        sys.exit(2)
+    click.echo(
+        f"dropped {result.claim_id}\n"
+        f"  remaining: {len(result.remaining_claim_ids)} claim(s)"
     )
 
 
