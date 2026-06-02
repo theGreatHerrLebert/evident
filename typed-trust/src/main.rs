@@ -104,20 +104,44 @@ fn main() -> ExitCode {
     // filter fix.
     let known_claim_ids: std::collections::HashSet<String> =
         claims.iter().map(|c| c.claim.id.clone()).collect();
-    let (review_events_by_claim, review_event_aux, backing_claims_by_target): (
+    let (
+        review_events_by_claim,
+        review_event_aux,
+        backing_claims_by_target,
+        raw_review_events_by_claim,
+    ): (
         HashMap<String, Vec<ReviewEvent>>,
         HashMap<String, serde_json::Value>,
         HashMap<String, Vec<ManifestClaim>>,
+        HashMap<String, Vec<typed_trust::translate::ManifestReviewEvent>>,
     ) = match review_sidecar_path.as_deref() {
         Some(path) => match load_review_sidecar(path, &known_claim_ids) {
-            Ok(triple) => triple,
+            Ok(quad) => quad,
             Err(e) => {
                 eprintln!("{e}");
                 return ExitCode::FAILURE;
             }
         },
-        None => (HashMap::new(), HashMap::new(), HashMap::new()),
+        None => (HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new()),
     };
+
+    // Phase 5 PR3: fire the promotion gate. An extracted claim
+    // (provenance.kind = extracted-from-paper | extracted-from-repo)
+    // at tier > research must have a matching PromoteFromExtracted
+    // event in the sidecar. Validator is no-op for non-extracted
+    // claims and research-tier extracted claims.
+    for cw in claims.iter() {
+        let empty: Vec<typed_trust::translate::ManifestReviewEvent> = vec![];
+        let events_for_claim = raw_review_events_by_claim
+            .get(&cw.claim.id)
+            .unwrap_or(&empty);
+        if let Err(e) =
+            typed_trust::translate::validate_promotion_rules(&cw.claim, events_for_claim)
+        {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    }
 
     let now: Timestamp = "1970-01-01T00:00:00Z".into();
 
@@ -605,6 +629,11 @@ fn load_review_sidecar(
         HashMap<String, Vec<ReviewEvent>>,
         HashMap<String, serde_json::Value>,
         HashMap<String, Vec<ManifestClaim>>,
+        // Phase 5 PR3: raw ManifestReviewEvent entries grouped by
+        // claim_id. validate_promotion_rules needs the raw entries
+        // (the translated ReviewEvent loses the per-entry
+        // promote_from_extracted block).
+        HashMap<String, Vec<typed_trust::translate::ManifestReviewEvent>>,
     ),
     String,
 > {
@@ -634,6 +663,10 @@ fn load_review_sidecar(
     let mut grouped: HashMap<String, Vec<ReviewEvent>> = HashMap::new();
     let mut aux: HashMap<String, serde_json::Value> = HashMap::new();
     let mut backing: HashMap<String, Vec<ManifestClaim>> = HashMap::new();
+    let mut raw_by_claim: HashMap<
+        String,
+        Vec<typed_trust::translate::ManifestReviewEvent>,
+    > = HashMap::new();
     // Phase 2d-i (codex F-2D-12): reject duplicate event_ids at
     // load time. If two entries share the same id, Supersede
     // semantics become ambiguous (Target::ReviewEvent(id) can't
@@ -657,6 +690,10 @@ fn load_review_sidecar(
             .entry(entry.claim_id.clone())
             .or_default()
             .push(event);
+        raw_by_claim
+            .entry(entry.claim_id.clone())
+            .or_default()
+            .push(entry.clone());
         let aux_value = aux_value_for(entry);
         if let serde_json::Value::Object(ref m) = aux_value {
             if !m.is_empty() {
@@ -673,7 +710,7 @@ fn load_review_sidecar(
                 .push(bc.clone());
         }
     }
-    Ok((grouped, aux, backing))
+    Ok((grouped, aux, backing, raw_by_claim))
 }
 
 /// Synthesize a `TrustReport` for each inline backing claim attached
