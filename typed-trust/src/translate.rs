@@ -597,15 +597,52 @@ pub struct ManifestReviewEvent {
     pub tolerance: Option<String>,
     #[serde(default)]
     pub failure_reason: Option<String>,
-    /// Phase 2b-only: for `challenge` events.
+    /// Phase 2b: `challenge` events carry this structured block. Always
+    /// required when ``kind == "challenge"``. The `violation` and
+    /// `backing_claim` fields are populated for substantive categories
+    /// only; procedural categories carry only `category`.
     #[serde(default)]
-    pub category: Option<String>,
-    #[serde(default)]
-    pub backed_by: Option<String>,
+    pub challenge: Option<ManifestChallengeBlock>,
     /// Optional protocol pointer. Release-tier events must set this
     /// (invariant 10); validator enforcement is downstream.
     #[serde(default)]
     pub protocol: Option<String>,
+}
+
+/// Phase 2b challenge block carried by `kind: challenge` events.
+///
+/// `target_criterion_id` names which of the target claim's criteria
+/// the Challenge attacks — required even for single-criterion targets,
+/// so multi-criterion targets are unambiguous.
+///
+/// `violation` is the model-reported contradiction: which metric, what
+/// the observed value was, the comparator and bound from the target
+/// tolerance. The agent — NOT the model — constructs `backing_claim`
+/// from this tuple; both are persisted to the sidecar so the
+/// translator can re-derive when needed and so reviewers can audit
+/// the model's reported violation against the constructed backing.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ManifestChallengeBlock {
+    pub category: String,
+    #[serde(default)]
+    pub target_criterion_id: Option<String>,
+    /// The model-reported violation. Required for substantive
+    /// categories; absent for procedural Challenges.
+    #[serde(default)]
+    pub violation: Option<ManifestViolation>,
+    /// Agent-constructed backing claim. Required for substantive
+    /// categories; absent for procedural Challenges.
+    #[serde(default)]
+    pub backing_claim: Option<ManifestClaim>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ManifestViolation {
+    pub metric: String,
+    pub observed_value: f64,
+    pub bound: f64,
+    pub comparator: String,
+    pub citation: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -627,7 +664,20 @@ pub enum ReviewTranslateError {
     UnknownKind { id: String, kind: String },
     UnknownAuthorKind { id: String, kind: String },
     ModelMissingVersion { id: String },
-    ChallengeNotSupported { id: String },
+    /// `kind: challenge` events must carry a `challenge` block (which
+    /// names the category at minimum, plus violation + backing claim
+    /// for substantive categories).
+    ChallengeMissingBlock { id: String },
+    /// A substantive Challenge category (anything outside the closed
+    /// procedural list) requires `challenge.backing_claim`.
+    SubstantiveChallengeMissingBacking { id: String, category: String },
+    /// A procedural Challenge category MUST NOT carry a backing claim
+    /// — the procedural fact itself moves status, and a backing claim
+    /// would be redundant (and possibly contradictory).
+    ProceduralChallengeWithBacking { id: String, category: String },
+    /// Backing claim's `id` collides with the target claim's id, which
+    /// would form a one-step cycle in the challenge-backing graph.
+    BackingClaimMatchesTargetId { id: String },
 }
 
 impl std::fmt::Display for ReviewTranslateError {
@@ -642,8 +692,17 @@ impl std::fmt::Display for ReviewTranslateError {
             ReviewTranslateError::ModelMissingVersion { id } => {
                 write!(f, "review event for {id}: author kind=model requires `version`")
             }
-            ReviewTranslateError::ChallengeNotSupported { id } => {
-                write!(f, "review event for {id}: kind=challenge requires Phase 2b backing-claim support; not supported by typed-trust 2a")
+            ReviewTranslateError::ChallengeMissingBlock { id } => {
+                write!(f, "review event for {id}: kind=challenge requires a `challenge` block with category and (for substantive categories) violation + backing_claim")
+            }
+            ReviewTranslateError::SubstantiveChallengeMissingBacking { id, category } => {
+                write!(f, "review event for {id}: substantive challenge category {category:?} requires `challenge.backing_claim`")
+            }
+            ReviewTranslateError::ProceduralChallengeWithBacking { id, category } => {
+                write!(f, "review event for {id}: procedural challenge category {category:?} must not carry a backing_claim; the procedural fact moves status on its own")
+            }
+            ReviewTranslateError::BackingClaimMatchesTargetId { id } => {
+                write!(f, "review event for {id}: backing claim's `id` matches the target claim id — one-step cycle in the challenge-backing graph")
             }
         }
     }
@@ -665,11 +724,7 @@ pub fn translate_review_event(
     let kind = match e.kind.as_str() {
         "endorse" => ReviewKind::Endorse,
         "dissent" => ReviewKind::Dissent,
-        "challenge" => {
-            return Err(ReviewTranslateError::ChallengeNotSupported {
-                id: e.claim_id.clone(),
-            })
-        }
+        "challenge" => translate_challenge_kind(e)?,
         other => {
             return Err(ReviewTranslateError::UnknownKind {
                 id: e.claim_id.clone(),
@@ -694,6 +749,103 @@ pub fn translate_review_event(
         at: e.timestamp.clone(),
         kind,
     })
+}
+
+/// Procedural Challenge categories — typed-trust's closed list that
+/// MAY move render status without a backing claim. Mirrors
+/// `synthesize::is_procedural_category` but operates on the
+/// snake_case sidecar string so we can enforce the rule at
+/// translation time.
+fn is_procedural_category_str(category: &str) -> bool {
+    matches!(
+        category,
+        "artifact_unavailable"
+            | "hash_mismatch"
+            | "command_failure"
+            | "conflict_of_interest"
+            | "peer_review_unverifiable"
+    )
+}
+
+/// Map a snake_case category string from the sidecar onto the
+/// `ChallengeCategory` enum. Unknown strings become `Other(_)`, which
+/// is treated as substantive.
+fn translate_challenge_category(s: &str) -> crate::review::ChallengeCategory {
+    use crate::review::ChallengeCategory as C;
+    match s {
+        "missing_control" => C::MissingControl,
+        "weak_statistics" => C::WeakStatistics,
+        "confound" => C::Confound,
+        "unverifiable_assumption" => C::UnverifiableAssumption,
+        "missing_benchmark" => C::MissingBenchmark,
+        "reproducibility_risk" => C::ReproducibilityRisk,
+        "artifact_unavailable" => C::ArtifactUnavailable,
+        "hash_mismatch" => C::HashMismatch,
+        "command_failure" => C::CommandFailure,
+        "conflict_of_interest" => C::ConflictOfInterest,
+        "peer_review_unverifiable" => C::PeerReviewUnverifiable,
+        other => C::Other(other.into()),
+    }
+}
+
+/// Translate a `kind: challenge` sidecar entry's challenge block into
+/// a `ReviewKind::Challenge`. Enforces:
+/// - `challenge` block is present;
+/// - substantive categories carry `backing_claim`;
+/// - procedural categories do NOT carry `backing_claim`;
+/// - backing claim's id ≠ target claim's id (cycle guard).
+fn translate_challenge_kind(
+    e: &ManifestReviewEvent,
+) -> Result<crate::review::ReviewKind, ReviewTranslateError> {
+    use crate::review::ReviewKind;
+
+    let block = e
+        .challenge
+        .as_ref()
+        .ok_or_else(|| ReviewTranslateError::ChallengeMissingBlock {
+            id: e.claim_id.clone(),
+        })?;
+
+    let category = translate_challenge_category(&block.category);
+    let procedural = is_procedural_category_str(&block.category);
+
+    if procedural && block.backing_claim.is_some() {
+        return Err(ReviewTranslateError::ProceduralChallengeWithBacking {
+            id: e.claim_id.clone(),
+            category: block.category.clone(),
+        });
+    }
+    if !procedural && block.backing_claim.is_none() {
+        return Err(ReviewTranslateError::SubstantiveChallengeMissingBacking {
+            id: e.claim_id.clone(),
+            category: block.category.clone(),
+        });
+    }
+
+    let backed_by = match &block.backing_claim {
+        Some(bc) => {
+            if bc.id == e.claim_id {
+                return Err(ReviewTranslateError::BackingClaimMatchesTargetId {
+                    id: e.claim_id.clone(),
+                });
+            }
+            Some(ClaimId::new(bc.id.clone()))
+        }
+        None => None,
+    };
+
+    Ok(ReviewKind::Challenge {
+        category,
+        backed_by,
+    })
+}
+
+/// Helper for the CLI: pull the backing `ManifestClaim` out of a
+/// challenge event so it can be translated and synthesized into a
+/// backing TrustReport. Returns `None` for procedural Challenges (or
+/// for non-Challenge events).
+pub fn backing_claim_for_event(e: &ManifestReviewEvent) -> Option<&ManifestClaim> {
+    e.challenge.as_ref().and_then(|b| b.backing_claim.as_ref())
 }
 
 fn translate_author(
@@ -810,15 +962,50 @@ fn canonical_event_value(e: &ManifestReviewEvent) -> serde_json::Value {
     if let Some(f) = &e.failure_reason {
         m.insert("failure_reason".into(), Value::String(f.clone()));
     }
-    if let Some(c) = &e.category {
-        m.insert("category".into(), Value::String(c.clone()));
-    }
-    if let Some(b) = &e.backed_by {
-        m.insert("backed_by".into(), Value::String(b.clone()));
+    if let Some(ch) = &e.challenge {
+        m.insert("challenge".into(), challenge_canonical_value(ch));
     }
     if let Some(p) = &e.protocol {
         m.insert("protocol".into(), Value::String(p.clone()));
     }
 
+    Value::Object(m)
+}
+
+/// Canonical-JSON projection of the challenge block. Only the fields
+/// that semantically distinguish two challenges go in — the backing
+/// claim's `id` (because the agent derives it from the violation
+/// tuple, so it's redundant for hashing purposes) is skipped to keep
+/// the hash stable across backing-id-generation changes.
+fn challenge_canonical_value(block: &ManifestChallengeBlock) -> serde_json::Value {
+    use serde_json::{Map, Value};
+
+    let mut m = Map::new();
+    m.insert("category".into(), Value::String(block.category.clone()));
+    if let Some(t) = &block.target_criterion_id {
+        m.insert("target_criterion_id".into(), Value::String(t.clone()));
+    }
+    if let Some(v) = &block.violation {
+        let mut vm = Map::new();
+        vm.insert("metric".into(), Value::String(v.metric.clone()));
+        vm.insert(
+            "observed_value".into(),
+            serde_json::Number::from_f64(v.observed_value)
+                .map(Value::Number)
+                .unwrap_or(Value::Null),
+        );
+        vm.insert(
+            "bound".into(),
+            serde_json::Number::from_f64(v.bound)
+                .map(Value::Number)
+                .unwrap_or(Value::Null),
+        );
+        vm.insert("comparator".into(), Value::String(v.comparator.clone()));
+        vm.insert("citation".into(), Value::String(v.citation.clone()));
+        m.insert("violation".into(), Value::Object(vm));
+    }
+    // backing_claim deliberately excluded from the canonical hash:
+    // the agent generates its id from the violation tuple, so the
+    // backing claim contributes no additional discriminating info.
     Value::Object(m)
 }

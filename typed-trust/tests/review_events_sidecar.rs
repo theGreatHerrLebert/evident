@@ -30,8 +30,7 @@ fn endorse_event() -> ManifestReviewEvent {
         observed_value: Some("0.008".into()),
         tolerance: Some("< 0.02".into()),
         failure_reason: None,
-        category: None,
-        backed_by: None,
+        challenge: None,
         protocol: None,
     }
 }
@@ -76,15 +75,182 @@ fn translates_dissent_kind() {
     assert!(matches!(event.kind, ReviewKind::Dissent));
 }
 
+// ---------- Phase 2b: Challenge translation ----------
+
+use typed_trust::translate::{ManifestChallengeBlock, ManifestClaim, ManifestEvidence, ManifestTolerance, ManifestViolation};
+
+fn substantive_backing_claim(id: &str) -> ManifestClaim {
+    ManifestClaim {
+        id: id.into(),
+        title: "Counter-evidence for the target tolerance".into(),
+        kind: "measurement".into(),
+        case: None,
+        source: Some(".".into()),
+        tier: "ci".into(),
+        claim: "Counter: observed value 0.025 exceeds bound 0.02.".into(),
+        tolerances: Some(vec![ManifestTolerance {
+            metric: Some("electrostatic_error".into()),
+            op: Some(">".into()),
+            value: Some(0.02),
+            output: None,
+            prose: "Counter-claim: observed exceeds upper bound.".into(),
+        }]),
+        evidence: Some(ManifestEvidence {
+            oracle: vec!["BALL".into()],
+            command: "pytest".into(),
+            artifact: "results.csv".into(),
+        }),
+        provenance: None,
+        last_verified: None,
+        assumptions: None,
+        failure_modes: None,
+    }
+}
+
+fn substantive_violation() -> ManifestViolation {
+    ManifestViolation {
+        metric: "electrostatic_error".into(),
+        observed_value: 0.025,
+        bound: 0.02,
+        comparator: "<".into(),
+        citation: "row 47 of results.csv".into(),
+    }
+}
+
 #[test]
-fn rejects_challenge_in_phase2a() {
+fn translates_substantive_challenge_with_backing_claim() {
     let mut entry = endorse_event();
     entry.kind = "challenge".into();
-    let err = translate_review_event(&entry).expect_err("challenge must be rejected");
+    entry.challenge = Some(ManifestChallengeBlock {
+        category: "weak_statistics".into(),
+        target_criterion_id: Some("electrostatic_error".into()),
+        violation: Some(substantive_violation()),
+        backing_claim: Some(substantive_backing_claim(
+            "proteon-sasa-vs-biopython-release-1k-pdbs-counter-12345678",
+        )),
+    });
+    let event = translate_review_event(&entry).expect("substantive challenge translates");
+    use typed_trust::review::{ChallengeCategory, ReviewKind};
+    match &event.kind {
+        ReviewKind::Challenge { category, backed_by } => {
+            assert!(matches!(category, ChallengeCategory::WeakStatistics));
+            let bid = backed_by.as_ref().expect("backed_by populated");
+            assert!(bid.as_str().ends_with("-counter-12345678"));
+        }
+        other => panic!("unexpected kind {other:?}"),
+    }
+}
+
+#[test]
+fn translates_procedural_challenge_without_backing_claim() {
+    let mut entry = endorse_event();
+    entry.kind = "challenge".into();
+    entry.challenge = Some(ManifestChallengeBlock {
+        category: "command_failure".into(),
+        target_criterion_id: Some("electrostatic_error".into()),
+        violation: None,
+        backing_claim: None,
+    });
+    let event = translate_review_event(&entry).expect("procedural challenge translates");
+    use typed_trust::review::{ChallengeCategory, ReviewKind};
+    match &event.kind {
+        ReviewKind::Challenge { category, backed_by } => {
+            assert!(matches!(category, ChallengeCategory::CommandFailure));
+            assert!(backed_by.is_none());
+        }
+        other => panic!("unexpected kind {other:?}"),
+    }
+}
+
+#[test]
+fn rejects_challenge_without_challenge_block() {
+    let mut entry = endorse_event();
+    entry.kind = "challenge".into();
+    entry.challenge = None;
+    let err = translate_review_event(&entry).expect_err("challenge without block must be rejected");
     assert!(matches!(
         err,
-        ReviewTranslateError::ChallengeNotSupported { .. }
+        ReviewTranslateError::ChallengeMissingBlock { .. }
     ));
+}
+
+#[test]
+fn rejects_substantive_challenge_without_backing_claim() {
+    let mut entry = endorse_event();
+    entry.kind = "challenge".into();
+    entry.challenge = Some(ManifestChallengeBlock {
+        category: "weak_statistics".into(),
+        target_criterion_id: Some("electrostatic_error".into()),
+        violation: Some(substantive_violation()),
+        backing_claim: None,
+    });
+    let err =
+        translate_review_event(&entry).expect_err("substantive without backing must be rejected");
+    assert!(matches!(
+        err,
+        ReviewTranslateError::SubstantiveChallengeMissingBacking { .. }
+    ));
+}
+
+#[test]
+fn rejects_procedural_challenge_with_backing_claim() {
+    let mut entry = endorse_event();
+    entry.kind = "challenge".into();
+    entry.challenge = Some(ManifestChallengeBlock {
+        category: "command_failure".into(),
+        target_criterion_id: None,
+        violation: None,
+        backing_claim: Some(substantive_backing_claim("anything")),
+    });
+    let err = translate_review_event(&entry)
+        .expect_err("procedural with backing must be rejected (overshoot)");
+    assert!(matches!(
+        err,
+        ReviewTranslateError::ProceduralChallengeWithBacking { .. }
+    ));
+}
+
+#[test]
+fn rejects_backing_claim_with_id_matching_target() {
+    let mut entry = endorse_event();
+    entry.kind = "challenge".into();
+    entry.challenge = Some(ManifestChallengeBlock {
+        category: "weak_statistics".into(),
+        target_criterion_id: Some("electrostatic_error".into()),
+        violation: Some(substantive_violation()),
+        backing_claim: Some(substantive_backing_claim(
+            "proteon-sasa-vs-biopython-release-1k-pdbs",
+        )),
+    });
+    let err =
+        translate_review_event(&entry).expect_err("self-cycle backing must be rejected");
+    assert!(matches!(
+        err,
+        ReviewTranslateError::BackingClaimMatchesTargetId { .. }
+    ));
+}
+
+#[test]
+fn unknown_category_translates_to_other_substantive() {
+    let mut entry = endorse_event();
+    entry.kind = "challenge".into();
+    entry.challenge = Some(ManifestChallengeBlock {
+        category: "domain_specific_concern".into(),
+        target_criterion_id: Some("electrostatic_error".into()),
+        violation: Some(substantive_violation()),
+        backing_claim: Some(substantive_backing_claim(
+            "proteon-sasa-vs-biopython-release-1k-pdbs-counter-99999999",
+        )),
+    });
+    let event = translate_review_event(&entry).expect("unknown category accepted as Other");
+    use typed_trust::review::{ChallengeCategory, ReviewKind};
+    match &event.kind {
+        ReviewKind::Challenge { category, .. } => match category {
+            ChallengeCategory::Other(s) => assert_eq!(s, "domain_specific_concern"),
+            other => panic!("expected Other, got {other:?}"),
+        },
+        other => panic!("unexpected kind {other:?}"),
+    }
 }
 
 #[test]
