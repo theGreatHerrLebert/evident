@@ -209,6 +209,22 @@ fn list_claims(state: &ServerState, args: Value) -> Result<Value, ToolError> {
                     json!(reason),
                 );
             }
+            // Phase 5 PR2: surface provenance_kind (always) and
+            // source_context (when set). Consumers querying
+            // "show me extracted claims whose README copies marketing
+            // text" need source_context at the summary layer.
+            if let Some(prov) = c.claim.provenance.as_ref() {
+                item.as_object_mut().unwrap().insert(
+                    "provenance_kind".into(),
+                    json!(prov.effective_kind()),
+                );
+                if let Some(sc) = prov.source_context() {
+                    item.as_object_mut().unwrap().insert(
+                        "source_context".into(),
+                        json!(sc),
+                    );
+                }
+            }
             item
         })
         .collect();

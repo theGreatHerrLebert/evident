@@ -530,6 +530,88 @@ claims:
     proc.shutdown();
 }
 
+/// Phase 5 PR2: list_claims surfaces provenance_kind and source_context.
+/// Consumers querying "show me extracted-from-repo claims whose text
+/// is copied marketing" need both at the summary layer. Legacy
+/// (string) provenance still surfaces as provenance_kind with no
+/// source_context.
+#[test]
+fn list_claims_surfaces_provenance_kind_and_source_context_phase5_pr2() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = tmp.path().join("evident.yaml");
+    std::fs::write(
+        &manifest,
+        r#"version: 0.1
+project: extracted-mixed-pr2
+claims:
+  - id: legacy-provenance-claim
+    kind: measurement
+    tier: ci
+    source: .
+    title: legacy provenance claim
+    claim: stays under 2 percent
+    tolerances:
+      - metric: relative_error
+        op: "<"
+        value: 0.02
+        prose: stay under 2 percent
+    evidence:
+      oracle: [Biopython]
+      command: pytest
+      artifact: out.json
+    provenance: automatic
+  - id: extracted-repo-copied
+    kind: measurement
+    tier: research
+    source: .
+    title: extracted-from-repo with copied marketing text
+    claim: throughput claim
+    tolerances:
+      - metric: throughput
+        op: ">"
+        value: 1000.0
+        prose: README claims more than 1000 req/sec
+    evidence:
+      oracle: [Repo-README]
+      command: "no-replay-path"
+      artifact: source/cited.md#claim-1
+      replay_status: unavailable_artifacts
+      replay_reason: instructions_missing
+    provenance:
+      kind: extracted-from-repo
+      source_id: github:org/repo@deadbeef
+      source_context: copied_external_text
+"#,
+    )
+    .unwrap();
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let resp = proc.call_tool(
+        "list_claims",
+        json!({"manifest_path": manifest.to_str().unwrap()}),
+    );
+    let p = decode_result(&resp);
+    let items = p["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+
+    let legacy = items
+        .iter()
+        .find(|i| i["claim_id"] == "legacy-provenance-claim")
+        .expect("legacy claim present");
+    assert_eq!(legacy["provenance_kind"], "automatic");
+    assert!(
+        legacy.as_object().unwrap().get("source_context").is_none(),
+        "legacy provenance should not carry source_context; got {legacy:?}"
+    );
+
+    let extracted = items
+        .iter()
+        .find(|i| i["claim_id"] == "extracted-repo-copied")
+        .expect("extracted claim present");
+    assert_eq!(extracted["provenance_kind"], "extracted-from-repo");
+    assert_eq!(extracted["source_context"], "copied_external_text");
+    proc.shutdown();
+}
+
 #[test]
 fn list_review_events_include_rationale_toggles() {
     let tmp = tempfile::tempdir().unwrap();

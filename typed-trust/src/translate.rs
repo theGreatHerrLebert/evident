@@ -70,10 +70,150 @@ pub struct ManifestClaim {
     pub claim: String,
     pub tolerances: Option<Vec<ManifestTolerance>>,
     pub evidence: Option<ManifestEvidence>,
-    pub provenance: Option<String>,
+    pub provenance: Option<ManifestProvenance>,
     pub last_verified: Option<ManifestLastVerified>,
     pub assumptions: Option<Vec<String>>,
     pub failure_modes: Option<Vec<String>>,
+}
+
+/// Phase 5 PR2: the manifest's `provenance` field accepts either the
+/// legacy string form (`provenance: automatic`) or a structured object
+/// (`provenance: { kind, source_id, ... }`). The structured form is
+/// what `evident-extract` writes; the legacy form is what every
+/// pre-Phase-5 manifest has and must keep working unchanged.
+///
+/// Use `effective_kind()` to get the kind string for the existing
+/// callers that branch on `automatic` / `human` / `peer-reviewed`
+/// without caring about the new sub-fields.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum ManifestProvenance {
+    /// Pre-Phase-5 form: `provenance: automatic | human | peer-reviewed`
+    /// or any other free-form string. Only `kind` is carried.
+    Legacy(String),
+    /// Phase 5 form: structured provenance with extractor metadata.
+    Structured(ProvenanceBlock),
+}
+
+/// Phase 5 PR2: the structured `provenance:` block.
+///
+/// `kind` is the only required field. Everything else is optional so
+/// a manifest can declare `extracted-from-paper` without committing to
+/// a particular extractor or source_id at authoring time.
+///
+/// `deny_unknown_fields` (codex F-PR2-CR2) catches typos like
+/// `source_contxt:` at parse time instead of silently dropping them.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvenanceBlock {
+    /// The provenance discriminator. Phase 5 introduces
+    /// `extracted-from-paper` and `extracted-from-repo`; legacy
+    /// values (`automatic`, `human`, `peer-reviewed`) are also
+    /// accepted here, so a manifest author who prefers the
+    /// structured form can use it for legacy provenance too.
+    pub kind: String,
+    /// Opaque source identifier — for papers: `arxiv:2501.12345v2`,
+    /// `doi:10.1234/xyz`. For repos: `github:org/repo@<sha>`.
+    pub source_id: Option<String>,
+    /// SHA-256 of the source artifact (e.g. the PDF or the repo
+    /// snapshot) so re-extraction is reproducible against the same
+    /// source bytes.
+    pub source_sha: Option<String>,
+    /// Provenance of the text the claim was extracted FROM. Distinct
+    /// from `kind`, which is the provenance of the CLAIM. Parses as
+    /// a typed enum so an unknown value (`source_context:
+    /// completely_made_up`) is rejected at parse time, not at
+    /// translate time (codex F-PR2-CR1). This closes the
+    /// `list_claims` bypass — every value MCP surfaces is one of
+    /// the three legal strings.
+    pub source_context: Option<SourceContext>,
+    /// Extractor metadata. Optional so manifests can pre-declare
+    /// structured provenance before the extractor runs.
+    pub extractor: Option<ExtractorBlock>,
+    /// Curator identity (set after a human review, null at
+    /// extraction time). Free-form here so PR2 doesn't commit to a
+    /// curator-identity schema; PR3 will refine.
+    pub curator: Option<serde_yaml_ng::Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtractorBlock {
+    pub model: Option<String>,
+    pub model_version: Option<String>,
+    pub extracted_at: Option<String>,
+}
+
+/// Phase 5 PR2: provenance of the source text a claim was extracted
+/// FROM. Distinct from `provenance.kind`, which is the provenance of
+/// the claim itself.
+///
+/// Parses as `#[serde(rename_all = "snake_case")]` so the YAML strings
+/// are `repo_authored`, `copied_external_text`, `unknown`. Anything
+/// else fails at deserialization time with a serde error naming the
+/// unknown variant — the validator-at-translate-time pattern was
+/// replaced by parse-time enum validation per codex F-PR2-CR1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceContext {
+    /// Text was written for the artifact it lives in (e.g. the repo's
+    /// own README, the paper's own body).
+    RepoAuthored,
+    /// Text was copied verbatim from a separate authoritative source
+    /// (vendored README, corporate marketing copy, etc.).
+    CopiedExternalText,
+    /// Extractor could not determine.
+    Unknown,
+}
+
+impl SourceContext {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SourceContext::RepoAuthored => "repo_authored",
+            SourceContext::CopiedExternalText => "copied_external_text",
+            SourceContext::Unknown => "unknown",
+        }
+    }
+}
+
+impl ManifestProvenance {
+    /// The provenance kind string — `automatic`, `human`,
+    /// `peer-reviewed`, `extracted-from-paper`, `extracted-from-repo`,
+    /// etc. Callers that historically branched on `mc.provenance` as a
+    /// string use this; the structured form's `kind` is returned
+    /// unchanged.
+    pub fn effective_kind(&self) -> &str {
+        match self {
+            ManifestProvenance::Legacy(s) => s.as_str(),
+            ManifestProvenance::Structured(b) => b.kind.as_str(),
+        }
+    }
+    pub fn source_id(&self) -> Option<&str> {
+        match self {
+            ManifestProvenance::Legacy(_) => None,
+            ManifestProvenance::Structured(b) => b.source_id.as_deref(),
+        }
+    }
+    pub fn source_sha(&self) -> Option<&str> {
+        match self {
+            ManifestProvenance::Legacy(_) => None,
+            ManifestProvenance::Structured(b) => b.source_sha.as_deref(),
+        }
+    }
+    pub fn source_context(&self) -> Option<&'static str> {
+        match self {
+            ManifestProvenance::Legacy(_) => None,
+            ManifestProvenance::Structured(b) => b.source_context.map(|s| s.as_str()),
+        }
+    }
+    pub fn extractor_model(&self) -> Option<&str> {
+        match self {
+            ManifestProvenance::Legacy(_) => None,
+            ManifestProvenance::Structured(b) => {
+                b.extractor.as_ref().and_then(|e| e.model.as_deref())
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -433,7 +573,8 @@ pub fn translate_evidence(
         }
         return Ok(None);
     };
-    let runner = unspecified_runner_identity(mc.provenance.as_deref());
+    let provenance_kind = mc.provenance.as_ref().map(|p| p.effective_kind());
+    let runner = unspecified_runner_identity(provenance_kind);
     let first_criterion = criteria.first().map(|c| c.id.clone());
     let reruns = translate_last_verified(
         mc.last_verified.as_ref(),
@@ -461,7 +602,7 @@ pub fn translate_evidence(
                 strength: support_strength_for_tier(&mc.tier),
             },
             derivation: Derivation::Judged {
-                by: judge_identity_for_provenance(mc.provenance.as_deref()),
+                by: judge_identity_for_provenance(provenance_kind),
                 protocol: None,
                 rationale: format!(
                     "Asserted by {} tier manifest claim {}.",
