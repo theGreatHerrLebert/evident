@@ -166,9 +166,14 @@ def replay(
         )
         new_entries[claim.id] = entry
 
-    merged = sidecar.merge(existing, new_entries)
-    sidecar.write(sidecar_path, merged)
-    click.echo(f"sidecar written: {sidecar_path} ({len(new_entries)} new / {len(merged)} total)")
+    if dry_run:
+        click.echo(f"(--dry-run) sidecar NOT written; {len(selected)} claims would be processed")
+    else:
+        merged = sidecar.merge(existing, new_entries)
+        sidecar.write(sidecar_path, merged)
+        click.echo(
+            f"sidecar written: {sidecar_path} ({len(new_entries)} new / {len(merged)} total)"
+        )
 
     # Optional: render via typed-trust
     if render is not None:

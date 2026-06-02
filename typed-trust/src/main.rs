@@ -411,7 +411,11 @@ fn emit_html(
     println!("<!DOCTYPE html>");
     println!("<html lang=\"en\"><head><meta charset=\"utf-8\">");
     println!("<title>Typed Trust rollup</title>");
-    println!("<style>body{{font-family:-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;max-width:1100px;margin:2em auto;padding:0 1em;line-height:1.55;color:#2c3e50;background:#fafbfc;}}h1{{border-bottom:2px solid #2c3e50;padding-bottom:0.4em;}}h2{{margin-top:2.5em;border-bottom:1px solid #ccc;padding-bottom:0.3em;}}.rollup{{padding:1em;background:#fff;border-radius:4px;border:1px solid #dee2e6;}}.report{{margin:2em 0;padding-bottom:2em;border-bottom:1px solid #dee2e6;}}.skipped{{background:#f8f9fa;padding:1em;border-radius:4px;}}</style>");
+    // Reuse the same per-report CSS so embedded fragments style
+    // consistently, plus a few rollup-specific tweaks. Same Mermaid
+    // script the per-report HTML uses.
+    println!("<style>{}\n.rollup{{padding:1em;background:#fff;border-radius:4px;border:1px solid #dee2e6;}}\n.report{{margin:2em 0;padding-bottom:2em;border-bottom:1px solid #dee2e6;}}\n.skipped{{background:#f8f9fa;padding:1em;border-radius:4px;}}</style>", typed_trust::html_render::CSS);
+    println!("{}", typed_trust::html_render::MERMAID_SCRIPT);
     println!("</head><body>");
     println!("<h1>Typed Trust rollup</h1>");
     println!("<div class=\"rollup\">");
@@ -431,7 +435,11 @@ fn emit_html(
 
     for r in reports {
         println!("<div class=\"report\">");
-        println!("{}", typed_trust::render_html(r));
+        // Use the fragment renderer here — render_html() would nest a
+        // full <!DOCTYPE>/<html>/<head>/<body> document inside the
+        // rollup body, producing invalid HTML. The rollup's <head>
+        // above already supplies the CSS and Mermaid script tag.
+        println!("{}", typed_trust::render_html_fragment(r));
         println!("</div>");
     }
 

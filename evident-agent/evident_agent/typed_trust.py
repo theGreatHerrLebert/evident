@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,22 +17,55 @@ class TypedTrustResult:
     stderr: str
 
 
+def _agent_package_dir() -> Path:
+    """Directory containing this module."""
+    return Path(__file__).resolve().parent
+
+
+def _candidate_typed_trust_dirs() -> list[Path]:
+    """Walk up from the agent package looking for a sibling
+    ``typed-trust/target/{release,debug}`` directory. This is the
+    development layout where evident-agent and typed-trust live in the
+    same repo. Returns an ordered list of candidate binaries.
+    """
+    out: list[Path] = []
+    cursor = _agent_package_dir()
+    for _ in range(6):  # walk up at most six levels
+        target = cursor / "typed-trust" / "target"
+        if target.is_dir():
+            for build in ("release", "debug"):
+                p = target / build / "typed-trust"
+                if p.is_file():
+                    out.append(p)
+        cursor = cursor.parent
+        if cursor == cursor.parent:
+            break
+    return out
+
+
 def find_binary(override: Optional[str] = None) -> str:
     """Locate the typed-trust binary.
 
-    Order: explicit override → PATH → repo-relative debug build.
-    Returns the resolved path or "typed-trust" as a last resort.
+    Order:
+    1. explicit override
+    2. ``TYPED_TRUST_BIN`` environment variable
+    3. ``typed-trust`` on PATH (``shutil.which``)
+    4. sibling ``typed-trust/target/{release,debug}/typed-trust``
+       found by walking up from this package's directory (development
+       layout — agent and typed-trust in the same repo)
+    5. fallback to the literal string ``typed-trust`` and hope subprocess
+       finds it
     """
     if override:
         return override
-    # Look for a debug build next to the agent's source tree.
-    candidates = [
-        Path("/scratch/TMAlign/evident/typed-trust/target/debug/typed-trust"),
-        Path("/scratch/TMAlign/evident/typed-trust/target/release/typed-trust"),
-    ]
-    for c in candidates:
-        if c.is_file():
-            return str(c)
+    env_override = os.environ.get("TYPED_TRUST_BIN")
+    if env_override:
+        return env_override
+    path_hit = shutil.which("typed-trust")
+    if path_hit:
+        return path_hit
+    for c in _candidate_typed_trust_dirs():
+        return str(c)
     return "typed-trust"
 
 

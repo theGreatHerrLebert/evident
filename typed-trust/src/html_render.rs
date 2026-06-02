@@ -9,7 +9,10 @@ use serde_json::Value;
 
 use crate::graph::render_mermaid_graph;
 
-const CSS: &str = r#"
+/// Inline CSS used by [`render_html`]. Exposed so multi-report rollups
+/// can include it in their own `<head>` when embedding fragments via
+/// [`render_html_fragment`].
+pub const CSS: &str = r#"
 * { box-sizing: border-box; }
 body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -65,18 +68,23 @@ ul { padding-left: 1.5em; }
 .backing-list li { margin: 0.4em 0; }
 "#;
 
-const MERMAID_SCRIPT: &str = r#"<script type="module">
+/// `<script>` tag that loads Mermaid from a CDN. Exposed so rollups
+/// embedding fragments can include it in their own `<head>` once.
+pub const MERMAID_SCRIPT: &str = r#"<script type="module">
   import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
   mermaid.initialize({ startOnLoad: true, theme: 'default' });
 </script>"#;
 
 /// Render the augmented TrustReport JSON as a self-contained HTML
-/// document.
+/// document (with `<!DOCTYPE>`, `<html>`, `<head>` including the CSS
+/// and Mermaid script tag, and a wrapping `<body>`).
+///
+/// For multi-report rollups, use [`render_html_fragment`] to emit
+/// just the inner content (no doctype, no head, no body wrapper) so
+/// the rollup can wrap many fragments in a single outer document.
 pub fn render_html(augmented_json: &Value) -> String {
-    let mut out = String::new();
-
     let claim = augmented_json["claim"].as_str().unwrap_or("(unknown)");
-    let status = augmented_json["status"].as_str().unwrap_or("(unknown)");
+    let mut out = String::new();
 
     out.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n");
     out.push_str("  <meta charset=\"utf-8\">\n");
@@ -87,6 +95,21 @@ pub fn render_html(augmented_json: &Value) -> String {
     out.push_str(&format!("  <style>{CSS}</style>\n"));
     out.push_str(&format!("  {MERMAID_SCRIPT}\n"));
     out.push_str("</head>\n<body>\n");
+
+    out.push_str(&render_html_fragment(augmented_json));
+
+    out.push_str("</body>\n</html>\n");
+    out
+}
+
+/// Render just the inner HTML content of a TrustReport (no `<!DOCTYPE>`,
+/// `<html>`, `<head>`, or `<body>` wrappers). For embedding inside a
+/// multi-report rollup that supplies its own document chrome.
+pub fn render_html_fragment(augmented_json: &Value) -> String {
+    let mut out = String::new();
+
+    let claim = augmented_json["claim"].as_str().unwrap_or("(unknown)");
+    let status = augmented_json["status"].as_str().unwrap_or("(unknown)");
 
     out.push_str("  <h1>Trust Report</h1>\n");
     out.push_str(&format!(
@@ -168,7 +191,6 @@ pub fn render_html(augmented_json: &Value) -> String {
         }
     }
 
-    out.push_str("</body>\n</html>\n");
     out
 }
 
