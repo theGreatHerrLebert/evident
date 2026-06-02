@@ -269,6 +269,41 @@ def test_record_path_sanitization_codex_3_cr1(tmp_path: Path) -> None:
     assert p.parent == record_dir.resolve()
 
 
+def test_record_multi_model_subdir_sanitization_codex_2c_cr1(tmp_path: Path) -> None:
+    """Codex F-CR2C-1 regression: in the multi-model --record path the
+    claim id is used as a subdirectory name BEFORE _safe_fixture_path
+    runs on the per-model fixture filename. The _safe_subdir helper
+    must sanitize the claim id segment with the same posture as
+    _safe_fixture_path — separators replaced, traversal neutralized,
+    resolved path verified to stay inside the record dir.
+    """
+    from evident_agent.cli import _safe_subdir
+
+    record_dir = tmp_path / "record"
+    record_dir.mkdir()
+
+    # Slash separator in claim id (e.g., namespaced "org/claim") is
+    # replaced before the subdir is composed.
+    p = _safe_subdir(record_dir, "org/claim")
+    assert p.parent == record_dir.resolve()
+    assert p.name == "org_claim"
+
+    # Traversal-prefixed ids get neutralized.
+    p = _safe_subdir(record_dir, "../escape")
+    assert p.parent == record_dir.resolve()
+    assert ".." not in p.name
+
+    # Backslash separators also handled.
+    p = _safe_subdir(record_dir, "org\\claim")
+    assert p.name == "org_claim"
+
+    # Bare `.` / `..` stay inside.
+    p = _safe_subdir(record_dir, ".")
+    assert p.parent == record_dir.resolve()
+    p = _safe_subdir(record_dir, "..")
+    assert p.parent == record_dir.resolve()
+
+
 def test_review_skips_claim_with_no_evidence_artifact(tmp_path: Path) -> None:
     """A claim that lacks evidence.artifact is logged as a skip
     without raising."""

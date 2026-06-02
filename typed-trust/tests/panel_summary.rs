@@ -202,6 +202,91 @@ fn panel_summary_same_name_different_version_are_distinct_reviewers() {
 }
 
 #[test]
+fn panel_summary_same_name_different_orcid_are_distinct_reviewers_codex_2c_cr2() {
+    // Codex F-CR2C-2 regression: two humans named "Jane Doe" with
+    // different orcids must be counted as distinct reviewers. The
+    // prior (kind, name, version) key collapsed them — no version
+    // field meant both keyed to ("human", "Jane Doe", "") and the
+    // panel undercounted n_reviewers.
+    let claim = "x";
+    let report = minimal_report(claim);
+    let jane_a = Identity {
+        kind: IdentityKind::Human,
+        name: "Jane Doe".into(),
+        details: vec![IdentityDetail {
+            key: "orcid".into(),
+            value: "0000-0001".into(),
+        }],
+    };
+    let jane_b = Identity {
+        kind: IdentityKind::Human,
+        name: "Jane Doe".into(),
+        details: vec![IdentityDetail {
+            key: "orcid".into(),
+            value: "0000-0002".into(),
+        }],
+    };
+    let events = vec![
+        event(
+            claim,
+            "evt-1",
+            jane_a,
+            ReviewKind::Endorse,
+            "2026-06-02T10:00:00Z",
+        ),
+        event(
+            claim,
+            "evt-2",
+            jane_b,
+            ReviewKind::Dissent,
+            "2026-06-02T10:05:00Z",
+        ),
+    ];
+    let augmented = render(&report, &events);
+    let panel = &augmented["_graph"]["panel_summary"];
+    assert_eq!(panel["n_reviewers"].as_u64(), Some(2));
+    assert_eq!(panel["n_events"].as_u64(), Some(2));
+    assert_eq!(panel["by_kind"]["human"].as_u64(), Some(2));
+    // Panel section must therefore appear in the rendered markdown.
+    let md = render_markdown(&augmented);
+    assert!(md.contains("## Reviewer Panel"), "panel section missing");
+}
+
+#[test]
+fn panel_summary_same_identity_repeated_is_one_reviewer() {
+    // Symmetric case: two events from the same author identity (no
+    // distinguishing details) ARE the same reviewer. n_events=2 but
+    // n_reviewers=1.
+    let claim = "x";
+    let report = minimal_report(claim);
+    let same = Identity {
+        kind: IdentityKind::Human,
+        name: "Jane Doe".into(),
+        details: vec![],
+    };
+    let events = vec![
+        event(
+            claim,
+            "evt-1",
+            same.clone(),
+            ReviewKind::Endorse,
+            "2026-06-02T10:00:00Z",
+        ),
+        event(
+            claim,
+            "evt-2",
+            same,
+            ReviewKind::Dissent,
+            "2026-06-02T10:05:00Z",
+        ),
+    ];
+    let augmented = render(&report, &events);
+    let panel = &augmented["_graph"]["panel_summary"];
+    assert_eq!(panel["n_events"].as_u64(), Some(2));
+    assert_eq!(panel["n_reviewers"].as_u64(), Some(1));
+}
+
+#[test]
 fn panel_summary_verdicts_are_sorted_deterministically() {
     let claim = "ball-electrostatic-ci";
     let report = minimal_report(claim);

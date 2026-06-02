@@ -226,10 +226,15 @@ fn build_graph_aux(input: &RenderInput) -> Option<Value> {
 /// markdown / HTML renderers can read its fields without traversing
 /// the event slice themselves.
 fn build_panel_summary(events: &[ReviewEvent]) -> Value {
-    // Distinct authors keyed by (kind, name, version) — version is
-    // load-bearing: same model name, different version → distinct
-    // reviewer (codex F-2C-7).
-    let mut seen_reviewers: std::collections::BTreeSet<(String, String, String)> =
+    // Distinct authors keyed by the full canonical identity: kind +
+    // name + every detail. Codex F-CR2C-2: keying on (kind, name,
+    // version) alone collapses two distinct authors who share name
+    // but differ in other identity fields (e.g., two humans named
+    // "John Smith" with different orcids, or two model reviewers
+    // with different contexts). Use the same projection used for
+    // identity-sensitive hashing elsewhere (canonical_event_id's
+    // author block, build_backing_claim's short-hash).
+    let mut seen_reviewers: std::collections::BTreeSet<String> =
         std::collections::BTreeSet::new();
     let mut by_kind: std::collections::BTreeMap<&'static str, usize> =
         std::collections::BTreeMap::new();
@@ -243,8 +248,7 @@ fn build_panel_summary(events: &[ReviewEvent]) -> Value {
 
     for e in events.iter() {
         let kind_str = identity_kind_label(&e.by.kind);
-        let version = identity_version(&e.by).unwrap_or_default();
-        let key = (kind_str.to_string(), e.by.name.clone(), version);
+        let key = canonical_identity_key(&e.by);
         let is_new_reviewer = seen_reviewers.insert(key);
         if is_new_reviewer {
             *by_kind.entry(kind_str).or_default() += 1;
@@ -261,6 +265,10 @@ fn build_panel_summary(events: &[ReviewEvent]) -> Value {
 
     // verdicts_by_reviewer rows. Stable sort by
     // (kind, name, version, timestamp, event_id) — codex F-2C-13.
+    // Note: the sort key intentionally remains the "human-readable"
+    // projection (not the full canonical identity used for the
+    // dedup key above), so the rendered output orders rows by the
+    // fields a human reads first.
     let mut rows: Vec<(String, String, String, String, String, Value)> = events
         .iter()
         .map(|e| {
@@ -314,6 +322,34 @@ fn identity_version(identity: &crate::identity::Identity) -> Option<String> {
         .iter()
         .find(|d| d.key == "version")
         .map(|d| d.value.clone())
+}
+
+/// Canonical identity key for the panel reviewer-dedup set.
+///
+/// Codex F-CR2C-2: two authors who share kind + name but differ in
+/// any structured detail (version, orcid, affiliation, context, …)
+/// are distinct reviewers. Collapsing them undercounts
+/// `n_reviewers` and can hide the Reviewer Panel section entirely.
+///
+/// The projection is canonical-JSON over kind + name + a sorted
+/// list of (key, value) details. Same projection shape used by
+/// `canonical_event_id`'s author block.
+fn canonical_identity_key(identity: &crate::identity::Identity) -> String {
+    let kind = identity_kind_label(&identity.kind);
+    let mut details: Vec<(&str, &str)> = identity
+        .details
+        .iter()
+        .map(|d| (d.key.as_str(), d.value.as_str()))
+        .collect();
+    details.sort();
+    // Build a deterministic string. Separators chosen so that no
+    // collision can arise between e.g. {name: "a", details: "b"}
+    // and {name: "ab"}.
+    let detail_str: String = details
+        .iter()
+        .map(|(k, v)| format!("|{k}\u{1f}{v}"))
+        .collect();
+    format!("{kind}\u{1f}{}{detail_str}", identity.name)
 }
 
 fn build_panel_row(event: &ReviewEvent, kind_str: &str) -> Value {

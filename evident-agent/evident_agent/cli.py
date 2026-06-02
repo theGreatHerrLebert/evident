@@ -513,9 +513,18 @@ def review(
             # subdirectory so multi-model runs don't clobber each
             # other. Single-model runs land at the top-level for
             # backward compatibility with the Phase 2a/b fixtures.
+            #
+            # Codex F-CR2C-1: claim ids and model names are arbitrary
+            # strings. `_safe_subdir` sanitizes the per-claim subdir
+            # name and re-verifies the resolved path stays inside the
+            # record dir before any file write. `_write_record_fixture`
+            # then runs `_safe_fixture_path` on the per-model fixture
+            # filename. Both safety checks compose.
             if record_path is not None:
                 target_dir = (
-                    record_path / claim.id if len(panel_models) > 1 else record_path
+                    _safe_subdir(record_path, claim.id)
+                    if len(panel_models) > 1
+                    else record_path
                 )
                 fixture_name = model if len(panel_models) > 1 else claim.id
                 _write_record_fixture(
@@ -677,6 +686,49 @@ def _write_record_fixture(
     out_path.write_text(json.dumps(fixture, indent=2, sort_keys=False) + "\n")
 
 
+def _sanitize_path_component(raw: str) -> str:
+    """Turn an arbitrary string into a safe single-segment filename.
+
+    Replaces path separators / drive letters / control chars and
+    neutralizes lone ``.``/``..`` and dot-prefixed segments. The
+    returned string is suitable as a directory name OR a file stem
+    inside a known-safe parent. The caller still verifies the resolved
+    path stays inside the parent via ``_safe_fixture_path`` /
+    ``_safe_subdir``.
+    """
+    import re
+
+    safe = re.sub(r"[/\\\x00-\x1f]", "_", raw)
+    if safe in (".", "..") or safe.startswith(".."):
+        safe = "_" + safe.lstrip(".")
+    if not safe:
+        safe = "_unnamed"
+    return safe
+
+
+def _safe_subdir(record_dir: Path, segment: str) -> Path:
+    """Compose ``record_dir / <safe_segment>`` and verify the result
+    stays inside ``record_dir``. Used by the Phase 2c multi-model
+    `--record` path which creates a per-claim subdirectory before
+    `_safe_fixture_path` runs on the per-model fixture name.
+
+    Codex F-CR2C-1 regression: previously ``record_path / claim.id``
+    was composed raw, so a claim id containing ``/`` or ``..`` would
+    escape the record dir before any sanitization fired.
+    """
+    safe = _sanitize_path_component(segment)
+    candidate = (record_dir / safe).resolve()
+    record_root = record_dir.resolve()
+    try:
+        candidate.relative_to(record_root)
+    except ValueError as exc:
+        raise click.UsageError(
+            f"refusing to compose record subdir for {segment!r}: "
+            f"sanitized path {candidate} escapes record directory {record_root}"
+        ) from exc
+    return candidate
+
+
 def _safe_fixture_path(record_dir: Path, claim_id: str) -> Path:
     """Compose ``record_dir / <safe_claim_id>.json`` and verify the
     result stays inside ``record_dir``.
@@ -690,15 +742,7 @@ def _safe_fixture_path(record_dir: Path, claim_id: str) -> Path:
     re-check via ``Path.resolve()`` that the result is a child of
     ``record_dir``. Any residual escape is a hard error.
     """
-    import re
-
-    safe = re.sub(r"[/\\\x00-\x1f]", "_", claim_id)
-    # Reject lone ``.`` / ``..`` segments after the separator replacement.
-    if safe in (".", "..") or safe.startswith(".."):
-        safe = "_" + safe.lstrip(".")
-    if not safe:
-        safe = "_unnamed"
-
+    safe = _sanitize_path_component(claim_id)
     candidate = (record_dir / f"{safe}.json").resolve()
     record_root = record_dir.resolve()
     try:
