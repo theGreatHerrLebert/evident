@@ -612,6 +612,65 @@ claims:
     proc.shutdown();
 }
 
+/// Phase 5 PR3 codex F-PR3-CR-wire-validator: read_report on an
+/// extracted-from-paper claim at tier:ci WITHOUT a matching
+/// PromoteFromExtracted event must return a tier-2 data error. This
+/// proves the validator is actually wired into the MCP synthesis
+/// path, not just sitting as a helper that nothing calls.
+#[test]
+fn read_report_rejects_extracted_ci_without_promotion_event_phase5_pr3() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = tmp.path().join("evident.yaml");
+    std::fs::write(
+        &manifest,
+        r#"version: 0.1
+project: extracted-ci-unauthorized
+claims:
+  - id: extracted-ci-claim
+    kind: measurement
+    tier: ci
+    source: .
+    title: extracted ci claim without curator review
+    claim: extracted claim at ci tier
+    tolerances:
+      - metric: x
+        op: "<"
+        value: 1.0
+        prose: extracted claim
+    evidence:
+      oracle: [Paper-Authority]
+      command: "no-replay-path"
+      artifact: source/cited.md#claim-1
+      replay_status: unavailable_artifacts
+      replay_reason: code_private
+    provenance:
+      kind: extracted-from-paper
+      source_id: arxiv:2501.99999
+      extractor:
+        model: claude-opus-4-7
+        extracted_at: "2026-09-14T10:00:00Z"
+"#,
+    )
+    .unwrap();
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let resp = proc.call_tool(
+        "read_report",
+        json!({
+            "manifest_path": manifest.to_str().unwrap(),
+            "claim_id": "extracted-ci-claim"
+        }),
+    );
+    // Tier 2: result with isError: true and a message naming the
+    // missing promotion.
+    assert_eq!(resp["result"]["isError"], true);
+    let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("promote_from_extracted") || text.contains("extracted"),
+        "expected error text naming the missing promotion, got: {text}"
+    );
+    proc.shutdown();
+}
+
 #[test]
 fn list_review_events_include_rationale_toggles() {
     let tmp = tempfile::tempdir().unwrap();

@@ -540,7 +540,7 @@ fn synthesize_for(
         .collect::<Vec<_>>();
 
     // Load sidecar events (if any) and Phase 2b backing claims.
-    let (events_by_claim, backing_claims_by_target) = match sidecar_path {
+    let (events_by_claim, backing_claims_by_target, raw_by_claim) = match sidecar_path {
         Some(p) => {
             authorize_sidecar(state, p, "sidecar")?;
             let parsed = parse_sidecar(p)?;
@@ -548,6 +548,10 @@ fn synthesize_for(
             let mut seen_ids: HashSet<String> = HashSet::new();
             let mut grouped: HashMap<String, Vec<ReviewEvent>> = HashMap::new();
             let mut backing: HashMap<String, Vec<ManifestClaim>> = HashMap::new();
+            let mut raw: HashMap<
+                String,
+                Vec<crate::translate::ManifestReviewEvent>,
+            > = HashMap::new();
             for entry in &parsed.events {
                 let ev = translate_review_event(entry).map_err(|e| ToolError::data(e.to_string()))?;
                 if !seen_ids.insert(ev.id.as_str().to_string()) {
@@ -557,14 +561,27 @@ fn synthesize_for(
                     )));
                 }
                 grouped.entry(entry.claim_id.clone()).or_default().push(ev);
+                raw.entry(entry.claim_id.clone())
+                    .or_default()
+                    .push(entry.clone());
                 if let Some(bc) = backing_claim_for_event(entry) {
                     backing.entry(entry.claim_id.clone()).or_default().push(bc.clone());
                 }
             }
-            (grouped, backing)
+            (grouped, backing, raw)
         }
-        None => (HashMap::new(), HashMap::new()),
+        None => (HashMap::new(), HashMap::new(), HashMap::new()),
     };
+
+    // Phase 5 PR3: enforce the promotion gate. An extracted claim
+    // (provenance.kind = extracted-from-paper | extracted-from-repo)
+    // at tier > research must have a matching PromoteFromExtracted
+    // event in the sidecar for THIS specific claim. validator returns
+    // Ok for non-extracted and research-tier extracted claims.
+    let empty_raw: Vec<crate::translate::ManifestReviewEvent> = vec![];
+    let events_for_claim = raw_by_claim.get(claim_id).unwrap_or(&empty_raw);
+    crate::translate::validate_promotion_rules(&target.claim, events_for_claim)
+        .map_err(|e| ToolError::data(e.to_string()))?;
 
     let events: &[ReviewEvent] = events_by_claim
         .get(claim_id)
