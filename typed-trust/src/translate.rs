@@ -870,10 +870,32 @@ pub struct ManifestReviewEvent {
     /// attestation. Empty for any other `kind`.
     #[serde(default)]
     pub supersede: Option<ManifestSupersedeBlock>,
+    /// Phase 5 PR3: required when `kind == "promote_from_extracted"`.
+    /// Carries the lifecycle-transition metadata the validator
+    /// matches against the manifest's extracted-claim tier.
+    #[serde(default)]
+    pub promote_from_extracted: Option<ManifestPromoteFromExtractedBlock>,
     /// Optional protocol pointer. Release-tier events must set this
     /// (invariant 10); validator enforcement is downstream.
     #[serde(default)]
     pub protocol: Option<String>,
+}
+
+/// Phase 5 PR3: the structured block carried by
+/// `kind: promote_from_extracted` sidecar entries.
+///
+/// `reviewed_extraction_sha` pins the curator's review to a specific
+/// version of the extracted `evident.yaml`. The validator uses it to
+/// reject promotions of *different* extraction runs against the
+/// reviewed one, so a re-extraction can't silently inherit an old
+/// curator's blessing.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestPromoteFromExtractedBlock {
+    pub target_claim: String,
+    pub from_tier: String,
+    pub to_tier: String,
+    pub reviewed_extraction_sha: String,
 }
 
 /// Phase 2d sidecar `target` block. Codex F-2D-4: singular shape,
@@ -986,6 +1008,14 @@ pub enum ReviewTranslateError {
     /// Evidence, Provenance, TrustReport, Criterion) require schema
     /// extensions deferred to Phase 2e+ (codex F-2D-13).
     UnsupportedTargetType { id: String, target_type: String },
+    /// Phase 5 PR3: `kind: promote_from_extracted` event must carry a
+    /// `promote_from_extracted` block (target_claim, from_tier,
+    /// to_tier, reviewed_extraction_sha).
+    PromoteFromExtractedMissingBlock { id: String },
+    /// Phase 5 PR3 (codex F-PR3-CR4): `reviewed_extraction_sha` must
+    /// be non-empty — the whole point is to pin the curator's review
+    /// to a specific extraction sha.
+    PromoteFromExtractedEmptySha { id: String },
 }
 
 impl std::fmt::Display for ReviewTranslateError {
@@ -1027,6 +1057,12 @@ impl std::fmt::Display for ReviewTranslateError {
             ReviewTranslateError::UnsupportedTargetType { id, target_type } => {
                 write!(f, "review event for {id}: target.type {target_type:?} not supported in Phase 2d-i (supported: claim, review_event)")
             }
+            ReviewTranslateError::PromoteFromExtractedMissingBlock { id } => {
+                write!(f, "review event for {id}: kind=promote_from_extracted requires a `promote_from_extracted` block with target_claim, from_tier, to_tier, reviewed_extraction_sha")
+            }
+            ReviewTranslateError::PromoteFromExtractedEmptySha { id } => {
+                write!(f, "review event for {id}: kind=promote_from_extracted requires a non-empty `reviewed_extraction_sha` (the field pins the curator's review to a specific extraction)")
+            }
         }
     }
 }
@@ -1049,6 +1085,7 @@ pub fn translate_review_event(
         "dissent" => ReviewKind::Dissent,
         "challenge" => translate_challenge_kind(e)?,
         "supersede" => translate_supersede_kind(e)?,
+        "promote_from_extracted" => translate_promote_from_extracted_kind(e)?,
         other => {
             return Err(ReviewTranslateError::UnknownKind {
                 id: e.claim_id.clone(),
@@ -1137,6 +1174,219 @@ fn translate_supersede_kind(
     Ok(ReviewKind::Supersede {
         successor: AttestedId::new(block.successor.clone()),
     })
+}
+
+/// Phase 5 PR3: translate a `kind: promote_from_extracted` sidecar
+/// entry into the typed `ReviewKind::PromoteFromExtracted` variant.
+/// Requires the `promote_from_extracted` block — the entry is
+/// rejected otherwise. Also rejects empty `reviewed_extraction_sha`
+/// (codex F-PR3-CR4: the field must pin a specific extraction).
+fn translate_promote_from_extracted_kind(
+    e: &ManifestReviewEvent,
+) -> Result<crate::review::ReviewKind, ReviewTranslateError> {
+    use crate::review::ReviewKind;
+
+    let block = e.promote_from_extracted.as_ref().ok_or_else(|| {
+        ReviewTranslateError::PromoteFromExtractedMissingBlock {
+            id: e.claim_id.clone(),
+        }
+    })?;
+    if block.reviewed_extraction_sha.trim().is_empty() {
+        return Err(ReviewTranslateError::PromoteFromExtractedEmptySha {
+            id: e.claim_id.clone(),
+        });
+    }
+    Ok(ReviewKind::PromoteFromExtracted {
+        target_claim: ClaimId::new(&block.target_claim),
+        from_tier: block.from_tier.clone(),
+        to_tier: block.to_tier.clone(),
+        reviewed_extraction_sha: block.reviewed_extraction_sha.clone(),
+    })
+}
+
+// ----------------------------------------------------------------------
+// Phase 5 PR3: validate_promotion_rules — enforce the five
+// invariants from `EVIDENT_PHASE5_PAPER_EXTRACTION_DRAFT.md` v3.
+// ----------------------------------------------------------------------
+
+/// Phase 5 PR3: structured errors for the promotion-gate validator.
+#[derive(Debug)]
+pub enum PromotionError {
+    /// The manifest sets a non-research tier on an extracted claim
+    /// but no matching `PromoteFromExtracted` event was found in the
+    /// sidecar.
+    MissingPromotionEvent {
+        claim_id: String,
+        current_tier: String,
+    },
+    /// The matching event's `event_date` predates the claim's
+    /// `provenance.extractor.extracted_at`. The curator cannot have
+    /// reviewed an extraction that did not yet exist.
+    PromotionPredatesExtraction {
+        claim_id: String,
+        event_date: String,
+        extracted_at: String,
+    },
+}
+
+impl std::fmt::Display for PromotionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PromotionError::MissingPromotionEvent {
+                claim_id,
+                current_tier,
+            } => write!(
+                f,
+                "extracted claim {claim_id} at tier {current_tier:?} requires a \
+                 matching `promote_from_extracted` review event"
+            ),
+            PromotionError::PromotionPredatesExtraction {
+                claim_id,
+                event_date,
+                extracted_at,
+            } => write!(
+                f,
+                "extracted claim {claim_id}: promote_from_extracted event_date \
+                 {event_date} predates extracted_at {extracted_at}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PromotionError {}
+
+/// Phase 5 PR3: enforce the five promotion-gate invariants on a
+/// single claim and the relevant sidecar events.
+///
+/// Rule 1 (gate-on-tier): the gate fires only when the claim is
+/// extracted AND `tier` is not `research`. Non-extracted claims and
+/// research-tier extracted claims pass without checking events.
+///
+/// Rule 2 (matching): for the gated claim, at least one event must
+/// have a `PromoteFromExtracted` block whose `target_claim`,
+/// `from_tier == research` (or the prior promoted tier), and
+/// `to_tier == claim.tier` match.
+///
+/// Rule 3 (ordering): the matching event's `event_date` must not
+/// predate `provenance.extractor.extracted_at`.
+///
+/// Rule 4 (uniqueness / latest-event): if multiple matching events
+/// exist, the latest by `event_date` is authoritative.
+///
+/// Rule 5 (Endorse-independence): Endorse / Dissent / Challenge
+/// events on the claim are silently ignored here — they're
+/// orthogonal to lifecycle transitions. The render layer is what
+/// keeps them visually separate.
+pub fn validate_promotion_rules(
+    claim: &ManifestClaim,
+    events: &[ManifestReviewEvent],
+) -> Result<(), PromotionError> {
+    // Rule 1a: only extracted claims are gated. A legacy
+    // (provenance: automatic) claim at tier:ci is the existing path
+    // and is not affected.
+    if !is_extracted_claim(claim) {
+        return Ok(());
+    }
+    // Rule 1b: research-tier extracted claims need no promotion.
+    if claim.tier == "research" {
+        return Ok(());
+    }
+
+    // Rule 2: find matching PromoteFromExtracted events.
+    let matching: Vec<&ManifestReviewEvent> = events
+        .iter()
+        .filter(|e| matches_promotion_target(e, claim))
+        .collect();
+
+    let Some(authoritative) = pick_latest_by_event_date(&matching) else {
+        return Err(PromotionError::MissingPromotionEvent {
+            claim_id: claim.id.clone(),
+            current_tier: claim.tier.clone(),
+        });
+    };
+
+    // Rule 3: ordering. The chosen event must not predate extraction.
+    let extracted_at = claim
+        .provenance
+        .as_ref()
+        .and_then(extracted_at_of_provenance);
+    if let Some(extracted_at) = extracted_at {
+        if authoritative.timestamp.as_str() < extracted_at {
+            return Err(PromotionError::PromotionPredatesExtraction {
+                claim_id: claim.id.clone(),
+                event_date: authoritative.timestamp.clone(),
+                extracted_at: extracted_at.to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn is_extracted_claim(claim: &ManifestClaim) -> bool {
+    let Some(prov) = claim.provenance.as_ref() else {
+        return false;
+    };
+    matches!(
+        prov.effective_kind(),
+        "extracted-from-paper" | "extracted-from-repo"
+    )
+}
+
+/// Does this sidecar entry match `(target_claim, from_tier=research,
+/// to_tier=claim.tier)` of the given claim?
+///
+/// Codex F-PR3-CR3: PR3 requires `from_tier == "research"` so an
+/// event can't claim an impossible transition like `release -> ci`
+/// to satisfy the gate. Multi-step promotion (`research -> ci` then
+/// `ci -> release`) is deferred to a follow-up that tracks prior
+/// tier state explicitly.
+fn matches_promotion_target(e: &ManifestReviewEvent, claim: &ManifestClaim) -> bool {
+    let Some(block) = e.promote_from_extracted.as_ref() else {
+        return false;
+    };
+    block.target_claim == claim.id
+        && block.from_tier == "research"
+        && block.to_tier == claim.tier
+}
+
+/// Pick the latest matching event by `(timestamp, event_id)` —
+/// timestamp is primary, canonical event_id is the deterministic
+/// tiebreaker for same-timestamp duplicates (codex F-PR3-CR2).
+///
+/// Tiebreaker rationale: when two curators emit
+/// PromoteFromExtracted events at the same wall-clock second with
+/// different `reviewed_extraction_sha`, we need a deterministic
+/// winner so that re-running the validator on a re-ordered sidecar
+/// produces the same result. The canonical event_id (sha256 of the
+/// payload) is a stable, content-addressed tiebreaker.
+///
+/// Timestamp comparison itself is still string-lexicographic.
+/// That's correct for normalized UTC strings ending in `Z` but
+/// would mis-order mixed-timezone offsets. The framework's
+/// timestamp fields are strings throughout; a chrono migration is
+/// a separate codebase-wide concern (codex F-PR3-CR1 flagged this
+/// for follow-up).
+fn pick_latest_by_event_date<'a>(
+    matching: &[&'a ManifestReviewEvent],
+) -> Option<&'a ManifestReviewEvent> {
+    matching
+        .iter()
+        .max_by(|a, b| {
+            a.timestamp
+                .cmp(&b.timestamp)
+                .then_with(|| canonical_event_id(a).cmp(&canonical_event_id(b)))
+        })
+        .copied()
+}
+
+fn extracted_at_of_provenance(prov: &ManifestProvenance) -> Option<&str> {
+    match prov {
+        ManifestProvenance::Legacy(_) => None,
+        ManifestProvenance::Structured(b) => b
+            .extractor
+            .as_ref()
+            .and_then(|e| e.extracted_at.as_deref()),
+    }
 }
 
 /// Procedural Challenge categories — typed-trust's closed list that
