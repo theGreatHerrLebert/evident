@@ -75,11 +75,20 @@ def run(
     format: str = "json",
     claim_filter: Optional[str] = None,
     binary: Optional[str] = None,
+    extra_args: Optional[list[str]] = None,
 ) -> TypedTrustResult:
-    """Invoke typed-trust with the populated sidecar and return the rendered output."""
+    """Invoke typed-trust with the populated sidecar and return the rendered output.
+
+    ``extra_args`` are inserted after the format and last-verified
+    flags but before the positional manifest path. Used by the
+    Phase 2a ``review`` subcommand to thread
+    ``--review-events-sidecar <path>`` through.
+    """
     argv = [find_binary(binary), "--format", format]
     if sidecar_path is not None:
         argv.extend(["--last-verified-sidecar", str(sidecar_path)])
+    if extra_args:
+        argv.extend(extra_args)
     argv.append(str(manifest_path))
     if claim_filter is not None:
         argv.append(claim_filter)

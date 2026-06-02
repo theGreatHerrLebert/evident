@@ -1,0 +1,364 @@
+"""The six required fixtures from the Phase 2a plan.
+
+Fixtures 1 and 2 (positive Endorse + negative BALL Dissent) require a
+recorded API response — they're produced by the user kicking off the
+real model run with ``--record``. The other four are pure-logic
+fixtures and run in CI.
+
+Mapping:
+
+- 3. Unknown claim_id sidecar rejection — via the typed-trust binary.
+- 4. Multi-criterion with one unsupported — exercises the prompt-side
+     visibility of all criteria + the validation that accepts a
+     Dissent naming a real criterion.
+- 5. Truncated evidence missing relevant content — exercises the new
+     ``reject_if_truncated_endorse_lacks_evidence`` validator.
+- 6. Concurrent sidecar appends — already covered by
+     ``test_review_sidecar.test_concurrent_appends_do_not_lose_entries``.
+
+Fixtures 1 and 2 are tested via ``test_recorded_e2e`` (skipped when
+no fixture file is present).
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from textwrap import dedent
+from typing import Any, Optional
+
+import pytest
+
+from evident_agent.review import (
+    CHECK_KEYS,
+    ReviewRejected,
+    ReviewVerdict,
+    call_review,
+    reject_if_hallucinated_criterion,
+    reject_if_truncated_endorse_lacks_evidence,
+)
+from evident_agent.review_sidecar import (
+    ReviewAuthor,
+    ReviewEventEntry,
+    append_events,
+)
+
+
+@dataclass
+class FakeBlock:
+    type: str
+    name: Optional[str] = None
+    input: Optional[dict[str, Any]] = None
+
+
+@dataclass
+class FakeResponse:
+    id: str
+    content: list[FakeBlock]
+
+
+class FakeMessages:
+    def __init__(self, responses):
+        self.responses = list(responses)
+
+    def create(self, **_kwargs):
+        item = self.responses.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+class FakeClient:
+    def __init__(self, responses):
+        self.messages = FakeMessages(responses)
+
+
+def _typed_trust_binary() -> Path:
+    return (
+        Path(__file__).resolve().parents[2]
+        / "typed-trust"
+        / "target"
+        / "debug"
+        / "typed-trust"
+    )
+
+
+# ============================================================
+# Fixture 3 — Unknown claim_id sidecar rejection (end-to-end)
+# ============================================================
+
+def test_fixture3_unknown_claim_id_in_sidecar_exits_nonzero(tmp_path: Path) -> None:
+    """Hand-crafted sidecar names a claim not in the manifest. typed-
+    trust must exit 1 with the unknown id named in stderr.
+    """
+    binary = _typed_trust_binary()
+    if not binary.is_file():
+        pytest.skip(f"typed-trust binary not built at {binary}")
+
+    manifest = tmp_path / "evident.yaml"
+    manifest.write_text(
+        dedent(
+            """
+            version: 0.1
+            project: test
+            claims:
+              - id: claim-A
+                kind: measurement
+                tier: ci
+                title: t
+                claim: c
+                tolerances:
+                  - metric: relative_error
+                    op: "<"
+                    value: 0.02
+                    prose: stay under 2%
+                evidence:
+                  oracle: [Test]
+                  command: "true"
+                  artifact: out.json
+            """
+        ).strip()
+        + "\n"
+    )
+    sidecar = tmp_path / "review_events.json"
+    sidecar.write_text(
+        json.dumps(
+            {
+                "events": [
+                    {
+                        "claim_id": "claim-NONEXISTENT",
+                        "kind": "endorse",
+                        "author": {
+                            "kind": "model",
+                            "name": "claude-opus-4-7",
+                            "version": "20250101",
+                        },
+                        "rationale": "Rationale that's long enough to satisfy minimum length validation in 2a.",
+                        "timestamp": "2026-06-02T10:31:44Z",
+                    }
+                ]
+            }
+        )
+    )
+    result = subprocess.run(
+        [
+            str(binary),
+            "--format",
+            "json",
+            "--review-events-sidecar",
+            str(sidecar),
+            str(manifest),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "claim-NONEXISTENT" in result.stderr
+
+
+# ============================================================
+# Fixture 4 — Multi-criterion claim with one unsupported criterion
+# ============================================================
+
+def _multi_criterion_claim_raw() -> dict:
+    return {
+        "id": "claim-multi",
+        "title": "Multi-criterion test claim",
+        "kind": "measurement",
+        "tier": "ci",
+        "claim": "Both metrics must pass independently.",
+        "tolerances": [
+            {
+                "metric": "metric_alpha",
+                "op": "<",
+                "value": 0.02,
+                "prose": "alpha stays under 2%",
+            },
+            {
+                "metric": "metric_beta",
+                "op": "<",
+                "value": 0.05,
+                "prose": "beta stays under 5%",
+            },
+        ],
+        "evidence": {
+            "oracle": ["Test"],
+            "command": "true",
+            "artifact": "out.json",
+        },
+    }
+
+
+def test_fixture4_dissent_naming_real_criterion_accepted(tmp_path: Path) -> None:
+    """The model dissents and names ``metric_beta`` (a real criterion
+    of the claim) as unsupported. Validation must accept it without
+    flagging it as hallucinated."""
+    verdict = ReviewVerdict(
+        verdict="dissent",
+        checks={
+            "metric_present": "pass",
+            "within_tolerance": "unknown",
+            "outliers_checked": "pass",
+            "reproducible_chain": "pass",
+        },
+        rationale=(
+            "Digest contains metric_alpha = 0.01 but no metric_beta "
+            "data. Cannot Endorse without coverage for every criterion."
+        ),
+        observed_value="0.01",
+        tolerance="< 0.02",
+        failure_reason="criterion `metric_beta` is not supported by the digest",
+    )
+    # No raise — metric_beta is real.
+    reject_if_hallucinated_criterion(
+        verdict, claim_criteria=["metric_alpha", "metric_beta"]
+    )
+
+
+def test_fixture4_dissent_naming_fake_criterion_rejected(tmp_path: Path) -> None:
+    """The same prompt setup, but the model invents a criterion name.
+    Validation rejects."""
+    verdict = ReviewVerdict(
+        verdict="dissent",
+        checks={
+            "metric_present": "unknown",
+            "within_tolerance": "unknown",
+            "outliers_checked": "pass",
+            "reproducible_chain": "pass",
+        },
+        rationale="Cannot verify because the relevant data is missing for one of the criteria.",
+        observed_value=None,
+        tolerance=None,
+        failure_reason="criterion `metric_gamma` not in digest",
+    )
+    with pytest.raises(ReviewRejected, match="metric_gamma"):
+        reject_if_hallucinated_criterion(
+            verdict, claim_criteria=["metric_alpha", "metric_beta"]
+        )
+
+
+# ============================================================
+# Fixture 5 — Truncated evidence missing relevant content
+# ============================================================
+
+def test_fixture5_endorse_rejected_when_truncated_and_observation_absent() -> None:
+    """Digest was truncated and the cited observed_value (``0.008``)
+    is not in the digest body — the model was working blind."""
+    verdict = ReviewVerdict(
+        verdict="endorse",
+        checks={k: "pass" for k in CHECK_KEYS},
+        rationale=(
+            "Digest shows the metric value within tolerance based on the "
+            "headline number summary block in the artifact."
+        ),
+        observed_value="0.008",
+        tolerance="< 0.02",
+    )
+    digest_body = "summary: rows=1000, errors=0\n...<truncated>...\n"
+    with pytest.raises(ReviewRejected, match="not present in digest"):
+        reject_if_truncated_endorse_lacks_evidence(
+            verdict, digest_body, digest_truncated=True
+        )
+
+
+def test_fixture5_endorse_accepted_when_truncated_but_observation_present() -> None:
+    """Truncated, but the cited value IS in the digest body — valid."""
+    verdict = ReviewVerdict(
+        verdict="endorse",
+        checks={k: "pass" for k in CHECK_KEYS},
+        rationale=(
+            "The cited metric is visible at the boundary of the digest "
+            "and stays within the stated tolerance band."
+        ),
+        observed_value="0.008",
+        tolerance="< 0.02",
+    )
+    digest_body = "summary: median=0.008, errors=0\n...<truncated>...\n"
+    # Must not raise.
+    reject_if_truncated_endorse_lacks_evidence(
+        verdict, digest_body, digest_truncated=True
+    )
+
+
+def test_fixture5_dissent_unaffected_by_truncation() -> None:
+    """Dissent doesn't require an observed_value citation; the rule
+    only constrains Endorse."""
+    verdict = ReviewVerdict(
+        verdict="dissent",
+        checks={
+            "metric_present": "unknown",
+            "within_tolerance": "unknown",
+            "outliers_checked": "unknown",
+            "reproducible_chain": "unknown",
+        },
+        rationale="Cannot verify the cited metric in the truncated digest. Default to dissent per framing rules.",
+        failure_reason="metric_present=unknown",
+    )
+    reject_if_truncated_endorse_lacks_evidence(verdict, "", digest_truncated=True)
+
+
+# ============================================================
+# Fixtures 1 + 2 — Recorded API responses (skip when absent)
+# ============================================================
+
+def _fixture_dir() -> Path:
+    return Path(__file__).parent / "fixtures" / "review"
+
+
+def test_recorded_endorse_e2e(tmp_path: Path) -> None:
+    fixture = _fixture_dir() / "sasa_ci_endorse.json"
+    if not fixture.is_file():
+        pytest.skip(f"recorded endorse fixture not present at {fixture}")
+    recorded = json.loads(fixture.read_text())
+    response = FakeResponse(
+        id=recorded.get("id", "msg_recorded"),
+        content=[
+            FakeBlock(
+                type="tool_use",
+                name="submit_review",
+                input=recorded["tool_input"],
+            )
+        ],
+    )
+    client = FakeClient([response])
+    verdict = call_review(
+        model="claude-opus-4-7",
+        claim_yaml="id: proteon-sasa-vs-biopython-release-1k-pdbs\n",
+        digest_rendered=recorded.get("digest", "<digest></digest>"),
+        api_client=client,
+    )
+    assert verdict.verdict == "endorse"
+    # All four checks must read pass for an Endorse.
+    assert all(verdict.checks[k] == "pass" for k in CHECK_KEYS)
+
+
+def test_recorded_ball_dissent_e2e(tmp_path: Path) -> None:
+    fixture = _fixture_dir() / "ball_electrostatic_dissent.json"
+    if not fixture.is_file():
+        pytest.skip(f"recorded BALL dissent fixture not present at {fixture}")
+    recorded = json.loads(fixture.read_text())
+    response = FakeResponse(
+        id=recorded.get("id", "msg_recorded"),
+        content=[
+            FakeBlock(
+                type="tool_use",
+                name="submit_review",
+                input=recorded["tool_input"],
+            )
+        ],
+    )
+    client = FakeClient([response])
+    verdict = call_review(
+        model="claude-opus-4-7",
+        claim_yaml="id: ball-electrostatic-synthetic-challenge\n",
+        digest_rendered=recorded.get("digest", "<digest></digest>"),
+        api_client=client,
+    )
+    # The load-bearing fixture: model must Dissent on the BALL
+    # synthetic adversarial case and name the specific defect.
+    assert verdict.verdict == "dissent"
+    assert verdict.failure_reason
+    assert any(verdict.checks[k] != "pass" for k in CHECK_KEYS)

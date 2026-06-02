@@ -49,6 +49,32 @@ pub fn render_markdown(augmented_json: &Value) -> String {
                 render_challenge_event(&mut out, e);
             }
         }
+
+        // Phase 2a: reviewer endorsements and dissents are surfaced
+        // here so model-authored attestations are visible in the
+        // rendered report. Dissents are framed as "reviewer found the
+        // supplied evidence insufficient" — they do not flip Pass to
+        // Fail; only backed Challenges do (Phase 2b).
+        let endorsements: Vec<&Value> = events
+            .iter()
+            .filter(|e| e["kind"]["type"].as_str() == Some("endorse"))
+            .collect();
+        if !endorsements.is_empty() {
+            out.push_str("## Reviewer Endorsements\n\n");
+            for e in endorsements {
+                render_review_event(&mut out, e, "endorses");
+            }
+        }
+        let dissents: Vec<&Value> = events
+            .iter()
+            .filter(|e| e["kind"]["type"].as_str() == Some("dissent"))
+            .collect();
+        if !dissents.is_empty() {
+            out.push_str("## Reviewer Dissents (evidence found insufficient)\n\n");
+            for e in dissents {
+                render_review_event(&mut out, e, "dissents — evidence insufficient");
+            }
+        }
     }
 
     if let Some(gaps) = augmented_json["gaps"].as_array() {
@@ -207,6 +233,63 @@ fn render_challenge_event(out: &mut String, e: &Value) {
     }
 
     out.push_str(&format!("- **Rationale:** {rationale}\n\n"));
+}
+
+/// Render an Endorse/Dissent ReviewEvent (Phase 2a). Compact: author,
+/// optional model version, structured per-check verdicts when present,
+/// then the rationale. The `verb` parameter is the human-readable
+/// stance string ("endorses" / "dissents — evidence insufficient").
+fn render_review_event(out: &mut String, e: &Value, verb: &str) {
+    let by_kind = e["by"]["kind"].as_str().unwrap_or("?");
+    let by_name = e["by"]["name"].as_str().unwrap_or("?");
+    let rationale = e["rationale"].as_str().unwrap_or("");
+    let timestamp = e["at"].as_str().unwrap_or("");
+
+    out.push_str(&format!(
+        "- **{by_name}** ({by_kind}) {verb}"
+    ));
+    if !timestamp.is_empty() {
+        out.push_str(&format!(" — _{timestamp}_"));
+    }
+    out.push('\n');
+
+    // Surface details (model version, ci_run, etc.) on a continuation
+    // line so the renderer agrees with the Identity model.
+    if let Some(details) = e["by"]["details"].as_array() {
+        for d in details {
+            let k = d["key"].as_str().unwrap_or("?");
+            let v = d["value"].as_str().unwrap_or("?");
+            out.push_str(&format!("  - {k}: `{v}`\n"));
+        }
+    }
+
+    // Structured submit_review payload (Phase 2a). Decorated onto each
+    // event entry by main.rs after render_augmented, sourced from the
+    // sidecar's ManifestReviewEvent. Show which checks the model ran,
+    // not just the overall verdict.
+    if let Some(checks) = e.get("checks").and_then(|v| v.as_object()) {
+        out.push_str("  - **Checks:** ");
+        let pairs: Vec<String> = checks
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v.as_str().unwrap_or("?")))
+            .collect();
+        out.push_str(&pairs.join(", "));
+        out.push('\n');
+    }
+    if let Some(obs) = e.get("observed_value").and_then(|v| v.as_str()) {
+        out.push_str(&format!("  - **Observed value:** `{obs}`\n"));
+    }
+    if let Some(tol) = e.get("tolerance").and_then(|v| v.as_str()) {
+        out.push_str(&format!("  - **Tolerance:** `{tol}`\n"));
+    }
+    if let Some(fr) = e.get("failure_reason").and_then(|v| v.as_str()) {
+        out.push_str(&format!("  - **Failure reason:** {fr}\n"));
+    }
+
+    if !rationale.is_empty() {
+        out.push_str(&format!("  - **Rationale:** {rationale}\n"));
+    }
+    out.push('\n');
 }
 
 fn render_gap(out: &mut String, g: &Value) {
