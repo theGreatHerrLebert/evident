@@ -335,16 +335,19 @@ fn render_panel_section(out: &mut String, panel: &Value) {
     let n_endorse = panel["n_endorse"].as_u64().unwrap_or(0);
     let n_dissent = panel["n_dissent"].as_u64().unwrap_or(0);
     let n_challenge = panel["n_challenge"].as_u64().unwrap_or(0);
-    let n_supersede = panel["n_supersede"].as_u64().unwrap_or(0);
 
     out.push_str("## Reviewer Panel\n\n");
 
-    // Consensus: a single kind > 0 means all reviewers agreed.
+    // Codex F-CR2D-1: panel consensus is over ACTIVE verdict kinds
+    // only. The Phase 2c compat alias `n_supersede` counts every
+    // Supersede event in the raw log — useful telemetry, but NOT
+    // a verdict kind. Treating it as one would render a report
+    // with 2 active endorses plus 1 claim-targeted Supersede as
+    // "divergent: 2 endorsed, 1 superseded" instead of consensus.
     let kinds_nonzero = [
         ("endorsed", n_endorse),
         ("dissented", n_dissent),
         ("challenged", n_challenge),
-        ("superseded", n_supersede),
     ];
     let nonzero_kinds: Vec<&(&str, u64)> = kinds_nonzero.iter().filter(|(_, n)| *n > 0).collect();
     if nonzero_kinds.len() == 1 {
@@ -395,7 +398,6 @@ fn render_panel_section(out: &mut String, panel: &Value) {
     // — the panel now reflects ACTIVE verdicts. The audit material
     // (superseded pairs, unresolved, invalid) appears in the
     // dedicated `## Superseded Events` section below.
-    let _ = n_supersede;
 }
 
 /// Build the active-event-id set from `_graph.panel_summary.

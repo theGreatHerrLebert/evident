@@ -149,14 +149,29 @@ pub fn render_html_fragment(augmented_json: &Value) -> String {
         }
     }
 
-    // Challenges (filtered to kind == challenge).
+    // Challenges, endorsements, dissents — all filtered to ACTIVE
+    // verdicts (codex F-CR2D-2). Before this fix the HTML output
+    // disagreed with markdown: a superseded Challenge appeared
+    // under "Active challenges" in HTML even though human_render
+    // had already filtered it out and the synthesized status read
+    // Current.
     if let Some(events) = augmented_json
         .pointer("/_graph/review_events")
         .and_then(|v| v.as_array())
     {
+        let active_event_ids = active_event_ids_from_panel(augmented_json);
+        let is_active = |e: &&Value| match &active_event_ids {
+            Some(ids) => e["id"]
+                .as_str()
+                .map(|id| ids.contains(id))
+                .unwrap_or(false),
+            None => true,
+        };
+
         let challenges: Vec<&Value> = events
             .iter()
             .filter(|e| e["kind"]["type"].as_str() == Some("challenge"))
+            .filter(is_active)
             .collect();
         if !challenges.is_empty() {
             out.push_str("  <h2>Active challenges</h2>\n");
@@ -176,10 +191,11 @@ pub fn render_html_fragment(augmented_json: &Value) -> String {
         // Phase 2a: Endorse and Dissent events are surfaced as
         // recorded reviewer activity. Dissent is framed as "evidence
         // found insufficient" — it does not flip Pass to Fail; only
-        // backed Challenges do (Phase 2b).
+        // backed Challenges do (Phase 2b). Phase 2d: active only.
         let endorsements: Vec<&Value> = events
             .iter()
             .filter(|e| e["kind"]["type"].as_str() == Some("endorse"))
+            .filter(is_active)
             .collect();
         if !endorsements.is_empty() {
             out.push_str("  <h2>Reviewer endorsements</h2>\n");
@@ -190,6 +206,7 @@ pub fn render_html_fragment(augmented_json: &Value) -> String {
         let dissents: Vec<&Value> = events
             .iter()
             .filter(|e| e["kind"]["type"].as_str() == Some("dissent"))
+            .filter(is_active)
             .collect();
         if !dissents.is_empty() {
             out.push_str(
@@ -198,6 +215,15 @@ pub fn render_html_fragment(augmented_json: &Value) -> String {
             for e in dissents {
                 render_review(&mut out, e, "dissents — evidence insufficient", "dissent");
             }
+        }
+
+        // Phase 2d: consolidated audit section for superseded events.
+        // Three subsections (valid pairs → unresolved → invalid),
+        // each sorted by (timestamp, event_id) by the projection
+        // layer. Section is omitted when all three subsections are
+        // empty.
+        if let Some(panel) = augmented_json.pointer("/_graph/panel_summary") {
+            render_superseded_section_html(&mut out, panel);
         }
     }
 
@@ -466,16 +492,17 @@ fn render_panel(out: &mut String, panel: &Value) {
     let n_endorse = panel["n_endorse"].as_u64().unwrap_or(0);
     let n_dissent = panel["n_dissent"].as_u64().unwrap_or(0);
     let n_challenge = panel["n_challenge"].as_u64().unwrap_or(0);
-    let n_supersede = panel["n_supersede"].as_u64().unwrap_or(0);
 
     out.push_str("  <h2>Reviewer panel</h2>\n");
     out.push_str("  <div class=\"panel\">\n");
 
+    // Codex F-CR2D-1: consensus is over ACTIVE verdict kinds only.
+    // The n_supersede compat alias counts every Supersede event in
+    // the raw log — useful telemetry, but not a verdict.
     let kinds = [
         ("endorsed", n_endorse),
         ("dissented", n_dissent),
         ("challenged", n_challenge),
-        ("superseded", n_supersede),
     ];
     let nonzero: Vec<&(&str, u64)> = kinds.iter().filter(|(_, n)| *n > 0).collect();
     if nonzero.len() == 1 {
@@ -530,8 +557,170 @@ fn render_panel(out: &mut String, panel: &Value) {
     }
 
     // Phase 2d-i removed the "supersedes not yet applied" footnote.
-    let _ = n_supersede;
     out.push_str("  </div>\n");
+}
+
+/// Build the active-event-id set from
+/// `_graph.panel_summary.verdicts_by_reviewer`. Mirrors the helper
+/// in human_render. Returns None when there's no panel_summary
+/// (no projection has been run) — callers treat that as "show
+/// every event" to preserve pre-Phase-2d rendering.
+fn active_event_ids_from_panel(augmented_json: &Value) -> Option<std::collections::HashSet<String>> {
+    let rows = augmented_json
+        .pointer("/_graph/panel_summary/verdicts_by_reviewer")?
+        .as_array()?;
+    Some(
+        rows.iter()
+            .filter_map(|row| row["event_id"].as_str().map(String::from))
+            .collect(),
+    )
+}
+
+/// Phase 2d: HTML consolidated `Superseded events` section. Mirrors
+/// `render_superseded_section` in human_render. Three ordered
+/// subsections (valid pairs → unresolved → invalid); each sorted by
+/// (timestamp, event_id) at the projection layer. Section omitted
+/// when all three subsections are empty.
+fn render_superseded_section_html(out: &mut String, panel: &Value) {
+    let pairs = panel
+        .get("superseded_pairs")
+        .and_then(|v| v.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let unresolved = panel
+        .get("unresolved_supersedes")
+        .and_then(|v| v.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let invalid = panel
+        .get("invalid_supersedes")
+        .and_then(|v| v.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+
+    if pairs.is_empty() && unresolved.is_empty() && invalid.is_empty() {
+        return;
+    }
+
+    out.push_str("  <h2>Superseded events</h2>\n");
+    out.push_str("  <div class=\"superseded\">\n");
+
+    if !pairs.is_empty() {
+        out.push_str("    <h3>Valid superseded pairs</h3>\n");
+        for pair in pairs {
+            render_superseded_pair_html(out, pair);
+        }
+    }
+    if !unresolved.is_empty() {
+        out.push_str("    <h3>Unresolved supersedes <small>(target not in this slice)</small></h3>\n");
+        for s in unresolved {
+            render_lone_supersede_html(
+                out,
+                s,
+                "target event not present in this claim's slice",
+            );
+        }
+    }
+    if !invalid.is_empty() {
+        out.push_str("    <h3>Invalid supersede chain</h3>\n");
+        for s in invalid {
+            render_lone_supersede_html(
+                out,
+                s,
+                "meta-supersede / cycle / self-target — original verdict NOT reactivated",
+            );
+        }
+    }
+
+    out.push_str("  </div>\n");
+}
+
+fn render_superseded_pair_html(out: &mut String, pair: &Value) {
+    let original = &pair["original"];
+    let supersede = &pair["supersede"];
+
+    let original_id = original["id"].as_str().unwrap_or("?");
+    let original_kind = original["kind"]["type"].as_str().unwrap_or("?");
+    let original_author_kind = original["by"]["kind"].as_str().unwrap_or("?");
+    let original_author_name = original["by"]["name"].as_str().unwrap_or("?");
+    let original_at = original["at"].as_str().unwrap_or("");
+
+    let supersede_id = supersede["id"].as_str().unwrap_or("?");
+    let supersede_author_kind = supersede["by"]["kind"].as_str().unwrap_or("?");
+    let supersede_author_name = supersede["by"]["name"].as_str().unwrap_or("?");
+    let supersede_at = supersede["at"].as_str().unwrap_or("");
+    let supersede_rationale = supersede["rationale"].as_str().unwrap_or("");
+    let successor = supersede["kind"]["data"]["successor"].as_str().unwrap_or("?");
+
+    let cross_author_label = if original_author_name == supersede_author_name
+        && original_author_kind == supersede_author_kind
+    {
+        ""
+    } else {
+        " (cross-author supersede)"
+    };
+
+    out.push_str("    <div class=\"superseded-pair\">\n");
+    out.push_str(&format!(
+        "      <p><strong>Original:</strong> <code>{}</code> — {} <code>{}</code> {}ed at <em>{}</em>.</p>\n",
+        escape_html(original_id),
+        escape_html(original_author_kind),
+        escape_html(original_author_name),
+        escape_html(original_kind),
+        escape_html(original_at),
+    ));
+    out.push_str(&format!(
+        "      <p><strong>Superseded by:</strong> <code>{}</code> — {} <code>{}</code> at <em>{}</em>{}.</p>\n",
+        escape_html(supersede_id),
+        escape_html(supersede_author_kind),
+        escape_html(supersede_author_name),
+        escape_html(supersede_at),
+        escape_html(cross_author_label),
+    ));
+    out.push_str(&format!(
+        "      <p><strong>Successor:</strong> <code>{}</code>.</p>\n",
+        escape_html(successor),
+    ));
+    if !supersede_rationale.is_empty() {
+        out.push_str(&format!(
+            "      <p><strong>Rationale:</strong> {}</p>\n",
+            escape_html(supersede_rationale),
+        ));
+    }
+    out.push_str("    </div>\n");
+}
+
+fn render_lone_supersede_html(out: &mut String, supersede: &Value, framing: &str) {
+    let id = supersede["id"].as_str().unwrap_or("?");
+    let author_kind = supersede["by"]["kind"].as_str().unwrap_or("?");
+    let author_name = supersede["by"]["name"].as_str().unwrap_or("?");
+    let at = supersede["at"].as_str().unwrap_or("");
+    let rationale = supersede["rationale"].as_str().unwrap_or("");
+    let target_id = supersede["target"]["data"].as_str().unwrap_or("?");
+
+    out.push_str("    <div class=\"superseded-pair\">\n");
+    out.push_str(&format!(
+        "      <p><strong>Supersede event:</strong> <code>{}</code> — {} <code>{}</code> at <em>{}</em>.</p>\n",
+        escape_html(id),
+        escape_html(author_kind),
+        escape_html(author_name),
+        escape_html(at),
+    ));
+    out.push_str(&format!(
+        "      <p><strong>Targets:</strong> event <code>{}</code>.</p>\n",
+        escape_html(target_id),
+    ));
+    out.push_str(&format!(
+        "      <p><strong>Note:</strong> {}.</p>\n",
+        escape_html(framing),
+    ));
+    if !rationale.is_empty() {
+        out.push_str(&format!(
+            "      <p><strong>Rationale:</strong> {}</p>\n",
+            escape_html(rationale),
+        ));
+    }
+    out.push_str("    </div>\n");
 }
 
 fn render_gap(out: &mut String, g: &Value) {

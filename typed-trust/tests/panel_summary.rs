@@ -697,3 +697,124 @@ fn phase2d_same_author_endorse_dissent_no_supersede_both_active() {
     assert_eq!(panel["n_dissent"].as_u64(), Some(1));
     assert_eq!(panel["n_events_active"].as_u64(), Some(2));
 }
+
+// ============================================================
+// Phase 2d code review (codex post-merge): F-CR2D-1 + F-CR2D-2
+// ============================================================
+
+#[test]
+fn phase2d_panel_consensus_ignores_supersede_compat_alias_codex_2d_cr1() {
+    // Codex F-CR2D-1: panel consensus must not count
+    // `n_supersede` (a compat alias for the raw count) as a verdict
+    // kind. A report with 2 active endorses + 1 claim-targeted
+    // Supersede should render as "all endorsed" — consensus —
+    // not as "divergent: 2 endorsed, 1 superseded."
+    let claim = "x";
+    let report = minimal_report(claim);
+    let events = vec![
+        event(
+            claim,
+            "evt-e1",
+            model_author("opus", "v1"),
+            ReviewKind::Endorse,
+            "2026-06-02T10:00:00Z",
+        ),
+        event(
+            claim,
+            "evt-e2",
+            model_author("haiku", "v2"),
+            ReviewKind::Endorse,
+            "2026-06-02T10:05:00Z",
+        ),
+        // Claim-targeted Supersede (NOT targeting either endorse).
+        // It moves the claim's status to Superseded — that's a
+        // separate concern handled by compute_render_status — but
+        // here we're testing the panel consensus phrasing, not the
+        // status.
+        event(
+            claim,
+            "evt-s",
+            model_author("opus", "v1"),
+            ReviewKind::Supersede {
+                successor: typed_trust::ids::AttestedId::new("att-x"),
+            },
+            "2026-06-02T10:10:00Z",
+        ),
+    ];
+    let augmented = render(&report, &events);
+    let md = render_markdown(&augmented);
+    // The panel only shows up when n_reviewers > 1; both endorsers
+    // count as active so panel is rendered.
+    assert!(md.contains("## Reviewer Panel"), "panel should render; got:\n{md}");
+    assert!(
+        md.contains("all endorsed"),
+        "consensus phrasing expected — Supersede compat alias should not appear as a divergent verdict; got:\n{md}"
+    );
+    assert!(
+        !md.contains("superseded"),
+        "panel consensus should not mention 'superseded'; got:\n{md}"
+    );
+}
+
+#[test]
+fn phase2d_html_filters_active_events_and_renders_audit_codex_2d_cr2() {
+    // Codex F-CR2D-2: the HTML renderer must mirror Phase 2d's
+    // active-filtering AND emit the Superseded Events audit section
+    // — markdown was Phase-2d'd in the original commit, but HTML
+    // only had the footnote removed.
+    let claim = "x";
+    let report = minimal_report(claim);
+    let events = vec![
+        event(
+            claim,
+            "evt-original",
+            model_author("opus", "v"),
+            ReviewKind::Endorse,
+            "2026-06-02T10:00:00Z",
+        ),
+        ReviewEvent {
+            id: EventId::new("evt-super"),
+            target: Target::ReviewEvent(EventId::new("evt-original")),
+            by: model_author("opus", "v"),
+            protocol: None,
+            rationale: "Withdrawing the prior Endorse on second look. This rationale is plenty long to pass downstream validation rules.".into(),
+            at: "2026-06-15T09:00:00Z".into(),
+            kind: ReviewKind::Supersede {
+                successor: typed_trust::ids::AttestedId::new("att-replacement"),
+            },
+        },
+    ];
+    let augmented = render(&report, &events);
+    let html = typed_trust::render_html(&augmented);
+    // The superseded Endorse should NOT appear under "Reviewer
+    // endorsements" anymore.
+    let endorsements_idx = html.find("Reviewer endorsements");
+    let evt_original_in_endorsements = match endorsements_idx {
+        Some(idx) => html[idx..]
+            .split_once("</h2>")
+            .map(|(_, rest)| rest.contains("evt-original"))
+            .unwrap_or(false),
+        None => false,
+    };
+    assert!(
+        !evt_original_in_endorsements,
+        "superseded Endorse should not appear in HTML 'Reviewer endorsements' section; full HTML:\n{html}"
+    );
+    // The HTML report MUST surface the Superseded events audit.
+    assert!(
+        html.contains("Superseded events"),
+        "HTML report missing Superseded events audit; full HTML:\n{html}"
+    );
+    assert!(
+        html.contains("Valid superseded pairs"),
+        "HTML report missing valid pairs subsection"
+    );
+    assert!(
+        html.contains("evt-original") && html.contains("evt-super"),
+        "audit subsection missing original/supersede event ids"
+    );
+    assert!(
+        html.contains("att-replacement"),
+        "audit subsection missing successor id"
+    );
+}
