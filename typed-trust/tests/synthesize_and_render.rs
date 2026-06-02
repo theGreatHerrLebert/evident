@@ -1061,6 +1061,8 @@ fn shared_passing_backing_contests_both_sibling_branches() {
             },
             at: "2026-06-01T00:00:00Z".into(),
         },
+        replay_status: Default::default(),
+        replay_reason: None,
     };
     let d_inputs = BackingClaimInputs {
         criteria: vec![typed_trust::translate::TranslatedCriterion {

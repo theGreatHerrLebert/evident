@@ -668,3 +668,358 @@ fn evidence_locator_wraps_manifest_artifact_string() {
         other => panic!("expected Locator::Artifact, got {other:?}"),
     }
 }
+
+// ----------------------------------------------------------------------
+// Phase 5 PR1: replay_status + replay_reason
+//
+// Load-bearing tests for the new evidence-block fields. The schema
+// distinguishes three states a replay path can be in:
+//   - available           — framework can run the command (Phase 1 default)
+//   - not_attempted       — no replay run; no reason allowed
+//   - unavailable_artifacts — extractor verified replay impossible; reason required
+//
+// Pair-validator rules (translate-time):
+//   (available, null)              → OK
+//   (not_attempted, null)          → OK (default for hand-authored manifests)
+//   (unavailable_artifacts, <any>) → OK
+//   anything else                  → translation error
+// ----------------------------------------------------------------------
+
+/// Extracted-from-paper claim that cannot be replayed because the paper's
+/// code is private. The extractor (or the curator) records this with
+/// `replay_status: unavailable_artifacts` and `replay_reason:
+/// code_private` so downstream queries can distinguish "not run yet"
+/// from "cannot be run from what we have."
+const EXTRACTED_PAPER_NO_REPLAY_YAML: &str = r#"
+claims:
+  - id: cool-paper-rmsd-vs-baseline
+    title: Cool Paper claims median RMSD below 0.5 angstrom on BPTI suite
+    kind: measurement
+    tier: research
+    case: source/cited.md#claim-1
+    source: ..
+    claim: >
+      Median RMSD < 0.5 Å against Baseline X on the BPTI test suite
+      (n=1000), per Section 4.2 Table 3.
+    tolerances:
+      - metric: median_rmsd
+        op: "<"
+        value: 0.5
+        prose: |
+          paper Table 3 row "ours": median RMSD = 0.42; bound 0.5 stated
+          in cited sentence.
+    evidence:
+      oracle: [Paper-Authority]
+      command: "no-replay-path"
+      artifact: source/cited.md#claim-1
+      replay_status: unavailable_artifacts
+      replay_reason: code_private
+    provenance: extracted-from-paper
+    last_verified:
+      commit: null
+      date: null
+      value: null
+      corpus_sha: null
+"#;
+
+#[test]
+fn evidence_carries_replay_status_unavailable_artifacts_with_reason() {
+    let manifest = parse_manifest_file(EXTRACTED_PAPER_NO_REPLAY_YAML).unwrap();
+    let mc = &manifest.claims[0];
+    let criteria = translate_tolerances(mc).unwrap();
+    let ctx = ctx("extracted/cool-paper/evident.yaml");
+    let evidence = translate_evidence(&ctx, mc, &criteria).unwrap().unwrap();
+
+    assert_eq!(
+        evidence.replay_status,
+        typed_trust::evidence::ReplayStatus::UnavailableArtifacts
+    );
+    assert_eq!(
+        evidence.replay_reason,
+        Some(typed_trust::evidence::ReplayReason::CodePrivate)
+    );
+}
+
+#[test]
+fn evidence_default_replay_status_is_not_attempted_with_null_reason() {
+    // The CI fixture YAML has no replay_status / replay_reason — the
+    // current behaviour. Defaulting to NotAttempted + None matches what
+    // hand-authored manifests have always meant: nobody has run this yet.
+    let manifest = parse_manifest_file(PROTEON_SASA_CI_YAML).unwrap();
+    let mc = &manifest.claims[0];
+    let criteria = translate_tolerances(mc).unwrap();
+    let ctx = ctx("proteon/evident/claims/sasa.yaml");
+    let evidence = translate_evidence(&ctx, mc, &criteria).unwrap().unwrap();
+
+    assert_eq!(
+        evidence.replay_status,
+        typed_trust::evidence::ReplayStatus::NotAttempted
+    );
+    assert!(evidence.replay_reason.is_none());
+}
+
+#[test]
+fn evidence_rejects_not_attempted_paired_with_a_reason() {
+    // Illegal pair: not_attempted means "nobody tried"; a reason claims
+    // a specific blocker. Combining them is incoherent and the
+    // pair-validator rejects at translate time.
+    let yaml = r#"
+claims:
+  - id: bad-pair-claim
+    title: bad pair example
+    kind: measurement
+    tier: research
+    case: src.md
+    source: ..
+    claim: bad pair
+    tolerances:
+      - metric: x
+        op: "<"
+        value: 1.0
+        prose: |
+          example
+    evidence:
+      oracle: [Manual]
+      command: echo
+      artifact: out.txt
+      replay_status: not_attempted
+      replay_reason: code_private
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let criteria = translate_tolerances(mc).unwrap();
+    let ctx = ctx("any.yaml");
+    let err = translate_evidence(&ctx, mc, &criteria).unwrap_err();
+
+    match err {
+        TranslateError::IllegalReplayPair { id, status, reason } => {
+            assert_eq!(id, "bad-pair-claim");
+            assert_eq!(status, "not_attempted");
+            assert_eq!(reason.as_deref(), Some("code_private"));
+        }
+        other => panic!("expected IllegalReplayPair, got {other:?}"),
+    }
+}
+
+#[test]
+fn evidence_rejects_unavailable_artifacts_without_a_reason() {
+    // Illegal pair the other way: unavailable_artifacts asserts a
+    // blocker exists; without a reason there's nothing to query on.
+    let yaml = r#"
+claims:
+  - id: bad-pair-no-reason
+    title: bad pair no reason
+    kind: measurement
+    tier: research
+    case: src.md
+    source: ..
+    claim: bad pair no reason
+    tolerances:
+      - metric: x
+        op: "<"
+        value: 1.0
+        prose: |
+          example
+    evidence:
+      oracle: [Manual]
+      command: echo
+      artifact: out.txt
+      replay_status: unavailable_artifacts
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let criteria = translate_tolerances(mc).unwrap();
+    let ctx = ctx("any.yaml");
+    let err = translate_evidence(&ctx, mc, &criteria).unwrap_err();
+
+    match err {
+        TranslateError::IllegalReplayPair { id, status, reason } => {
+            assert_eq!(id, "bad-pair-no-reason");
+            assert_eq!(status, "unavailable_artifacts");
+            assert!(reason.is_none());
+        }
+        other => panic!("expected IllegalReplayPair, got {other:?}"),
+    }
+}
+
+#[test]
+fn evidence_rejects_unknown_replay_status_string() {
+    let yaml = r#"
+claims:
+  - id: unknown-status
+    title: unknown status example
+    kind: measurement
+    tier: research
+    case: src.md
+    source: ..
+    claim: unknown status example
+    tolerances:
+      - metric: x
+        op: "<"
+        value: 1.0
+        prose: |
+          example
+    evidence:
+      oracle: [Manual]
+      command: echo
+      artifact: out.txt
+      replay_status: maybe_someday
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let criteria = translate_tolerances(mc).unwrap();
+    let ctx = ctx("any.yaml");
+    let err = translate_evidence(&ctx, mc, &criteria).unwrap_err();
+
+    match err {
+        TranslateError::InvalidReplayStatus { id, value } => {
+            assert_eq!(id, "unknown-status");
+            assert_eq!(value, "maybe_someday");
+        }
+        other => panic!("expected InvalidReplayStatus, got {other:?}"),
+    }
+}
+
+#[test]
+fn evidence_rejects_absent_status_with_present_reason() {
+    // Codex code review F-PR1-CR1 coverage: when status is absent it
+    // defaults to NotAttempted; pairing the default with a present
+    // reason is the only illegal-pair case that exercises the fallback
+    // string in IllegalReplayPair.
+    let yaml = r#"
+claims:
+  - id: absent-status-with-reason
+    title: absent status with reason
+    kind: measurement
+    tier: research
+    case: src.md
+    source: ..
+    claim: absent status with reason
+    tolerances:
+      - metric: x
+        op: "<"
+        value: 1.0
+        prose: |
+          example
+    evidence:
+      oracle: [Manual]
+      command: echo
+      artifact: out.txt
+      replay_reason: data_unavailable
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let criteria = translate_tolerances(mc).unwrap();
+    let ctx = ctx("any.yaml");
+    let err = translate_evidence(&ctx, mc, &criteria).unwrap_err();
+
+    match err {
+        TranslateError::IllegalReplayPair { id, status, reason } => {
+            assert_eq!(id, "absent-status-with-reason");
+            assert_eq!(status, "not_attempted");
+            assert_eq!(reason.as_deref(), Some("data_unavailable"));
+        }
+        other => panic!("expected IllegalReplayPair, got {other:?}"),
+    }
+}
+
+#[test]
+fn evidence_rejects_available_paired_with_reason() {
+    // Codex code review F-PR1-CR1 coverage: `available + reason` is
+    // illegal too (a replay path that succeeded shouldn't carry a
+    // blocker). The existing tests covered `not_attempted + reason`
+    // but not this side of the same rule.
+    let yaml = r#"
+claims:
+  - id: available-with-reason
+    title: available with reason
+    kind: measurement
+    tier: ci
+    case: src.md
+    source: ..
+    claim: available with reason
+    tolerances:
+      - metric: x
+        op: "<"
+        value: 1.0
+        prose: |
+          example
+    evidence:
+      oracle: [Manual]
+      command: echo
+      artifact: out.txt
+      replay_status: available
+      replay_reason: data_unavailable
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let criteria = translate_tolerances(mc).unwrap();
+    let ctx = ctx("any.yaml");
+    let err = translate_evidence(&ctx, mc, &criteria).unwrap_err();
+
+    match err {
+        TranslateError::IllegalReplayPair { id, status, reason } => {
+            assert_eq!(id, "available-with-reason");
+            assert_eq!(status, "available");
+            assert_eq!(reason.as_deref(), Some("data_unavailable"));
+        }
+        other => panic!("expected IllegalReplayPair, got {other:?}"),
+    }
+}
+
+#[test]
+fn evidence_parses_all_ten_replay_reason_values() {
+    use typed_trust::evidence::ReplayReason;
+    let cases = [
+        ("code_private", ReplayReason::CodePrivate),
+        ("data_unavailable", ReplayReason::DataUnavailable),
+        ("license_restricted", ReplayReason::LicenseRestricted),
+        ("compute_unavailable", ReplayReason::ComputeUnavailable),
+        ("environment_unavailable", ReplayReason::EnvironmentUnavailable),
+        ("dependency_unavailable", ReplayReason::DependencyUnavailable),
+        ("external_service_unavailable", ReplayReason::ExternalServiceUnavailable),
+        ("benchmark_unspecified", ReplayReason::BenchmarkUnspecified),
+        ("instructions_missing", ReplayReason::InstructionsMissing),
+        ("requires_human_evaluation", ReplayReason::RequiresHumanEvaluation),
+    ];
+    for (reason_str, expected) in cases {
+        let yaml = format!(
+            r#"
+claims:
+  - id: reason-{reason_str}
+    title: reason coverage test
+    kind: measurement
+    tier: research
+    case: src.md
+    source: ..
+    claim: reason coverage
+    tolerances:
+      - metric: x
+        op: "<"
+        value: 1.0
+        prose: |
+          example
+    evidence:
+      oracle: [Manual]
+      command: echo
+      artifact: out.txt
+      replay_status: unavailable_artifacts
+      replay_reason: {reason_str}
+"#
+        );
+        let manifest = parse_manifest_file(&yaml).unwrap_or_else(|e| {
+            panic!("parse failed for {reason_str}: {e:?}")
+        });
+        let mc = &manifest.claims[0];
+        let criteria = translate_tolerances(mc).unwrap();
+        let ctx = ctx("any.yaml");
+        let evidence = translate_evidence(&ctx, mc, &criteria)
+            .unwrap_or_else(|e| panic!("translate failed for {reason_str}: {e:?}"))
+            .unwrap();
+        assert_eq!(
+            evidence.replay_reason,
+            Some(expected),
+            "wrong enum for {reason_str}",
+        );
+    }
+}

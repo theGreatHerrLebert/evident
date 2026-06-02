@@ -101,6 +101,8 @@ fn substantive_backing_claim(id: &str) -> ManifestClaim {
             oracle: vec!["BALL".into()],
             command: "pytest".into(),
             artifact: "results.csv".into(),
+            replay_status: None,
+            replay_reason: None,
         }),
         provenance: None,
         last_verified: None,

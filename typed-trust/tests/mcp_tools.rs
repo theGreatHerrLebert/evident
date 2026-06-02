@@ -452,6 +452,84 @@ fn list_claims_limit_and_cursor() {
     proc.shutdown();
 }
 
+/// Phase 5 PR1: list_claims surfaces replay_status and replay_reason.
+/// A consumer querying "show me extracted claims whose only blocker is
+/// code_private" needs both fields visible at the summary level. The
+/// default behaviour stays the same (not_attempted, no reason) for
+/// hand-authored manifests with no replay block.
+#[test]
+fn list_claims_surfaces_replay_status_and_reason_phase5_pr1() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = tmp.path().join("evident.yaml");
+    std::fs::write(
+        &manifest,
+        r#"version: 0.1
+project: extracted-mixed
+claims:
+  - id: extracted-no-replay
+    kind: measurement
+    tier: research
+    source: .
+    title: extracted paper claim with no replay path
+    claim: median rmsd below 0.5
+    tolerances:
+      - metric: median_rmsd
+        op: "<"
+        value: 0.5
+        prose: paper reports 0.42; bound 0.5 stated
+    evidence:
+      oracle: [Paper-Authority]
+      command: "no-replay-path"
+      artifact: source/cited.md#claim-1
+      replay_status: unavailable_artifacts
+      replay_reason: code_private
+  - id: classical-ci-claim
+    kind: measurement
+    tier: ci
+    source: .
+    title: classical ci claim with no replay block
+    claim: relative error below 2 percent
+    tolerances:
+      - metric: relative_error
+        op: "<"
+        value: 0.02
+        prose: stay under 2 percent
+    evidence:
+      oracle: [Biopython]
+      command: pytest
+      artifact: out.json
+"#,
+    )
+    .unwrap();
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let resp = proc.call_tool(
+        "list_claims",
+        json!({"manifest_path": manifest.to_str().unwrap()}),
+    );
+    let p = decode_result(&resp);
+    let items = p["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+
+    let extracted = items
+        .iter()
+        .find(|i| i["claim_id"] == "extracted-no-replay")
+        .expect("extracted claim present");
+    assert_eq!(extracted["replay_status"], "unavailable_artifacts");
+    assert_eq!(extracted["replay_reason"], "code_private");
+
+    let classical = items
+        .iter()
+        .find(|i| i["claim_id"] == "classical-ci-claim")
+        .expect("classical claim present");
+    assert_eq!(classical["replay_status"], "not_attempted");
+    // No replay_reason at the not_attempted default — the field is omitted.
+    assert!(
+        classical.as_object().unwrap().get("replay_reason").is_none(),
+        "replay_reason should be omitted when not set; got {classical:?}"
+    );
+    proc.shutdown();
+}
+
 #[test]
 fn list_review_events_include_rationale_toggles() {
     let tmp = tempfile::tempdir().unwrap();

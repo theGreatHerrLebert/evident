@@ -32,7 +32,9 @@ use crate::claim::{Claim, ClaimKind, SourceSpan};
 use crate::derivation::{
     Attested, Derivation, Locator, Rerun, ReproductionOutcome, ToolInvocation,
 };
-use crate::evidence::{Evidence, EvidenceKind, Strength, SupportRelation};
+use crate::evidence::{
+    Evidence, EvidenceKind, ReplayReason, ReplayStatus, Strength, SupportRelation,
+};
 use crate::identity::{Identity, IdentityDetail, IdentityKind};
 use crate::ids::{ClaimId, CriterionId, EventId, EvidenceId, Timestamp};
 use crate::report::{ComparisonOp, MetricObservation, Tolerance};
@@ -104,6 +106,16 @@ pub struct ManifestEvidence {
     pub oracle: Vec<String>,
     pub command: String,
     pub artifact: String,
+    /// Phase 5: optional replay-path status. Defaults to
+    /// `not_attempted` when absent, preserving the meaning of
+    /// hand-authored manifests pre-Phase-5.
+    #[serde(default)]
+    pub replay_status: Option<String>,
+    /// Phase 5: optional structured reason a replay is
+    /// unavailable. Pair-validator in `translate_evidence` enforces
+    /// the legal `(replay_status, replay_reason)` combinations.
+    #[serde(default)]
+    pub replay_reason: Option<String>,
 }
 
 // ---------- Translation context, errors ----------
@@ -144,6 +156,21 @@ pub enum TranslateError {
     /// without it the report would render Current with NotAssessed
     /// criteria — an unevidenced measurement looking accepted.
     MeasurementWithoutEvidence { id: String },
+    /// Phase 5: the `evidence.replay_status` field was not one of
+    /// `available | not_attempted | unavailable_artifacts`.
+    InvalidReplayStatus { id: String, value: String },
+    /// Phase 5: the `evidence.replay_reason` field was not one of the
+    /// ten known reason strings.
+    InvalidReplayReason { id: String, value: String },
+    /// Phase 5: the `(replay_status, replay_reason)` pair is not in
+    /// the legal set. Legal combinations:
+    ///   (available, None), (not_attempted, None),
+    ///   (unavailable_artifacts, Some(_))
+    IllegalReplayPair {
+        id: String,
+        status: String,
+        reason: Option<String>,
+    },
 }
 
 impl std::fmt::Display for TranslateError {
@@ -176,6 +203,21 @@ impl std::fmt::Display for TranslateError {
                 f,
                 "claim {id}: kind=measurement requires an evidence block; \
                  add evidence or change to kind: policy / reference"
+            ),
+            TranslateError::InvalidReplayStatus { id, value } => write!(
+                f,
+                "claim {id}: evidence.replay_status {value:?} is not one of \
+                 available | not_attempted | unavailable_artifacts"
+            ),
+            TranslateError::InvalidReplayReason { id, value } => write!(
+                f,
+                "claim {id}: evidence.replay_reason {value:?} is not a known reason"
+            ),
+            TranslateError::IllegalReplayPair { id, status, reason } => write!(
+                f,
+                "claim {id}: illegal (replay_status, replay_reason) pair \
+                 ({status:?}, {reason:?}); legal pairs are (available, null), \
+                 (not_attempted, null), (unavailable_artifacts, <reason>)"
             ),
         }
     }
@@ -398,6 +440,7 @@ pub fn translate_evidence(
         first_criterion.as_ref(),
         &runner,
     );
+    let (replay_status, replay_reason) = parse_replay_fields(&mc.id, me)?;
 
     Ok(Some(Evidence {
         id: EvidenceId::new(format!("ev-{}", mc.id)),
@@ -428,7 +471,77 @@ pub fn translate_evidence(
             },
             at: ctx.now.clone(),
         },
+        replay_status,
+        replay_reason,
     }))
+}
+
+/// Phase 5: parse + validate `evidence.replay_status` and
+/// `evidence.replay_reason`. Returns the typed pair, or a translation
+/// error explaining which rule was violated. The legal pairs are:
+///   (available, None), (not_attempted, None),
+///   (unavailable_artifacts, Some(_)).
+/// Anything else is rejected here so downstream consumers can rely on
+/// the invariant.
+fn parse_replay_fields(
+    claim_id: &str,
+    me: &ManifestEvidence,
+) -> Result<(ReplayStatus, Option<ReplayReason>), TranslateError> {
+    let status = match me.replay_status.as_deref() {
+        None => ReplayStatus::NotAttempted,
+        Some(s) => match s {
+            "available" => ReplayStatus::Available,
+            "not_attempted" => ReplayStatus::NotAttempted,
+            "unavailable_artifacts" => ReplayStatus::UnavailableArtifacts,
+            _ => {
+                return Err(TranslateError::InvalidReplayStatus {
+                    id: claim_id.into(),
+                    value: s.into(),
+                });
+            }
+        },
+    };
+
+    let reason = match me.replay_reason.as_deref() {
+        None => None,
+        Some(s) => Some(match s {
+            "code_private" => ReplayReason::CodePrivate,
+            "data_unavailable" => ReplayReason::DataUnavailable,
+            "license_restricted" => ReplayReason::LicenseRestricted,
+            "compute_unavailable" => ReplayReason::ComputeUnavailable,
+            "environment_unavailable" => ReplayReason::EnvironmentUnavailable,
+            "dependency_unavailable" => ReplayReason::DependencyUnavailable,
+            "external_service_unavailable" => ReplayReason::ExternalServiceUnavailable,
+            "benchmark_unspecified" => ReplayReason::BenchmarkUnspecified,
+            "instructions_missing" => ReplayReason::InstructionsMissing,
+            "requires_human_evaluation" => ReplayReason::RequiresHumanEvaluation,
+            _ => {
+                return Err(TranslateError::InvalidReplayReason {
+                    id: claim_id.into(),
+                    value: s.into(),
+                });
+            }
+        }),
+    };
+
+    let legal = matches!(
+        (status, reason.is_some()),
+        (ReplayStatus::Available, false)
+            | (ReplayStatus::NotAttempted, false)
+            | (ReplayStatus::UnavailableArtifacts, true)
+    );
+    if !legal {
+        return Err(TranslateError::IllegalReplayPair {
+            id: claim_id.into(),
+            status: me.replay_status.clone().unwrap_or_else(|| match status {
+                ReplayStatus::Available => "available",
+                ReplayStatus::NotAttempted => "not_attempted",
+                ReplayStatus::UnavailableArtifacts => "unavailable_artifacts",
+            }.to_string()),
+            reason: me.replay_reason.clone(),
+        });
+    }
+    Ok((status, reason))
 }
 
 /// Translate the `last_verified` block into a `Vec<Rerun>`. Returns an
