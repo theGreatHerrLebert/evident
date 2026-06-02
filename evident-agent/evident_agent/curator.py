@@ -84,9 +84,14 @@ VALID_TARGET_TIERS = ("ci", "release")
 _TIER_LADDER = ("research", "ci", "release")
 
 
-def _adjacent_promotion_target(from_tier: str) -> Optional[str]:
+def adjacent_promotion_target(from_tier: str) -> Optional[str]:
     """Return the next tier up the linear ladder, or None if
     ``from_tier`` is at or above the top.
+
+    Public helper used by both ``promote_claim`` and the review
+    walkthrough — they share the same ladder contract. The
+    leading-underscore alias below is preserved for backward
+    compatibility (codex F-WALK-LADDER review note).
     """
     try:
         i = _TIER_LADDER.index(from_tier)
@@ -95,6 +100,10 @@ def _adjacent_promotion_target(from_tier: str) -> Optional[str]:
     if i + 1 >= len(_TIER_LADDER):
         return None
     return _TIER_LADDER[i + 1]
+
+
+# Backward-compatibility alias for the older internal name.
+_adjacent_promotion_target = adjacent_promotion_target
 
 
 @dataclass

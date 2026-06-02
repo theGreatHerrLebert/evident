@@ -620,9 +620,14 @@ def test_prompt_tier_receives_release_after_first_promotion(tmp_path: Path):
     would receive valid_targets=['release']. Verify via direct
     helper call."""
     from evident_agent import curator as curator_mod
-    assert curator_mod._adjacent_promotion_target("research") == "ci"
-    assert curator_mod._adjacent_promotion_target("ci") == "release"
-    assert curator_mod._adjacent_promotion_target("release") is None
+    assert curator_mod.adjacent_promotion_target("research") == "ci"
+    assert curator_mod.adjacent_promotion_target("ci") == "release"
+    assert curator_mod.adjacent_promotion_target("release") is None
+    # Backward-compat alias still resolves to the same callable.
+    assert (
+        curator_mod._adjacent_promotion_target
+        is curator_mod.adjacent_promotion_target
+    )
 
 
 def test_walkthrough_decline_confirm_records_skip(tmp_path: Path):

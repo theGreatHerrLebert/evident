@@ -186,14 +186,23 @@ PromptDecision = Callable[[str], str]
 """Given the display block, return one of accept/drop/skip/quit."""
 
 PromptTier = Callable[[list[str], str], str]
-"""Given (valid_targets, current_tier), return the chosen target.
+"""Given ``(valid_targets, current_tier)``, return the chosen target.
 
 The walkthrough computes ``valid_targets`` from the promotion ladder
-(`curator._adjacent_promotion_target`). Today that's at most one
+(``curator.adjacent_promotion_target``). Today that's at most one
 element — a research-tier claim advances to ci, a ci-tier claim
 advances to release. The prompt presents the choice; if only one
 target is valid, it asks for explicit confirmation rather than
 auto-selecting.
+
+**Decline contract (codex F-WALK-LADDER review note):** to signal
+the curator declined the confirmation (e.g. picked accept, then
+backed out), return ``current_tier`` unchanged. The walker
+intercepts that value and records the claim as a typed skip
+(``notes="curator declined promotion"``). Returning any value
+NOT in ``valid_targets`` and NOT equal to ``current_tier``
+triggers a downstream ``CuratorError`` from ``promote_claim``;
+the walker maps that to a skip with the error in notes.
 """
 
 PromptText = Callable[[str], str]
@@ -222,8 +231,17 @@ def _click_prompt_tier(valid_targets: list[str], current_tier: str) -> str:
     """Prompt the curator for the promotion target.
 
     Multi-step ladder awareness: the walkthrough passes only the
-    next-rung target. If there's exactly one valid target, ask for
-    confirmation; otherwise present the choice.
+    next-rung target. If there's exactly one valid target, ask
+    for confirmation; otherwise present a choice.
+
+    Confirm default is ``True`` (Enter accepts): the curator
+    already picked "accept" in the prior decision prompt, so the
+    follow-up confirm is just "yes, the next obvious rung." A
+    curator who wants to skip can decline (``n``) or choose ``s``
+    at the outer decision prompt instead.
+
+    Returning ``current_tier`` signals decline (see ``PromptTier``
+    docstring).
     """
     if not valid_targets:
         raise click.UsageError(
@@ -234,13 +252,9 @@ def _click_prompt_tier(valid_targets: list[str], current_tier: str) -> str:
         target = valid_targets[0]
         if click.confirm(
             f"promote {current_tier} -> {target}?",
-            default=False,
+            default=True,
         ):
             return target
-        # Treat decline as a skip-from-accept-branch — the walkthrough
-        # records this via the CuratorError path. Returning the same
-        # tier triggers the ladder rejection downstream which the
-        # walkthrough re-maps to skip.
         return current_tier
     return click.prompt(
         f"promote {current_tier} -> which tier?",
@@ -463,7 +477,7 @@ def walk_manifest(
             # ladder. Today this returns at most one option per
             # claim (research→ci or ci→release). The prompt
             # presents it explicitly so the curator can confirm.
-            next_rung = curator_mod._adjacent_promotion_target(tier)
+            next_rung = curator_mod.adjacent_promotion_target(tier)
             valid_targets = [next_rung] if next_rung is not None else []
             to_tier = prompt_tier(valid_targets, tier)
             if not valid_targets or to_tier == tier:
