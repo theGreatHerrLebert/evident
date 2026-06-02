@@ -1,0 +1,44 @@
+# Template — copy to curation/<artifact-id>.yaml AFTER running the
+# extractor. Filled by the curator during review, with timestamps.
+
+artifact_id: <id>
+curator: <name>
+
+extraction:
+  run_at: <iso-timestamp>
+  extractor_model: claude-opus-4-7
+  extracted_claims_count: <int>
+  extracted_rejections_count: <int>
+
+curation:
+  started_at: <iso-timestamp>
+  ended_at: <iso-timestamp>
+  minutes_total: <int>            # primary cost metric
+
+# Per extracted claim: did the validator + curator both approve it?
+extracted_claims:
+  - extracted_id: <id-from-extracted/evident.yaml>
+    matched_ground_truth_id: lbc-1   # null if no match
+    decision: accept | drop | rephrase
+    minutes_spent: <int>
+    rationale: >
+      <why this decision; cite the source_span and the ground-truth>
+
+# Per ground-truth claim NOT extracted: was the failure expected
+# (unextractable / out-of-scope), or did the extractor miss it?
+unmatched_ground_truth:
+  - lbc_id: lbc-3
+    extractor_status: missed | rejected_correctly | rejected_incorrectly
+    rationale: >
+      <if rejected_correctly: which rejection reason in EXTRACTION.md
+       maps to it. if missed: was the source_span readable?>
+
+# Quick review of EXTRACTION.md rejections — did the extractor
+# reject for the right reasons?
+rejections_audit:
+  - reason: bound_not_stated | comparator_bound_to_wrong_subject | ...
+    count: <int>
+    rejection_quality: correct | over-restrictive | under-restrictive
+    notes: >
+      <are these rejections healthy or did the validator throw away
+       good claims?>
