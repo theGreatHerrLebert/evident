@@ -19,6 +19,7 @@
 //! into a single sequence before translation. Paths in `include` are
 //! resolved relative to the top-level manifest's directory.
 
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -26,7 +27,7 @@ use std::process::ExitCode;
 
 use typed_trust::translate::{
     parse_manifest_file, translate_claim, translate_evidence, translate_tolerances, ManifestClaim,
-    TranslationContext,
+    ManifestLastVerified, TranslationContext,
 };
 use typed_trust::*;
 
@@ -46,10 +47,13 @@ enum Format {
 
 fn main() -> ExitCode {
     let raw_args: Vec<String> = env::args().collect();
-    let (format, positional) = match parse_args(&raw_args) {
-        Some(parsed) => parsed,
+    let parsed = match parse_args(&raw_args) {
+        Some(p) => p,
         None => return ExitCode::from(2),
     };
+    let format = parsed.format;
+    let sidecar_path = parsed.sidecar;
+    let positional = parsed.positional;
 
     let Some(path) = positional.first() else {
         usage();
@@ -57,13 +61,32 @@ fn main() -> ExitCode {
     };
     let filter = positional.get(1).cloned();
 
-    let claims = match load_claims(path) {
+    let mut claims = match load_claims(path) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("{e}");
             return ExitCode::FAILURE;
         }
     };
+
+    // Overlay sidecar entries onto each claim's last_verified field
+    // before translation. Sidecar key is the claim id; value matches
+    // ManifestLastVerified's deserialization shape.
+    if let Some(sidecar_path) = &sidecar_path {
+        match load_sidecar(sidecar_path) {
+            Ok(overlay) => {
+                for cw in claims.iter_mut() {
+                    if let Some(lv) = overlay.get(&cw.claim.id) {
+                        cw.claim.last_verified = Some(lv.clone());
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
 
     let now: Timestamp = "1970-01-01T00:00:00Z".into();
 
@@ -146,28 +169,47 @@ fn main() -> ExitCode {
     }
 }
 
-fn parse_args(args: &[String]) -> Option<(Format, Vec<String>)> {
+struct ParsedArgs {
+    format: Format,
+    positional: Vec<String>,
+    sidecar: Option<String>,
+}
+
+fn parse_args(args: &[String]) -> Option<ParsedArgs> {
     if args.len() < 2 || args.iter().any(|a| a == "-h" || a == "--help") {
         usage();
         return None;
     }
     let mut format = Format::Json;
     let mut positional: Vec<String> = Vec::new();
+    let mut sidecar: Option<String> = None;
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
         if let Some(value) = arg.strip_prefix("--format=") {
             format = parse_format_value(value)?;
         } else if arg == "--format" {
             let Some(value) = iter.next() else {
-                eprintln!("error: --format requires a value (json|md)");
+                eprintln!("error: --format requires a value (json|md|html|mermaid)");
                 return None;
             };
             format = parse_format_value(value)?;
+        } else if let Some(value) = arg.strip_prefix("--last-verified-sidecar=") {
+            sidecar = Some(value.to_string());
+        } else if arg == "--last-verified-sidecar" {
+            let Some(value) = iter.next() else {
+                eprintln!("error: --last-verified-sidecar requires a path");
+                return None;
+            };
+            sidecar = Some(value.clone());
         } else {
             positional.push(arg.clone());
         }
     }
-    Some((format, positional))
+    Some(ParsedArgs {
+        format,
+        positional,
+        sidecar,
+    })
 }
 
 fn parse_format_value(v: &str) -> Option<Format> {
@@ -186,7 +228,9 @@ fn parse_format_value(v: &str) -> Option<Format> {
 }
 
 fn usage() {
-    eprintln!("usage: typed-trust [--format json|md] <manifest.yaml> [claim_id]");
+    eprintln!(
+        "usage: typed-trust [--format json|md|html|mermaid] \\\n               [--last-verified-sidecar <path>] <manifest.yaml> [claim_id]"
+    );
     eprintln!();
     eprintln!("Translates each measurement-class claim, synthesizes a TrustReport,");
     eprintln!("applies the renderer-aux layer, and emits one of:");
@@ -194,6 +238,11 @@ fn usage() {
     eprintln!("  --format md             — markdown rollup for humans");
     eprintln!("  --format html           — self-contained HTML with Mermaid graph");
     eprintln!("  --format mermaid        — just the Mermaid attestation-graph source");
+    eprintln!();
+    eprintln!("  --last-verified-sidecar <path>");
+    eprintln!("    overlay sidecar JSON entries onto each claim's last_verified field");
+    eprintln!("    before translation. Sidecar shape: {{claim_id: {{commit, date, value,");
+    eprintln!("    corpus_sha}}}}. Matches workflow/evident.py's existing convention.");
     eprintln!();
     eprintln!("Manifests with a top-level `include:` list have each included file");
     eprintln!("merged in before translation.");
@@ -425,4 +474,15 @@ fn html_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+/// Load a sidecar JSON file mapping claim-id → ManifestLastVerified.
+/// The shape matches `workflow/evident.py`'s `last_verified.json`
+/// convention: each entry has `commit`, `date`, `value`, `corpus_sha`
+/// fields, all optional / nullable.
+fn load_sidecar(path: &str) -> Result<HashMap<String, ManifestLastVerified>, String> {
+    let bytes = fs::read_to_string(path)
+        .map_err(|e| format!("error reading sidecar {path}: {e}"))?;
+    serde_json::from_str(&bytes)
+        .map_err(|e| format!("error parsing sidecar {path}: {e}"))
 }
