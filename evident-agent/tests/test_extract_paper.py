@@ -141,6 +141,48 @@ def test_redact_paper_plaintext_bibliography_variants(snippet):
     assert "rmsd < 0.5" in redacted
 
 
+def test_redact_paper_indented_references_heading_is_redacted():
+    """Codex F-PR6-CR2 (P2): the heading may have leading horizontal
+    whitespace — common in PDF text extraction."""
+    body = (
+        "Our method achieves rmsd < 0.5 on the suite.\n\n"
+        "    References\n\n"
+        "    1. Smith et al.\n"
+    )
+    _, redactions = redaction.redact_paper(body, "paper.md")
+    bib = [
+        r for r in redactions
+        if r.reason == redaction.REDACTION_BIBLIOGRAPHY
+    ]
+    assert bib, "expected redaction of indented References heading"
+
+
+def test_redact_paper_inside_fenced_code_block_is_not_redacted():
+    """Codex F-PR6-CR1 (P2): a markdown code fence showing an
+    example bibliography must NOT trigger redaction of everything
+    after the fence."""
+    body = (
+        "## How to format a bibliography\n\n"
+        "Example:\n\n"
+        "```\n"
+        "References\n\n"
+        "1. Smith et al.\n"
+        "```\n\n"
+        "## Results\n\n"
+        "Our method achieves rmsd less than 0.5 on the BPTI suite.\n"
+    )
+    redacted, redactions = redaction.redact_paper(body, "paper.md")
+    bib = [
+        r for r in redactions
+        if r.reason == redaction.REDACTION_BIBLIOGRAPHY
+    ]
+    assert bib == [], (
+        f"unexpected redaction inside fenced code block: {bib!r}"
+    )
+    # The Results section must survive.
+    assert "Our method achieves rmsd less than 0.5" in redacted
+
+
 @pytest.mark.parametrize(
     "snippet",
     [
@@ -290,6 +332,43 @@ def test_walk_paper_pdf_no_form_feeds_skipped(tmp_path: Path, monkeypatch):
     assert any(
         s.reason == paper.SKIP_PDF_NO_PAGE_BOUNDARIES
         for s in result.walked.skipped
+    )
+
+
+def test_walk_paper_empty_markdown_skipped(tmp_path: Path):
+    """Codex F-PR6-CR3 (P2): an empty markdown file must not reach
+    the model. Skipped with structured reason."""
+    p = tmp_path / "empty.md"
+    p.write_text("   \n\n\n")
+    result = paper.walk_paper(p)
+    assert result.walked.sections == []
+    assert any(
+        s.reason == paper.SKIP_MARKDOWN_EMPTY
+        for s in result.walked.skipped
+    )
+
+
+def test_walk_paper_pdf_leading_form_feed_preserves_page_numbers(
+    tmp_path: Path, monkeypatch,
+):
+    """Codex F-PR6-CR4 (P2): a PDF whose pdftotext output begins
+    with a form-feed (empty page-1) must NOT relabel actual page-2
+    as `page-1`. The original 1-based indices are preserved."""
+    pdf = tmp_path / "p.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    monkeypatch.setattr(paper.shutil, "which", lambda _: "/usr/bin/pdftotext")
+    monkeypatch.setattr(
+        paper.subprocess, "run",
+        lambda *a, **kw: _fake_pdftotext_output(
+            "\fPage 2 content here\fPage 3 content here\f"
+        ),
+    )
+    result = paper.walk_paper(pdf)
+    paths = [s.path for s in result.walked.sections]
+    # Actual page-1 is empty; pages 2 and 3 retain their original
+    # numbering.
+    assert paths == ["page-2", "page-3"], (
+        f"expected page-2 and page-3, got {paths}"
     )
 
 

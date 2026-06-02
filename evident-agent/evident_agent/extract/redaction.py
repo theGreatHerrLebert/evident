@@ -153,13 +153,36 @@ _BIB_HEADING_PLAINTEXT_RE = re.compile(
     # The horizontal-whitespace-only `[^\S\n]*` after the keyword is
     # deliberate: `\s*$` would greedily consume the blank lines the
     # `gap` counter is supposed to limit, bypassing the lookahead.
+    # Codex F-PR6-CR2 (P2): optional leading horizontal whitespace
+    # accepts indented headings like `   References`.
     rf"""
-    ^(?P<keyword>{_BIB_HEADING_KEYWORDS})[^\S\n]*$
+    ^[^\S\n]*(?P<keyword>{_BIB_HEADING_KEYWORDS})[^\S\n]*$
     (?P<gap>(?:\n[^\S\n]*){{0,3}})
     (?P<first_ref>\n[^\S\n]*(?:\d+\.|\[\d+\])\s+\S)
     """,
     re.IGNORECASE | re.MULTILINE | re.VERBOSE,
 )
+
+
+# Fenced markdown code blocks. Anything inside a ``` ... ``` fence
+# is off-limits for bibliography detection (codex F-PR6-CR1 P2):
+# a code example that *contains* a "References" line would
+# otherwise trigger a redaction-to-EOF that eats real paper
+# content after the example.
+_FENCED_CODE_RE = re.compile(
+    r"^(?:```|~~~)[^\n]*\n.*?(?:^(?:```|~~~)[^\n]*$|\Z)",
+    re.DOTALL | re.MULTILINE,
+)
+
+
+def _is_inside_fenced_code(text: str, offset: int) -> bool:
+    """Return True if ``offset`` falls inside a fenced code block."""
+    for m in _FENCED_CODE_RE.finditer(text):
+        if m.start() <= offset < m.end():
+            return True
+        if m.start() > offset:
+            break
+    return False
 
 
 _ANY_HEADING_RE = re.compile(
@@ -331,27 +354,30 @@ def _redact_bibliography_section_plaintext(
     The lookahead-for-numbered-refs is the safety: a paper that has
     a prose "References" section without numbered refs below it is
     NOT redacted.
+
+    Codex F-PR6-CR1 (P2): skip matches inside fenced code blocks so
+    a markdown paper showing an example bibliography in a code
+    fence doesn't have everything after the fence redacted.
     """
-    m = _BIB_HEADING_PLAINTEXT_RE.search(text)
-    if m is None:
-        return text, False
-    start = m.start("keyword")
-    # Adjust start to the BEGINNING of the heading line so the
-    # heading line itself is part of the redaction.
-    line_start = text.rfind("\n", 0, start) + 1
-    end = len(text)  # plain-text bibliography runs to EOF
-    original = text[line_start:end]
-    redactions.append(
-        Redaction(
-            section_path=section_path,
-            span_start=line_start,
-            span_end=end,
-            reason=REDACTION_BIBLIOGRAPHY,
-            original=original,
+    for m in _BIB_HEADING_PLAINTEXT_RE.finditer(text):
+        if _is_inside_fenced_code(text, m.start("keyword")):
+            continue
+        start = m.start("keyword")
+        line_start = text.rfind("\n", 0, start) + 1
+        end = len(text)  # plain-text bibliography runs to EOF
+        original = text[line_start:end]
+        redactions.append(
+            Redaction(
+                section_path=section_path,
+                span_start=line_start,
+                span_end=end,
+                reason=REDACTION_BIBLIOGRAPHY,
+                original=original,
+            )
         )
-    )
-    marker = "[external reference omitted: bibliography]\n"
-    return text[:line_start] + marker, True
+        marker = "[external reference omitted: bibliography]\n"
+        return text[:line_start] + marker, True
+    return text, False
 
 
 # ---------------------------------------------------------------------

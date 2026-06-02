@@ -54,6 +54,9 @@ PDF_EXPERIMENTAL_BANNER = (
 SKIP_PDFTOTEXT_UNAVAILABLE = "pdftotext_unavailable"
 SKIP_PDF_EXTRACTION_EMPTY = "pdf_extraction_empty"
 SKIP_PDF_NO_PAGE_BOUNDARIES = "pdf_no_page_boundaries"
+# Codex F-PR6-CR3 (P2): empty markdown paper is a meaningless
+# extraction request; skip rather than calling the model.
+SKIP_MARKDOWN_EMPTY = "markdown_empty"
 
 
 # ---------------------------------------------------------------------
@@ -149,15 +152,28 @@ def _run_pdftotext(path: Path) -> tuple[str | None, str | None]:
     return decoded, None
 
 
-def _split_pdf_text_into_pages(text: str) -> list[str] | None:
+def _split_pdf_text_into_pages(text: str) -> list[tuple[int, str]] | None:
     """Split form-feed-delimited pdftotext output into per-page
-    strings. Returns None if no form-feed is present (codex
+    strings. Returns ``None`` if no form-feed is present (codex
     F-PR6-v3 P2: refuse to silently treat as one page).
+
+    Codex F-PR6-CR4 (P2): preserve original page indices even when
+    leading/trailing form-feeds produce empty pages. Otherwise a
+    leading `\\f` would relabel actual page 2 as ``page-1``,
+    confusing the curator if a source span cites a page number.
+    Returns ``[(page_number, page_text), ...]`` with blank pages
+    dropped but the remaining pages' original 1-based indices
+    preserved.
     """
     if "\f" not in text:
         return None
-    pages = [p.strip() for p in text.split("\f")]
-    return [p for p in pages if p]
+    raw_pages = text.split("\f")
+    pages: list[tuple[int, str]] = []
+    for i, page in enumerate(raw_pages, start=1):
+        stripped = page.strip()
+        if stripped:
+            pages.append((i, stripped))
+    return pages
 
 
 # ---------------------------------------------------------------------
@@ -223,10 +239,26 @@ def _walk_markdown(
     raw = path.read_bytes()
     truncated = len(raw) > _MAX_FILE_BYTES
     text = raw[:_MAX_FILE_BYTES].decode("utf-8", errors="replace")
-    resolved_id = source_id or detect_paper_source_id(
-        text, fallback_basename=path.stem, sha_seed=raw
-    )
     sha = hashlib.sha256(raw).hexdigest()
+    resolved_id = source_id or detect_paper_source_id(
+        text, fallback_basename=path.stem, sha_seed=raw,
+    )
+    # Codex F-PR6-CR3 (P2): empty/whitespace-only markdown shouldn't
+    # reach the model. Skip the same way an empty PDF does.
+    if not text.strip():
+        walked = WalkedSource(source_id=resolved_id, source_sha=sha)
+        walked.skipped.append(
+            SkippedFile(
+                path=path.name,
+                reason=SKIP_MARKDOWN_EMPTY,
+                size_bytes=len(raw),
+            )
+        )
+        walked.notes.append(
+            f"{path.name}: file is empty or whitespace-only; "
+            "no claims can be extracted."
+        )
+        return PaperWalkResult(walked=walked, source_format="markdown-skipped")
     walked = WalkedSource(source_id=resolved_id, source_sha=sha)
     redacted, redactions = redaction.redact_paper(text, section_path=path.name)
     walked.sections.append(
@@ -304,8 +336,8 @@ def _walk_pdf(path: Path, *, source_id: str | None) -> PaperWalkResult:
     )
     walked = WalkedSource(source_id=resolved_id, source_sha=sha)
     walked.notes.append(PDF_EXPERIMENTAL_BANNER)
-    for i, page in enumerate(pages, start=1):
-        section_path = f"page-{i}"
+    for page_number, page in pages:
+        section_path = f"page-{page_number}"
         redacted, redactions = redaction.redact_paper(
             page, section_path=section_path,
         )

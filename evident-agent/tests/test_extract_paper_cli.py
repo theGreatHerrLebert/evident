@@ -179,6 +179,13 @@ def test_end_to_end_wrong_subject_binding_paper_drops_to_zero(tmp_path: Path):
             }
         ],
     }
+    # Codex F-PR6-CR-test (P3): also pin the fixture content so a
+    # future fixture edit can't make this test pass for the wrong
+    # reason.
+    fixture_text = (FIXTURES / "wrong_subject_binding.md").read_text()
+    assert "baseline error is below 0.5" in fixture_text
+    assert "by contrast, reports an error of 0.42" in fixture_text
+
     response = _tool_response(claims=[invented_tolerance])
     client = _FakeClient(response)
     result = cli.run_extract_paper(
@@ -188,9 +195,15 @@ def test_end_to_end_wrong_subject_binding_paper_drops_to_zero(tmp_path: Path):
         extracted_at="2026-09-14T10:00:00Z",
     )
     assert result.claims == []
-    assert any(
-        r.locator == "wrong-binding-claim" for r in result.rejections
-    )
+    # The rejection MUST be a comparator_bound_to_wrong_subject —
+    # otherwise the test would pass on missing_metric / missing_value
+    # for unrelated reasons.
+    matching = [
+        r for r in result.rejections
+        if r.locator == "wrong-binding-claim"
+    ]
+    assert matching, "expected a validator rejection for wrong-binding-claim"
+    assert matching[0].reason == "comparator_bound_to_wrong_subject"
 
 
 # ---------------------------------------------------------------------
