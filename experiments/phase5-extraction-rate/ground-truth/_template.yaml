@@ -1,0 +1,50 @@
+# Template — copy to ground-truth/<artifact-id>.yaml and fill BEFORE
+# running the extractor. The pre-extraction discipline is what makes
+# the recall measurement honest.
+#
+# Per artifact, hand-label every load-bearing empirical claim you can
+# find. A claim is "load-bearing" if removing it would weaken the
+# artifact's contribution. Marketing language, hedges, and qualitative
+# statements are NOT load-bearing — leave those out.
+
+artifact_id: <id>             # e.g. paper-chemrxiv-15002830
+artifact_source: <path-or-url>
+artifact_sha: <sha256-of-bytes>
+artifact_format: paper-pdf | paper-md | repo
+
+curator: <name>
+labelled_at: <iso-timestamp>
+labelled_before_extraction: true
+
+# Pre-commit a claim count BEFORE filling load_bearing_claims so a
+# later edit can't silently grow the ground truth. If you find more
+# during reading, document the expansion.
+expected_load_bearing_claim_count: <int>
+
+# Each entry is a single concrete claim the artifact directly states.
+# Format: prose summary + locator + difficulty hint.
+load_bearing_claims:
+  - id: lbc-1
+    prose_summary: >
+      <one-sentence statement of what the artifact claims>
+    locator: <Section / page / file / table>
+    extraction_difficulty: easy | medium | hard
+    notes: >
+      <why hard / hidden assumptions / specific phrasing the
+      extractor must catch>
+
+# Source-text spans the extractor IDEALLY produces as source_span
+# for each claim. Use the EXACT wording from the artifact.
+ideal_source_spans:
+  - lbc_id: lbc-1
+    expected_span: >
+      <verbatim quote>
+
+# Pre-commit which claims you'd expect to be unextractable (e.g.
+# value lives only in a figure raster). Captures the
+# value_only_in_image_table failure mode.
+expected_unextractable:
+  - lbc_id: lbc-3
+    reason: value_only_in_image_table | hedged_qualitative_only | other
+    notes: >
+      <why>
