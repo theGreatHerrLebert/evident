@@ -671,6 +671,13 @@ pub enum ReviewTranslateError {
     /// A substantive Challenge category (anything outside the closed
     /// procedural list) requires `challenge.backing_claim`.
     SubstantiveChallengeMissingBacking { id: String, category: String },
+    /// A substantive Challenge requires the model-reported violation
+    /// tuple (and the criterion it targets) for audit and canonical
+    /// identity. A hand-authored sidecar with backing_claim but no
+    /// violation would otherwise still flip status without an audit
+    /// trail.
+    SubstantiveChallengeMissingViolation { id: String, category: String },
+    SubstantiveChallengeMissingTargetCriterion { id: String, category: String },
     /// A procedural Challenge category MUST NOT carry a backing claim
     /// — the procedural fact itself moves status, and a backing claim
     /// would be redundant (and possibly contradictory).
@@ -697,6 +704,12 @@ impl std::fmt::Display for ReviewTranslateError {
             }
             ReviewTranslateError::SubstantiveChallengeMissingBacking { id, category } => {
                 write!(f, "review event for {id}: substantive challenge category {category:?} requires `challenge.backing_claim`")
+            }
+            ReviewTranslateError::SubstantiveChallengeMissingViolation { id, category } => {
+                write!(f, "review event for {id}: substantive challenge category {category:?} requires `challenge.violation` (the model-reported violation tuple is load-bearing for audit and canonical identity)")
+            }
+            ReviewTranslateError::SubstantiveChallengeMissingTargetCriterion { id, category } => {
+                write!(f, "review event for {id}: substantive challenge category {category:?} requires `challenge.target_criterion_id` to name which target criterion is contradicted")
             }
             ReviewTranslateError::ProceduralChallengeWithBacking { id, category } => {
                 write!(f, "review event for {id}: procedural challenge category {category:?} must not carry a backing_claim; the procedural fact moves status on its own")
@@ -815,11 +828,31 @@ fn translate_challenge_kind(
             category: block.category.clone(),
         });
     }
-    if !procedural && block.backing_claim.is_none() {
-        return Err(ReviewTranslateError::SubstantiveChallengeMissingBacking {
-            id: e.claim_id.clone(),
-            category: block.category.clone(),
-        });
+    if !procedural {
+        // Substantive Challenges require the full audit triple:
+        // backing claim, violation tuple, target_criterion_id. The
+        // backing claim alone is insufficient for audit because the
+        // model-reported violation is what the agent's
+        // build_backing_claim was derived from — its absence in a
+        // sidecar means the backing's evidentiary basis is unknown.
+        if block.backing_claim.is_none() {
+            return Err(ReviewTranslateError::SubstantiveChallengeMissingBacking {
+                id: e.claim_id.clone(),
+                category: block.category.clone(),
+            });
+        }
+        if block.violation.is_none() {
+            return Err(ReviewTranslateError::SubstantiveChallengeMissingViolation {
+                id: e.claim_id.clone(),
+                category: block.category.clone(),
+            });
+        }
+        if block.target_criterion_id.is_none() {
+            return Err(ReviewTranslateError::SubstantiveChallengeMissingTargetCriterion {
+                id: e.claim_id.clone(),
+                category: block.category.clone(),
+            });
+        }
     }
 
     let backed_by = match &block.backing_claim {

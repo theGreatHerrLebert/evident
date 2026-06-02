@@ -87,17 +87,54 @@ def validate_contradiction(
     - violation ``citation`` is non-empty.
     - ``comparator`` is in :data:`SUPPORTED_COMPARATORS`.
     """
-    # Find the matched tolerance entry.
+    # Find the matched tolerance entry. A claim may carry multiple
+    # tolerance entries with the same metric (e.g., one per output
+    # quantity); the violation's `bound` and `comparator` disambiguate
+    # which one the model is targeting. We require exactly one match
+    # on (metric, comparator, value) — multiple matches with the same
+    # triple are a schema-level duplicate that the validator surfaces
+    # as ambiguous.
     tolerances = target_claim.get("tolerances") or []
-    matched: Optional[dict[str, Any]] = None
-    for t in tolerances:
-        if isinstance(t, dict) and t.get("metric") == target_criterion_id:
-            matched = t
-            break
-    if matched is None:
+    metric_matches = [
+        t
+        for t in tolerances
+        if isinstance(t, dict) and t.get("metric") == target_criterion_id
+    ]
+    if not metric_matches:
         raise ViolationRejected(
             f"target_criterion_id {target_criterion_id!r} not found in target tolerances"
         )
+
+    matched: Optional[dict[str, Any]] = None
+    if len(metric_matches) == 1:
+        matched = metric_matches[0]
+    else:
+        # Multiple tolerances share this metric; disambiguate by the
+        # violation's reported bound + comparator. The model is
+        # required to report the target's own comparator and bound
+        # exactly, so this triple uniquely identifies the entry it's
+        # contradicting.
+        v_bound = violation.get("bound")
+        v_comparator = violation.get("comparator")
+        disambiguated = [
+            t
+            for t in metric_matches
+            if t.get("op") == v_comparator and _numbers_equal(t.get("value"), v_bound)
+        ]
+        if len(disambiguated) == 1:
+            matched = disambiguated[0]
+        elif len(disambiguated) == 0:
+            raise ViolationRejected(
+                f"target has {len(metric_matches)} tolerances on metric "
+                f"{target_criterion_id!r}; none match the violation's "
+                f"comparator {v_comparator!r} and bound {v_bound!r}"
+            )
+        else:
+            raise ViolationRejected(
+                f"target has {len(disambiguated)} tolerances on metric "
+                f"{target_criterion_id!r} with the same comparator and "
+                f"bound — cannot disambiguate which is contradicted"
+            )
 
     # Tolerance must be structured (op + value present, not prose-only).
     target_metric = matched.get("metric")

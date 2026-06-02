@@ -266,6 +266,88 @@ def test_rejects_non_string_citation() -> None:
 
 # ---------- inverse-comparator semantics across all four ops ----------
 
+# ---------- F-CR2B-2: duplicate-metric tolerance disambiguation ----------
+
+def _multi_tolerance_target() -> dict:
+    """A claim with two tolerances on the same metric, distinguished by
+    output + bound. Real-world example: a forcefield claim that bounds
+    both the median and the max relative error on the same metric."""
+    return {
+        "id": "ff-forcefield",
+        "title": "Forcefield bounds",
+        "kind": "measurement",
+        "tier": "ci",
+        "source": ".",
+        "claim": "Forcefield error stays bounded across two aggregates.",
+        "tolerances": [
+            {
+                "metric": "relative_error",
+                "op": "<",
+                "value": 0.02,
+                "output": "median",
+                "prose": "median relative error < 0.02",
+            },
+            {
+                "metric": "relative_error",
+                "op": "<",
+                "value": 0.05,
+                "output": "max",
+                "prose": "max relative error < 0.05",
+            },
+        ],
+        "evidence": {"oracle": ["BALL"], "command": "x", "artifact": "x"},
+    }
+
+
+def test_disambiguates_duplicate_metric_by_bound() -> None:
+    """Two tolerances share metric=relative_error; the violation against
+    the *max* tolerance (bound=0.05) must select the second, not the
+    first."""
+    target = _multi_tolerance_target()
+    v = {
+        "metric": "relative_error",
+        "observed_value": 0.06,
+        "bound": 0.05,
+        "comparator": "<",
+        "citation": "row 47 max",
+    }
+    matched = validate_contradiction(target, "relative_error", v)
+    # Must match the second tolerance (max), not the first (median).
+    assert matched["output"] == "max"
+    assert matched["value"] == 0.05
+
+
+def test_duplicate_metric_no_bound_match_rejected() -> None:
+    """Violation reports a bound that matches NEITHER tolerance on the
+    metric — should reject rather than picking the first."""
+    target = _multi_tolerance_target()
+    v = {
+        "metric": "relative_error",
+        "observed_value": 0.06,
+        "bound": 0.03,  # neither 0.02 nor 0.05
+        "comparator": "<",
+        "citation": "x",
+    }
+    with pytest.raises(ViolationRejected, match="none match"):
+        validate_contradiction(target, "relative_error", v)
+
+
+def test_duplicate_metric_disambiguated_to_median_tolerance() -> None:
+    """Symmetric case: violation against the median tolerance picks
+    the first entry, not blindly the first by metric order."""
+    target = _multi_tolerance_target()
+    v = {
+        "metric": "relative_error",
+        "observed_value": 0.025,
+        "bound": 0.02,
+        "comparator": "<",
+        "citation": "median row",
+    }
+    matched = validate_contradiction(target, "relative_error", v)
+    assert matched["output"] == "median"
+    assert matched["value"] == 0.02
+
+
 @pytest.mark.parametrize(
     "target_op,inverse_op,observed,bound",
     [

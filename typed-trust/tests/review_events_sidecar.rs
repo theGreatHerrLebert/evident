@@ -231,6 +231,47 @@ fn rejects_backing_claim_with_id_matching_target() {
 }
 
 #[test]
+fn rejects_substantive_challenge_without_violation_codex_2b_cr1() {
+    let mut entry = endorse_event();
+    entry.kind = "challenge".into();
+    entry.challenge = Some(ManifestChallengeBlock {
+        category: "weak_statistics".into(),
+        target_criterion_id: Some("electrostatic_error".into()),
+        violation: None,
+        backing_claim: Some(substantive_backing_claim(
+            "proteon-sasa-vs-biopython-release-1k-pdbs-counter-deadbeef",
+        )),
+    });
+    let err = translate_review_event(&entry)
+        .expect_err("substantive challenge with backing but no violation must be rejected");
+    assert!(matches!(
+        err,
+        ReviewTranslateError::SubstantiveChallengeMissingViolation { .. }
+    ));
+}
+
+#[test]
+fn rejects_substantive_challenge_without_target_criterion_codex_2b_cr1() {
+    let mut entry = endorse_event();
+    entry.kind = "challenge".into();
+    entry.challenge = Some(ManifestChallengeBlock {
+        category: "weak_statistics".into(),
+        target_criterion_id: None,
+        violation: Some(substantive_violation()),
+        backing_claim: Some(substantive_backing_claim(
+            "proteon-sasa-vs-biopython-release-1k-pdbs-counter-feedface",
+        )),
+    });
+    let err = translate_review_event(&entry).expect_err(
+        "substantive challenge without target_criterion_id must be rejected for audit",
+    );
+    assert!(matches!(
+        err,
+        ReviewTranslateError::SubstantiveChallengeMissingTargetCriterion { .. }
+    ));
+}
+
+#[test]
 fn unknown_category_translates_to_other_substantive() {
     let mut entry = endorse_event();
     entry.kind = "challenge".into();
