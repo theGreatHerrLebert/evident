@@ -81,6 +81,12 @@ pub struct ManifestClaim {
     /// (measurement) claims.
     #[serde(default)]
     pub metadata: Option<ManifestMetadataBlock>,
+    /// PR5f: required when ``kind == "behavioral_concordance"``.
+    /// Carries the pattern (numeric_band, relative_band, etc.) +
+    /// paper_locator + prior_binding. Absent for any other kind;
+    /// the translator rejects mixing.
+    #[serde(default)]
+    pub concordance: Option<ManifestConcordanceBlock>,
 }
 
 /// PR5b: structured block for ``kind: metadata_compatibility``
@@ -104,6 +110,102 @@ pub struct ManifestMetadataBlock {
     /// (e.g. ``"project.requires-python"`` for TOML, ``"engines.node"``
     /// for package.json).
     pub source_path: String,
+}
+
+/// PR5f: structured block for ``kind: behavioral_concordance``
+/// claims.
+///
+/// The shape is a discriminated union on `pattern_kind`. Five
+/// variants — `numeric_band`, `relative_band`,
+/// `same_order_of_magnitude`, `ordinal_match`, `monotone_with`.
+/// Codex v3 review insisted on discriminator dispatch (NOT a
+/// Serde untagged union) so each pattern's required fields get
+/// specific error messages at parse time, not vague "could not
+/// match any variant" failures.
+///
+/// `deny_unknown_fields` at the variant level catches typos like
+/// `prior_valu:` (instead of `prior_value:`) which would otherwise
+/// silently drop the prior. Codex's same-PR pattern from PR5b's
+/// `metadata` block.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestConcordanceBlock {
+    /// The pattern variant + its typed fields. YAML:
+    /// ``concordance.pattern.pattern_kind: numeric_band`` is the
+    /// discriminator; the rest of the pattern's typed fields
+    /// (`metric_path`, `epsilon`, `prior_value`, etc.) live under
+    /// the same `pattern` block. Nesting (vs. `serde(flatten)`)
+    /// is required because Serde's flatten doesn't compose with
+    /// internally-tagged enums.
+    pub pattern: ManifestConcordancePattern,
+    /// Where in *this* paper the concordance claim is made. v4
+    /// design: concordance claims do NOT carry the
+    /// measurement-flavored top-level `source` field — they use
+    /// `paper_locator` instead so a manifest never has to
+    /// disambiguate "is this the paper-side or the prior-side
+    /// citation."
+    pub paper_locator: String,
+    pub prior_binding: ManifestPriorBindingBlock,
+}
+
+/// PR5f: discriminator-dispatched pattern variants.
+///
+/// `pattern_kind` is the discriminator; each variant carries its
+/// own typed parameters AND its own typed `prior_value` shape
+/// (scalar for the three scalar primitives, per-entity map for
+/// `ordinal_match`, absent for `monotone_with` whose prior is the
+/// series shape not a value).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "pattern_kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ManifestConcordancePattern {
+    NumericBand {
+        metric_path: String,
+        epsilon: f64,
+        prior_value: f64,
+    },
+    RelativeBand {
+        metric_path: String,
+        ratio: f64,
+        prior_value: f64,
+    },
+    SameOrderOfMagnitude {
+        metric_path: String,
+        #[serde(default = "default_zero_policy")]
+        zero_policy: String,
+        prior_value: f64,
+    },
+    OrdinalMatch {
+        entity_to_path: std::collections::BTreeMap<String, String>,
+        direction: String,
+        #[serde(default = "default_tie_policy")]
+        tie_policy: String,
+        prior_value: std::collections::BTreeMap<String, f64>,
+    },
+    MonotoneWith {
+        metric_path: String,
+        parameter_path: String,
+        direction: String,
+    },
+}
+
+fn default_zero_policy() -> String {
+    "not_assessed".into()
+}
+
+fn default_tie_policy() -> String {
+    "strict".into()
+}
+
+/// PR5f: the curator-authored prior binding block. v4 design
+/// makes the five fields required; they're not optional.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestPriorBindingBlock {
+    pub prior_unit: String,
+    pub prior_metric_definition: String,
+    pub locator: String,
+    pub prior_extraction_note: String,
+    pub source_id: String,
 }
 
 /// Phase 5 PR2: the manifest's `provenance` field accepts either the
@@ -352,6 +454,44 @@ pub enum TranslateError {
     MetadataClaimCarriesEvidence { id: String },
     /// PR5b: measurement claims must NOT carry a metadata block.
     MeasurementClaimCarriesMetadata { id: String },
+    /// PR5f: `kind: behavioral_concordance` claim missing the
+    /// required `concordance` block.
+    ConcordanceClaimMissingBlock { id: String },
+    /// PR5f: concordance claims must NOT carry tolerances; the
+    /// pattern primitive IS the bound.
+    ConcordanceClaimCarriesTolerances { id: String },
+    /// PR5f: concordance claims must NOT carry the
+    /// measurement-flavored top-level `source` field; they carry
+    /// `concordance.paper_locator` instead. v4 design's
+    /// `paper_locator`-is-a-schema-exception commitment.
+    ConcordanceClaimCarriesSource { id: String },
+    /// PR5f: concordance evidence must NOT carry an `oracle`
+    /// list. The pattern primitive IS the oracle.
+    ConcordanceClaimCarriesOracle { id: String },
+    /// PR5f: `ordinal_match` pattern requires that `prior_value`'s
+    /// per-entity keyset exactly equals `entity_to_path`'s keyset.
+    /// Codex v3 follow-up: keep the two structurally aligned at
+    /// translate time so the comparator can dispatch unambiguously.
+    ConcordanceOrdinalKeyMismatch { id: String },
+    /// PR5f: `same_order_of_magnitude` requires a strictly
+    /// positive `prior_value`. Non-positive prior is a curator
+    /// authoring error caught at translate time, not at replay.
+    ConcordanceSameOrderNonPositivePrior { id: String },
+    /// PR5f: `relative_band` requires `ratio > 1.0`. A ratio of
+    /// `1.0` would make the band a single point; a ratio of `<1.0`
+    /// would invert the interpretation.
+    ConcordanceRelativeBandRatioTooSmall { id: String },
+    /// PR5f: measurement / metadata_compatibility claims must NOT
+    /// carry a concordance block. Keeps the kinds disjoint.
+    NonConcordanceClaimCarriesConcordance { id: String },
+    /// PR5f: `concordance.pattern.{enum_field}` carried an unknown
+    /// enum value (e.g. `direction: "sideways"`,
+    /// `tie_policy: "everything_goes"`, `zero_policy: "ignore"`).
+    ConcordanceInvalidEnumValue {
+        id: String,
+        field: String,
+        value: String,
+    },
 }
 
 impl std::fmt::Display for TranslateError {
@@ -421,6 +561,63 @@ impl std::fmt::Display for TranslateError {
                 "claim {id}: kind=measurement must NOT carry a `metadata` \
                  block; metadata belongs only to metadata_compatibility claims"
             ),
+            TranslateError::ConcordanceClaimMissingBlock { id } => write!(
+                f,
+                "claim {id}: kind=behavioral_concordance requires a \
+                 `concordance` block (pattern_kind + paper_locator + \
+                 prior_binding)"
+            ),
+            TranslateError::ConcordanceClaimCarriesTolerances { id } => write!(
+                f,
+                "claim {id}: kind=behavioral_concordance must NOT carry \
+                 `tolerances`; the pattern primitive is the bound"
+            ),
+            TranslateError::ConcordanceClaimCarriesSource { id } => write!(
+                f,
+                "claim {id}: kind=behavioral_concordance must NOT carry \
+                 the top-level `source` field; use \
+                 `concordance.paper_locator` instead (v4 design's \
+                 schema-exception commitment)"
+            ),
+            TranslateError::ConcordanceClaimCarriesOracle { id } => write!(
+                f,
+                "claim {id}: kind=behavioral_concordance evidence must \
+                 NOT carry an `oracle` list; the pattern primitive \
+                 (numeric_band, ordinal_match, etc.) IS the oracle"
+            ),
+            TranslateError::ConcordanceOrdinalKeyMismatch { id } => write!(
+                f,
+                "claim {id}: ordinal_match concordance requires \
+                 `prior_value`'s per-entity keyset to exactly equal \
+                 `entity_to_path`'s keyset"
+            ),
+            TranslateError::ConcordanceSameOrderNonPositivePrior { id } => write!(
+                f,
+                "claim {id}: same_order_of_magnitude requires a strictly \
+                 positive `prior_value` (log10 is undefined at zero \
+                 and semantically wrong for signed quantities)"
+            ),
+            TranslateError::ConcordanceRelativeBandRatioTooSmall { id } => write!(
+                f,
+                "claim {id}: relative_band requires `ratio > 1.0` \
+                 (a ratio of 1.0 collapses the band to a point; \
+                 a ratio < 1.0 inverts the bound interpretation)"
+            ),
+            TranslateError::NonConcordanceClaimCarriesConcordance { id } => write!(
+                f,
+                "claim {id}: only kind=behavioral_concordance may carry \
+                 a `concordance` block"
+            ),
+            TranslateError::ConcordanceInvalidEnumValue {
+                id,
+                field,
+                value,
+            } => write!(
+                f,
+                "claim {id}: concordance.{field} carries unknown value \
+                 {value:?}; see EVIDENT_BEHAVIORAL_CONCORDANCE_DRAFT.md \
+                 for the legal set"
+            ),
         }
     }
 }
@@ -445,10 +642,14 @@ pub fn translate_claim(
     mc: &ManifestClaim,
     span: &str,
 ) -> Result<Attested<Claim>, TranslateError> {
-    // §0 scope: measurement claims (empirical) or
-    // metadata_compatibility claims (PR5b — declarative
-    // configuration claims that don't fit the empirical model).
-    if mc.kind != "measurement" && mc.kind != "metadata_compatibility" {
+    // §0 scope: measurement claims (empirical), metadata_compatibility
+    // claims (PR5b — declarative configuration claims), or
+    // behavioral_concordance claims (PR5f — paper measured-behavior
+    // tracks a prior paper's reported behavior).
+    if mc.kind != "measurement"
+        && mc.kind != "metadata_compatibility"
+        && mc.kind != "behavioral_concordance"
+    {
         return Err(TranslateError::OutOfScope {
             id: mc.id.clone(),
             kind: mc.kind.clone(),
@@ -479,15 +680,101 @@ pub fn translate_claim(
             });
         }
     } else if mc.metadata.is_some() {
-        // A measurement claim that accidentally carries a metadata
-        // block is rejected — keeps the two paths disjoint.
+        // A measurement OR concordance claim that accidentally
+        // carries a metadata block is rejected — keeps the paths
+        // disjoint.
         return Err(TranslateError::MeasurementClaimCarriesMetadata {
+            id: mc.id.clone(),
+        });
+    }
+
+    // PR5f: behavioral_concordance claims require the `concordance`
+    // block and must NOT carry `tolerances` (the comparator
+    // primitive IS the bound) or the `oracle` list inside evidence
+    // (the comparator IS the oracle). They DO carry `evidence`
+    // for the docker contract (docker_image, command, artifact).
+    if mc.kind == "behavioral_concordance" {
+        if mc.concordance.is_none() {
+            return Err(TranslateError::ConcordanceClaimMissingBlock {
+                id: mc.id.clone(),
+            });
+        }
+        if mc.tolerances.is_some() {
+            return Err(TranslateError::ConcordanceClaimCarriesTolerances {
+                id: mc.id.clone(),
+            });
+        }
+        // Concordance claims don't use the measurement-flavored
+        // top-level `source` field — they carry
+        // `concordance.paper_locator` instead. v4 design's
+        // "paper_locator is a schema exception" commitment.
+        if mc.source.is_some() {
+            return Err(TranslateError::ConcordanceClaimCarriesSource {
+                id: mc.id.clone(),
+            });
+        }
+        // The `oracle` list is a measurement-evidence concept;
+        // for concordance the comparator (pattern_kind) IS the
+        // oracle. Reject to make the disjointness load-bearing.
+        if let Some(ev) = mc.evidence.as_ref() {
+            if !ev.oracle.is_empty() {
+                return Err(TranslateError::ConcordanceClaimCarriesOracle {
+                    id: mc.id.clone(),
+                });
+            }
+        }
+        // Validate the OrdinalMatch keyset invariant: the prior's
+        // per-entity map keyset MUST equal entity_to_path's
+        // keyset. v4 design commitment; codex v3 finding.
+        if let Some(cb) = mc.concordance.as_ref() {
+            if let ManifestConcordancePattern::OrdinalMatch {
+                entity_to_path,
+                prior_value,
+                ..
+            } = &cb.pattern
+            {
+                let path_keys: std::collections::BTreeSet<&String> =
+                    entity_to_path.keys().collect();
+                let prior_keys: std::collections::BTreeSet<&String> =
+                    prior_value.keys().collect();
+                if path_keys != prior_keys {
+                    return Err(TranslateError::ConcordanceOrdinalKeyMismatch {
+                        id: mc.id.clone(),
+                    });
+                }
+            }
+            // SameOrderOfMagnitude: prior_value > 0 is a curator
+            // authoring invariant per v4 design.
+            if let ManifestConcordancePattern::SameOrderOfMagnitude { prior_value, .. } =
+                &cb.pattern
+            {
+                if *prior_value <= 0.0 {
+                    return Err(TranslateError::ConcordanceSameOrderNonPositivePrior {
+                        id: mc.id.clone(),
+                    });
+                }
+            }
+            // RelativeBand: ratio > 1.0 per v4 design.
+            if let ManifestConcordancePattern::RelativeBand { ratio, .. } = &cb.pattern {
+                if *ratio <= 1.0 {
+                    return Err(TranslateError::ConcordanceRelativeBandRatioTooSmall {
+                        id: mc.id.clone(),
+                    });
+                }
+            }
+        }
+    } else if mc.concordance.is_some() {
+        // A measurement or metadata_compatibility claim that
+        // accidentally carries a concordance block is rejected.
+        return Err(TranslateError::NonConcordanceClaimCarriesConcordance {
             id: mc.id.clone(),
         });
     }
 
     let kind = if mc.kind == "metadata_compatibility" {
         ClaimKind::MetadataCompatibility
+    } else if mc.kind == "behavioral_concordance" {
+        ClaimKind::BehavioralConcordance
     } else {
         infer_kind(mc)
     };
@@ -498,6 +785,8 @@ pub fn translate_claim(
         source_file: m.source_file.clone(),
         source_path: m.source_path.clone(),
     });
+
+    let concordance = mc.concordance.as_ref().map(translate_concordance_block).transpose()?;
 
     let claim = Claim {
         id: ClaimId::new(&mc.id),
@@ -515,6 +804,7 @@ pub fn translate_claim(
         // `unspecified_human_from_manifest` form.
         requires_assumptions: vec![],
         metadata,
+        concordance,
     };
 
     let derivation = Derivation::Verified {
@@ -551,6 +841,135 @@ pub struct TranslatedCriterion {
     /// Always present — `prose` is required by the shipping schema
     /// even when the structured triple is absent.
     pub prose: String,
+}
+
+/// PR5f: lift the manifest's `concordance` block onto the typed
+/// `ConcordanceDeclaration`. Parses the enum-valued fields
+/// (`direction`, `tie_policy`, `zero_policy`) into their typed
+/// counterparts and emits a structured `TranslateError` if an
+/// unknown value is encountered.
+fn translate_concordance_block(
+    mb: &ManifestConcordanceBlock,
+) -> Result<crate::claim::ConcordanceDeclaration, TranslateError> {
+    use crate::claim::{
+        ConcordanceDeclaration, ConcordancePattern, MonotoneDirection, PriorBindingContext,
+        RankingDirection, TiePolicy, ZeroPolicy,
+    };
+
+    fn parse_zero_policy(s: &str) -> Option<ZeroPolicy> {
+        match s {
+            "reject" => Some(ZeroPolicy::Reject),
+            "not_assessed" => Some(ZeroPolicy::NotAssessed),
+            _ => None,
+        }
+    }
+    fn parse_ranking_direction(s: &str) -> Option<RankingDirection> {
+        match s {
+            "lower_is_better" => Some(RankingDirection::LowerIsBetter),
+            "higher_is_better" => Some(RankingDirection::HigherIsBetter),
+            _ => None,
+        }
+    }
+    fn parse_tie_policy(s: &str) -> Option<TiePolicy> {
+        match s {
+            "strict" => Some(TiePolicy::Strict),
+            "adjacent_swap_ok" => Some(TiePolicy::AdjacentSwapOk),
+            _ => None,
+        }
+    }
+    fn parse_monotone_direction(s: &str) -> Option<MonotoneDirection> {
+        match s {
+            "increasing" => Some(MonotoneDirection::Increasing),
+            "decreasing" => Some(MonotoneDirection::Decreasing),
+            _ => None,
+        }
+    }
+
+    let pattern = match &mb.pattern {
+        ManifestConcordancePattern::NumericBand {
+            metric_path,
+            epsilon,
+            prior_value,
+        } => ConcordancePattern::NumericBand {
+            metric_path: metric_path.clone(),
+            epsilon: *epsilon,
+            prior_value: *prior_value,
+        },
+        ManifestConcordancePattern::RelativeBand {
+            metric_path,
+            ratio,
+            prior_value,
+        } => ConcordancePattern::RelativeBand {
+            metric_path: metric_path.clone(),
+            ratio: *ratio,
+            prior_value: *prior_value,
+        },
+        ManifestConcordancePattern::SameOrderOfMagnitude {
+            metric_path,
+            zero_policy,
+            prior_value,
+        } => ConcordancePattern::SameOrderOfMagnitude {
+            metric_path: metric_path.clone(),
+            zero_policy: parse_zero_policy(zero_policy).ok_or_else(|| {
+                TranslateError::ConcordanceInvalidEnumValue {
+                    id: "<unknown>".into(),
+                    field: "pattern.zero_policy".into(),
+                    value: zero_policy.clone(),
+                }
+            })?,
+            prior_value: *prior_value,
+        },
+        ManifestConcordancePattern::OrdinalMatch {
+            entity_to_path,
+            direction,
+            tie_policy,
+            prior_value,
+        } => ConcordancePattern::OrdinalMatch {
+            entity_to_path: entity_to_path.clone(),
+            direction: parse_ranking_direction(direction).ok_or_else(|| {
+                TranslateError::ConcordanceInvalidEnumValue {
+                    id: "<unknown>".into(),
+                    field: "pattern.direction".into(),
+                    value: direction.clone(),
+                }
+            })?,
+            tie_policy: parse_tie_policy(tie_policy).ok_or_else(|| {
+                TranslateError::ConcordanceInvalidEnumValue {
+                    id: "<unknown>".into(),
+                    field: "pattern.tie_policy".into(),
+                    value: tie_policy.clone(),
+                }
+            })?,
+            prior_value: prior_value.clone(),
+        },
+        ManifestConcordancePattern::MonotoneWith {
+            metric_path,
+            parameter_path,
+            direction,
+        } => ConcordancePattern::MonotoneWith {
+            metric_path: metric_path.clone(),
+            parameter_path: parameter_path.clone(),
+            direction: parse_monotone_direction(direction).ok_or_else(|| {
+                TranslateError::ConcordanceInvalidEnumValue {
+                    id: "<unknown>".into(),
+                    field: "pattern.direction".into(),
+                    value: direction.clone(),
+                }
+            })?,
+        },
+    };
+
+    Ok(ConcordanceDeclaration {
+        pattern,
+        paper_locator: mb.paper_locator.clone(),
+        prior_binding: PriorBindingContext {
+            prior_unit: mb.prior_binding.prior_unit.clone(),
+            prior_metric_definition: mb.prior_binding.prior_metric_definition.clone(),
+            locator: mb.prior_binding.locator.clone(),
+            prior_extraction_note: mb.prior_binding.prior_extraction_note.clone(),
+            source_id: mb.prior_binding.source_id.clone(),
+        },
+    })
 }
 
 /// Translate all `tolerances` entries into [`TranslatedCriterion`]

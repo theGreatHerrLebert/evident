@@ -21,7 +21,7 @@ use std::collections::HashSet;
 
 use serde_json::{json, Map, Value};
 
-use crate::claim::MetadataDeclaration;
+use crate::claim::{ConcordanceDeclaration, MetadataDeclaration};
 use crate::derivation::{Derivation, Rerun};
 use crate::evidence::Evidence;
 use crate::ids::{ClaimId, CriterionId, EventId};
@@ -191,6 +191,11 @@ pub struct RenderInput<'a> {
     /// `metadata_declaration` block; consumed by `human_render` and
     /// `html_render`.
     pub metadata: Option<&'a MetadataDeclaration>,
+    /// PR5f: same delivery channel as `metadata`, for the
+    /// `BehavioralConcordance` claim kind. Inlined into the
+    /// augmented JSON as a top-level `concordance_declaration`
+    /// block; consumed by `human_render` and `html_render`.
+    pub concordance: Option<&'a ConcordanceDeclaration>,
 }
 
 /// Produce the augmented JSON. The normative report is serialized first;
@@ -217,6 +222,18 @@ pub fn render_augmented(input: &RenderInput) -> Value {
             obj.insert(
                 "metadata_declaration".into(),
                 serde_json::to_value(md).expect("serialize MetadataDeclaration"),
+            );
+        }
+        // PR5f: same pattern for behavioral_concordance claims.
+        // Inlined at top level (concordance claims have no
+        // criteria in the measurement sense — the comparator
+        // verdict, when the comparator runs, lives in the
+        // last_concorded.json sidecar; the declaration is what
+        // describes what's being concorded).
+        if let Some(cd) = input.concordance {
+            obj.insert(
+                "concordance_declaration".into(),
+                serde_json::to_value(cd).expect("serialize ConcordanceDeclaration"),
             );
         }
     }

@@ -110,6 +110,7 @@ fn substantive_backing_claim(id: &str) -> ManifestClaim {
         assumptions: None,
         failure_modes: None,
         metadata: None,
+        concordance: None,
     }
 }
 

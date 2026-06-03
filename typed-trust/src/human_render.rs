@@ -37,6 +37,13 @@ pub fn render_markdown(augmented_json: &Value) -> String {
         render_metadata_declaration(&mut out, md);
     }
 
+    // PR5f: behavioral_concordance claims — surface the pattern
+    // (numeric_band, ordinal_match, etc.), the paper_locator, and
+    // the prior_binding block in place of the criteria section.
+    if let Some(cd) = augmented_json.get("concordance_declaration") {
+        render_concordance_declaration(&mut out, cd);
+    }
+
     if let Some(events) = augmented_json
         .get("_graph")
         .and_then(|g| g.get("review_events"))
@@ -172,6 +179,144 @@ fn render_metadata_declaration(out: &mut String, md: &Value) {
         inline_code(source_file),
         inline_code(source_path),
     ));
+}
+
+/// PR5f: render the behavioral_concordance block. Pattern-typed —
+/// each variant carries different fields, so the rendering
+/// dispatches on the `pattern_kind` discriminator.
+fn render_concordance_declaration(out: &mut String, cd: &Value) {
+    out.push_str("## Concordance\n\n");
+
+    let pattern_kind = cd
+        .get("pattern")
+        .and_then(|p| p.get("pattern_kind"))
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    out.push_str(&format!(
+        "- **Pattern:** {}\n",
+        inline_code(pattern_kind)
+    ));
+
+    if let Some(paper_locator) = cd
+        .get("paper_locator")
+        .and_then(Value::as_str)
+    {
+        out.push_str(&format!(
+            "- **Paper locator:** {}\n",
+            inline_code(paper_locator)
+        ));
+    }
+
+    if let Some(pattern) = cd.get("pattern") {
+        render_concordance_pattern(out, pattern_kind, pattern);
+    }
+
+    if let Some(pb) = cd.get("prior_binding") {
+        out.push_str("\n### Prior binding\n\n");
+        for (label, key) in [
+            ("Unit", "prior_unit"),
+            ("Metric definition", "prior_metric_definition"),
+            ("Locator", "locator"),
+            ("Extraction note", "prior_extraction_note"),
+            ("Source id", "source_id"),
+        ] {
+            let v = pb.get(key).and_then(Value::as_str).unwrap_or("?");
+            out.push_str(&format!("- **{label}:** {}\n", inline_code(v)));
+        }
+        out.push('\n');
+    }
+}
+
+fn render_concordance_pattern(out: &mut String, kind: &str, pattern: &Value) {
+    match kind {
+        "numeric_band" | "relative_band" => {
+            let metric_path = pattern
+                .get("metric_path")
+                .and_then(Value::as_str)
+                .unwrap_or("?");
+            let prior_value = pattern.get("prior_value");
+            out.push_str(&format!(
+                "- **Metric path:** {}\n",
+                inline_code(metric_path)
+            ));
+            if let Some(v) = prior_value {
+                out.push_str(&format!("- **Prior value:** {}\n", inline_code(&v.to_string())));
+            }
+            if kind == "numeric_band" {
+                if let Some(eps) = pattern.get("epsilon") {
+                    out.push_str(&format!(
+                        "- **Epsilon:** {}\n",
+                        inline_code(&eps.to_string())
+                    ));
+                }
+            } else if let Some(ratio) = pattern.get("ratio") {
+                out.push_str(&format!(
+                    "- **Ratio:** {}\n",
+                    inline_code(&ratio.to_string())
+                ));
+            }
+        }
+        "same_order_of_magnitude" => {
+            let metric_path = pattern
+                .get("metric_path")
+                .and_then(Value::as_str)
+                .unwrap_or("?");
+            out.push_str(&format!(
+                "- **Metric path:** {}\n",
+                inline_code(metric_path)
+            ));
+            if let Some(v) = pattern.get("prior_value") {
+                out.push_str(&format!(
+                    "- **Prior value:** {}\n",
+                    inline_code(&v.to_string())
+                ));
+            }
+            if let Some(zp) = pattern.get("zero_policy").and_then(Value::as_str) {
+                out.push_str(&format!("- **Zero policy:** {}\n", inline_code(zp)));
+            }
+        }
+        "ordinal_match" => {
+            if let Some(dir) = pattern.get("direction").and_then(Value::as_str) {
+                out.push_str(&format!("- **Direction:** {}\n", inline_code(dir)));
+            }
+            if let Some(tp) = pattern.get("tie_policy").and_then(Value::as_str) {
+                out.push_str(&format!("- **Tie policy:** {}\n", inline_code(tp)));
+            }
+            if let Some(map) = pattern.get("prior_value").and_then(Value::as_object) {
+                out.push_str("- **Per-entity prior values:**\n");
+                for (k, v) in map {
+                    out.push_str(&format!(
+                        "    - {}: {}\n",
+                        inline_code(k),
+                        inline_code(&v.to_string())
+                    ));
+                }
+            }
+            if let Some(map) = pattern.get("entity_to_path").and_then(Value::as_object) {
+                out.push_str("- **Per-entity artifact paths:**\n");
+                for (k, v) in map {
+                    let path = v.as_str().unwrap_or("?");
+                    out.push_str(&format!(
+                        "    - {}: {}\n",
+                        inline_code(k),
+                        inline_code(path)
+                    ));
+                }
+            }
+        }
+        "monotone_with" => {
+            for (label, key) in [
+                ("Metric path", "metric_path"),
+                ("Parameter path", "parameter_path"),
+                ("Direction", "direction"),
+            ] {
+                if let Some(v) = pattern.get(key).and_then(Value::as_str) {
+                    out.push_str(&format!("- **{label}:** {}\n", inline_code(v)));
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Wrap a string in a markdown inline-code span, defending against
