@@ -1,0 +1,55 @@
+{
+  "schema_version": "1.0",
+  "purpose": "Raw model tool_input from the extraction call, BEFORE validator filtering or curator review. Auditors read this to see what the model proposed. NOT a promotable manifest.",
+  "model": "claude-opus-4-7",
+  "extracted_at": "2026-06-03T13:53:00Z",
+  "source_id": "preprint:rustims-supplement-df40ee33",
+  "source_sha": "cf09b769e3804fbd10c8a6a1454696ca65fc8b37743a6a99d318b1a9d2f0d587",
+  "tool_input": {
+    "claims": [],
+    "rejections": [
+      {
+        "candidate_text": "FDR ≤ 1%",
+        "locator": "Section 1.4, HLA1 Samples description, page 5",
+        "reason": "comparator_bound_to_wrong_subject",
+        "rationale": "The bound applies to a previously published external dataset of experimentally identified peptides used as input, not to a performance claim about timsim itself."
+      },
+      {
+        "candidate_text": "Results were filtered at FDR ≤ 0.01 for peptides and −10 log P ≥ 0 for proteins.",
+        "locator": "Section 1.5.4 PEAKS, page 6",
+        "reason": "comparator_bound_to_wrong_subject",
+        "rationale": "These are filtering settings applied within PEAKS configuration, not performance claims about timsim or any benchmarked subject."
+      },
+      {
+        "candidate_text": "ion level FDR set to 0.01 (default parameter)",
+        "locator": "Section 1.5.2 FragPipe, page 5",
+        "reason": "comparator_bound_to_wrong_subject",
+        "rationale": "This is a software configuration setting for FragPipe, not a performance claim."
+      },
+      {
+        "candidate_text": "Peptides were identified with mass accuracy thresholds of 15 ppm for MS1 and 0.03 Da for MS2.",
+        "locator": "Section 1.5.4 PEAKS, page 6",
+        "reason": "comparator_bound_to_wrong_subject",
+        "rationale": "These are PEAKS configuration thresholds, not performance claims about an artifact's behavior."
+      },
+      {
+        "candidate_text": "mean central 76% interval width of a sample of curves is approximately 4 s for 30 min gradients and 7 s for 120 min gradients",
+        "locator": "Section 2.1.3, page 13",
+        "reason": "hedged_qualitative_only",
+        "rationale": "Uses 'approximately' without a clear comparator establishing a bound; describes default parameter calibration target rather than a verified performance bound."
+      },
+      {
+        "candidate_text": "minimum precursor intensity of 1,000 and a dynamic exclusion window of 25 frames",
+        "locator": "HeLa Samples (dda-PASEF), page 4",
+        "reason": "bound_not_stated",
+        "rationale": "These are simulation input parameters, not empirical bounds on performance."
+      },
+      {
+        "candidate_text": "minimum probability of a charge state, charge states below will be dropped (default 0.005)",
+        "locator": "Table 3, page 14",
+        "reason": "bound_not_stated",
+        "rationale": "Default parameter value, not an empirical performance claim about the system."
+      }
+    ]
+  }
+}

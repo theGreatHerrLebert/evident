@@ -370,3 +370,103 @@ def test_run_extract_paper_request_carries_pr4_tool_schema(tmp_path: Path):
     request = client.messages.last_request
     assert request["tools"] == [framing.TOOL_DEFINITION]
     assert request["tool_choice"]["name"] == framing.TOOL_DEFINITION["name"]
+
+
+# ---------------------------------------------------------------------
+# PR5e: raw_extraction.json — always-on raw model output dump
+# ---------------------------------------------------------------------
+
+
+def test_run_extract_paper_writes_raw_extraction_json_with_full_tool_input(
+    tmp_path: Path,
+):
+    """Every paper extract writes raw_extraction.json next to
+    evident.yaml carrying the verbatim model tool_input — every
+    candidate claim with tolerances, source spans, prose, and any
+    self-rejections — before validator filtering.
+
+    Drove this: the rustims experiment surfaced 0 accepted claims
+    from a real preprint. Without the raw dump, the curator can't
+    tell whether the model produced nothing useful or whether the
+    validator dropped everything the model proposed."""
+    import json
+    response = _tool_response(
+        claims=[
+            {
+                "id": "draft-claim-with-bad-tolerance",
+                "title": "draft title",
+                "claim": "we observed X up to 5%",
+                "subject_aliases": ["our method", "we"],
+                "tolerances": [
+                    {
+                        "metric": "fdr",
+                        "op": "<",
+                        "value": 0.01,
+                        "source_span": (
+                            "we observed FDRs up to 5% for tool X "
+                            "and 1.5-2% for tool Y"
+                        ),
+                        "prose": "subject-conflated bound",
+                    }
+                ],
+            }
+        ],
+        rejections=[
+            {
+                "candidate_text": "model self-rejected snippet",
+                "locator": "page-3 line 42",
+                "reason": "hedged_qualitative_only",
+                "rationale": "no inequality",
+            }
+        ],
+    )
+    client = _FakeClient(response)
+    out = tmp_path / "out"
+    cli.run_extract_paper(
+        paper_path=FIXTURES / "clear_paper.md",
+        output_dir=out,
+        api_client=client,
+        extracted_at="2026-06-03T10:00:00Z",
+    )
+    raw_path = out / "raw_extraction.json"
+    assert raw_path.is_file(), "raw_extraction.json must be written"
+    payload = json.loads(raw_path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "1.0"
+    assert payload["model"] == "claude-opus-4-7"
+    assert payload["extracted_at"] == "2026-06-03T10:00:00Z"
+    assert payload["source_id"], "source_id must be set"
+    # Verbatim tool_input: candidate claim + tolerance + model-side
+    # self-rejection all survive.
+    tool_input = payload["tool_input"]
+    assert tool_input["claims"][0]["id"] == "draft-claim-with-bad-tolerance"
+    assert (
+        tool_input["claims"][0]["tolerances"][0]["source_span"]
+        == "we observed FDRs up to 5% for tool X and 1.5-2% for tool Y"
+    )
+    assert tool_input["rejections"][0]["reason"] == "hedged_qualitative_only"
+
+
+def test_run_extract_paper_writes_raw_extraction_even_when_zero_accepted(
+    tmp_path: Path,
+):
+    """Even when EVERY candidate gets dropped (the rustims pattern),
+    raw_extraction.json captures the model's proposals so the
+    curator has something to read."""
+    import json
+    response = _tool_response(claims=[], rejections=[])
+    client = _FakeClient(response)
+    out = tmp_path / "out"
+    cli.run_extract_paper(
+        paper_path=FIXTURES / "clear_paper.md",
+        output_dir=out,
+        api_client=client,
+        extracted_at="2026-06-03T10:00:00Z",
+    )
+    assert (out / "evident.yaml").is_file()
+    raw = json.loads(
+        (out / "raw_extraction.json").read_text(encoding="utf-8")
+    )
+    # Empty claims/rejections still preserved verbatim — the curator
+    # can see the model produced literally nothing.
+    assert raw["tool_input"]["claims"] == []
+    assert raw["tool_input"].get("rejections", []) == []

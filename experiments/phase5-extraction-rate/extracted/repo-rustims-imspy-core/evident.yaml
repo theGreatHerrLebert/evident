@@ -1,0 +1,66 @@
+version: '0.1'
+project: extracted/imspy-core-metadata
+claims:
+- id: imspy-core-pyproject-requires-python
+  title: imspy-core requires Python >=3.11,<3.14
+  kind: metadata_compatibility
+  tier: research
+  source: pyproject.toml
+  case: pyproject.toml#project.requires-python
+  claim: pyproject.toml declares requires-python = '>=3.11,<3.14'
+  metadata:
+    field: python_version_requirement
+    declared_value: '>=3.11,<3.14'
+    source_file: pyproject.toml
+    source_path: project.requires-python
+  provenance:
+    kind: extracted-from-repo
+    source_id: local:imspy-core@no-git
+    source_sha: no-git
+    source_context: repo_authored
+    extractor:
+      model: evident-agent.extract-metadata
+      extracted_at: '2026-06-03T13:53:27Z'
+    curator: null
+- id: imspy-core-pyproject-name
+  title: imspy-core declares Python package name
+  kind: metadata_compatibility
+  tier: research
+  source: pyproject.toml
+  case: pyproject.toml#project.name
+  claim: pyproject.toml declares project.name = 'imspy-core'
+  metadata:
+    field: project_name
+    declared_value: imspy-core
+    source_file: pyproject.toml
+    source_path: project.name
+  provenance:
+    kind: extracted-from-repo
+    source_id: local:imspy-core@no-git
+    source_sha: no-git
+    source_context: repo_authored
+    extractor:
+      model: evident-agent.extract-metadata
+      extracted_at: '2026-06-03T13:53:27Z'
+    curator: null
+- id: imspy-core-pyproject-version
+  title: imspy-core declares Python package version
+  kind: metadata_compatibility
+  tier: research
+  source: pyproject.toml
+  case: pyproject.toml#project.version
+  claim: pyproject.toml declares project.version = '0.4.0'
+  metadata:
+    field: project_version
+    declared_value: 0.4.0
+    source_file: pyproject.toml
+    source_path: project.version
+  provenance:
+    kind: extracted-from-repo
+    source_id: local:imspy-core@no-git
+    source_sha: no-git
+    source_context: repo_authored
+    extractor:
+      model: evident-agent.extract-metadata
+      extracted_at: '2026-06-03T13:53:27Z'
+    curator: null

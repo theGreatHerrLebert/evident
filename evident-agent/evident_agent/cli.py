@@ -839,6 +839,8 @@ def extract(
     manifest.
     """
     from . import extract as _extract_pkg
+    from .extract import cli as _extract_cli
+    _extract_pkg.cli = _extract_cli  # `from . import extract` doesn't auto-import submodules
 
     if repo_path is not None and paper_path is not None:
         raise click.UsageError(
