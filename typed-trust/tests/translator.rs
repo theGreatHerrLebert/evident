@@ -1401,6 +1401,71 @@ claims:
     assert_eq!(attested.value.id.as_str(), "pdbtbx-rust-msrv");
 }
 
+// PR5c: the manifest's `metadata:` block must be lifted onto the typed
+// Claim so the render layer (which reaches the declaration via
+// RenderInput) can surface it. Without this the metadata block parses
+// but is dropped on the floor between translate and render.
+#[test]
+fn metadata_claim_lifts_block_onto_typed_claim_pr5c() {
+    let yaml = r#"
+claims:
+  - id: pdbtbx-rust-msrv
+    title: pdbtbx requires Rust MSRV 1.67+
+    kind: metadata_compatibility
+    tier: research
+    source: ..
+    claim: pdbtbx declares rust-version = "1.67" in Cargo.toml
+    metadata:
+      field: rust_msrv
+      declared_value: "1.67"
+      source_file: Cargo.toml
+      source_path: package.rust-version
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let ctx = ctx("any.yaml");
+    let attested = translate_claim(&ctx, mc, "claims[0]").unwrap();
+    let md = attested
+        .value
+        .metadata
+        .as_ref()
+        .expect("metadata declaration present on typed Claim");
+    assert_eq!(md.field, "rust_msrv");
+    assert_eq!(md.declared_value, "1.67");
+    assert_eq!(md.source_file, "Cargo.toml");
+    assert_eq!(md.source_path, "package.rust-version");
+}
+
+// PR5c: measurement claims do NOT carry a metadata declaration even
+// though the struct field exists — keeps the typed Claim's two paths
+// disjoint at the type level.
+#[test]
+fn measurement_claim_has_no_metadata_field_on_typed_claim_pr5c() {
+    let yaml = r#"
+claims:
+  - id: m
+    title: measurement
+    kind: measurement
+    tier: research
+    source: .
+    claim: c
+    tolerances:
+      - metric: x
+        op: "<"
+        value: 1.0
+        prose: ok
+    evidence:
+      oracle: [Manual]
+      command: echo
+      artifact: out.txt
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let ctx = ctx("any.yaml");
+    let attested = translate_claim(&ctx, mc, "claims[0]").unwrap();
+    assert!(attested.value.metadata.is_none());
+}
+
 #[test]
 fn metadata_claim_without_metadata_block_is_rejected() {
     let yaml = r#"

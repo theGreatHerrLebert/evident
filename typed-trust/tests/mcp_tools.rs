@@ -201,7 +201,7 @@ fn initialize_handshake_advertises_protocol_version() {
 }
 
 #[test]
-fn tools_list_returns_eight_tools() {
+fn tools_list_returns_nine_tools() {
     let tmp = tempfile::tempdir().unwrap();
     let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
     let resp = proc.tools_list();
@@ -210,7 +210,7 @@ fn tools_list_returns_eight_tools() {
         .iter()
         .map(|t| t["name"].as_str().unwrap_or(""))
         .collect();
-    assert_eq!(tools.len(), 8, "expected 8 tools, got names {names:?}");
+    assert_eq!(tools.len(), 9, "expected 9 tools, got names {names:?}");
     for expected in [
         "list_claims",
         "read_report",
@@ -220,6 +220,7 @@ fn tools_list_returns_eight_tools() {
         "get_superseded_events",
         "walk_backing_chain",
         "render_report",
+        "query_metadata",
     ] {
         assert!(names.contains(&expected), "missing tool: {expected}");
     }
@@ -889,5 +890,415 @@ fn server_survives_after_tier2_error() {
     assert!(r2.get("error").is_none());
     let payload = decode_result(&r2);
     assert_eq!(payload["items"].as_array().unwrap().len(), 1);
+    proc.shutdown();
+}
+
+// ============================================================
+// PR5c: query_metadata + list_claims metadata projection
+// ============================================================
+
+/// Mixed manifest: one measurement claim + two metadata claims.
+/// Both metadata claims carry distinct field names; one comes from
+/// Cargo.toml, the other from pyproject.toml — exercises both
+/// filter axes of `query_metadata`.
+fn write_mixed_metadata_manifest(dir: &Path) -> PathBuf {
+    let manifest = dir.join("evident.yaml");
+    std::fs::write(
+        &manifest,
+        r#"version: 0.1
+project: mixed-metadata
+claims:
+  - id: empirical-baseline
+    kind: measurement
+    tier: ci
+    source: .
+    title: empirical
+    claim: relative error stays under 0.02
+    tolerances:
+      - metric: relative_error
+        op: "<"
+        value: 0.02
+        prose: under 2 percent
+    evidence:
+      oracle: [Test]
+      command: "true"
+      artifact: out.json
+  - id: cargo-rust-msrv
+    kind: metadata_compatibility
+    tier: research
+    source: .
+    title: pdbtbx Cargo declares rust-version 1.67
+    claim: pdbtbx requires Rust >= 1.67 per Cargo.toml
+    provenance:
+      kind: extracted-from-repo
+      source_id: "github:Roestlab/pdbtbx@deadbeef"
+      source_context: repo_authored
+    metadata:
+      field: rust_msrv
+      declared_value: "1.67"
+      source_file: Cargo.toml
+      source_path: package.rust-version
+  - id: pyproject-python-requirement
+    kind: metadata_compatibility
+    tier: research
+    source: .
+    title: pyproject declares python >= 3.10
+    claim: pyproject.toml declares Python >= 3.10
+    provenance:
+      kind: extracted-from-repo
+      source_id: "github:foo/bar@cafef00d"
+      source_context: repo_authored
+    metadata:
+      field: python_version_requirement
+      declared_value: ">=3.10"
+      source_file: pyproject.toml
+      source_path: project.requires-python
+"#,
+    )
+    .unwrap();
+    manifest
+}
+
+#[test]
+fn list_claims_surfaces_metadata_block_pr5c() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = write_mixed_metadata_manifest(tmp.path());
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let resp = proc.call_tool(
+        "list_claims",
+        json!({"manifest_path": manifest.to_str().unwrap()}),
+    );
+    let payload = decode_result(&resp);
+    let items = payload["items"].as_array().expect("items");
+    assert_eq!(items.len(), 3);
+    let measurement = items
+        .iter()
+        .find(|i| i["claim_id"] == "empirical-baseline")
+        .unwrap();
+    assert!(
+        measurement.get("metadata").is_none(),
+        "measurement claim must not carry a metadata block"
+    );
+    let msrv = items
+        .iter()
+        .find(|i| i["claim_id"] == "cargo-rust-msrv")
+        .unwrap();
+    assert_eq!(msrv["metadata"]["field"], "rust_msrv");
+    assert_eq!(msrv["metadata"]["declared_value"], "1.67");
+    assert_eq!(msrv["metadata"]["source_file"], "Cargo.toml");
+    assert_eq!(msrv["metadata"]["source_path"], "package.rust-version");
+    proc.shutdown();
+}
+
+#[test]
+fn query_metadata_returns_all_metadata_claims_when_unfiltered_pr5c() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = write_mixed_metadata_manifest(tmp.path());
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let resp = proc.call_tool(
+        "query_metadata",
+        json!({"manifest_path": manifest.to_str().unwrap()}),
+    );
+    let payload = decode_result(&resp);
+    let items = payload["items"].as_array().expect("items");
+    assert_eq!(items.len(), 2, "two metadata claims expected, got {items:?}");
+    // Measurement claim must NOT leak into query_metadata.
+    assert!(items
+        .iter()
+        .all(|i| i["claim_id"] != "empirical-baseline"));
+    // Self-contained audit context: tier + provenance + source.
+    let msrv = items
+        .iter()
+        .find(|i| i["claim_id"] == "cargo-rust-msrv")
+        .unwrap();
+    assert_eq!(msrv["title"], "pdbtbx Cargo declares rust-version 1.67");
+    assert_eq!(msrv["tier"], "research");
+    assert_eq!(msrv["provenance_kind"], "extracted-from-repo");
+    assert_eq!(msrv["source_id"], "github:Roestlab/pdbtbx@deadbeef");
+    assert_eq!(msrv["source_context"], "repo_authored");
+    assert_eq!(msrv["field"], "rust_msrv");
+    assert_eq!(msrv["declared_value"], "1.67");
+    assert_eq!(msrv["source_file"], "Cargo.toml");
+    assert_eq!(msrv["source_path"], "package.rust-version");
+    proc.shutdown();
+}
+
+#[test]
+fn query_metadata_field_filter_is_exact_case_sensitive_pr5c() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = write_mixed_metadata_manifest(tmp.path());
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let resp = proc.call_tool(
+        "query_metadata",
+        json!({
+            "manifest_path": manifest.to_str().unwrap(),
+            "field": "rust_msrv"
+        }),
+    );
+    let payload = decode_result(&resp);
+    let items = payload["items"].as_array().expect("items");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["claim_id"], "cargo-rust-msrv");
+    // Case-sensitive: an upper-cased filter returns nothing.
+    let resp2 = proc.call_tool(
+        "query_metadata",
+        json!({
+            "manifest_path": manifest.to_str().unwrap(),
+            "field": "RUST_MSRV"
+        }),
+    );
+    let payload2 = decode_result(&resp2);
+    assert!(payload2["items"].as_array().unwrap().is_empty());
+    proc.shutdown();
+}
+
+#[test]
+fn query_metadata_source_file_filter_pr5c() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = write_mixed_metadata_manifest(tmp.path());
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let resp = proc.call_tool(
+        "query_metadata",
+        json!({
+            "manifest_path": manifest.to_str().unwrap(),
+            "source_file": "pyproject.toml"
+        }),
+    );
+    let payload = decode_result(&resp);
+    let items = payload["items"].as_array().expect("items");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["claim_id"], "pyproject-python-requirement");
+    proc.shutdown();
+}
+
+#[test]
+fn query_metadata_combined_filters_conjunctive_pr5c() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = write_mixed_metadata_manifest(tmp.path());
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    // field + source_file both match → 1 result.
+    let resp = proc.call_tool(
+        "query_metadata",
+        json!({
+            "manifest_path": manifest.to_str().unwrap(),
+            "field": "rust_msrv",
+            "source_file": "Cargo.toml"
+        }),
+    );
+    assert_eq!(decode_result(&resp)["items"].as_array().unwrap().len(), 1);
+    // field + source_file disagree → 0 results.
+    let resp2 = proc.call_tool(
+        "query_metadata",
+        json!({
+            "manifest_path": manifest.to_str().unwrap(),
+            "field": "rust_msrv",
+            "source_file": "pyproject.toml"
+        }),
+    );
+    assert!(decode_result(&resp2)["items"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    proc.shutdown();
+}
+
+#[test]
+fn query_metadata_empty_when_manifest_has_no_metadata_claims_pr5c() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = write_simple_manifest(tmp.path(), "x");
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let resp = proc.call_tool(
+        "query_metadata",
+        json!({"manifest_path": manifest.to_str().unwrap()}),
+    );
+    let payload = decode_result(&resp);
+    assert!(payload["items"].as_array().unwrap().is_empty());
+    proc.shutdown();
+}
+
+#[test]
+fn query_metadata_rejects_unauthorized_manifest_pr5c() {
+    let tmp_allowed = tempfile::tempdir().unwrap();
+    let tmp_other = tempfile::tempdir().unwrap();
+    let outside_manifest = write_mixed_metadata_manifest(tmp_other.path());
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp_allowed.path().to_str().unwrap()]);
+    let resp = proc.call_tool(
+        "query_metadata",
+        json!({"manifest_path": outside_manifest.to_str().unwrap()}),
+    );
+    // Tier-1 protocol error (unauthorized path).
+    assert!(resp.get("error").is_some(), "expected tier-1 error: {resp}");
+    proc.shutdown();
+}
+
+#[test]
+fn read_report_renders_metadata_declaration_markdown_pr5c() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = write_mixed_metadata_manifest(tmp.path());
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let resp = proc.call_tool(
+        "render_report",
+        json!({
+            "manifest_path": manifest.to_str().unwrap(),
+            "claim_id": "cargo-rust-msrv",
+            "format": "markdown"
+        }),
+    );
+    let payload = decode_result(&resp);
+    let content = payload["content"].as_str().unwrap_or("");
+    assert!(
+        content.contains("Metadata declaration"),
+        "markdown render missing metadata section: {content}"
+    );
+    assert!(content.contains("rust_msrv"), "missing field name");
+    assert!(content.contains("1.67"), "missing declared value");
+    assert!(content.contains("Cargo.toml"), "missing source file");
+    proc.shutdown();
+}
+
+#[test]
+fn read_report_renders_metadata_declaration_html_pr5c() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = write_mixed_metadata_manifest(tmp.path());
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let resp = proc.call_tool(
+        "render_report",
+        json!({
+            "manifest_path": manifest.to_str().unwrap(),
+            "claim_id": "cargo-rust-msrv",
+            "format": "html"
+        }),
+    );
+    let payload = decode_result(&resp);
+    let content = payload["content"].as_str().unwrap_or("");
+    assert!(
+        content.contains("metadata-declaration"),
+        "html missing metadata dl class: {content}"
+    );
+    assert!(content.contains("rust_msrv"), "missing field name in html");
+    assert!(content.contains("1.67"), "missing declared value in html");
+    proc.shutdown();
+}
+
+/// PR5c codex F-CR1: `query_metadata` must surface a missing-block
+/// error (tier-2 data) for `kind: metadata_compatibility` claims that
+/// don't carry a metadata block, rather than silently dropping them.
+fn write_manifest_with_broken_metadata_claim(dir: &Path) -> PathBuf {
+    let manifest = dir.join("evident.yaml");
+    std::fs::write(
+        &manifest,
+        r#"version: 0.1
+project: broken-meta
+claims:
+  - id: broken-meta
+    kind: metadata_compatibility
+    tier: research
+    source: .
+    title: missing metadata block
+    claim: this claim says it is metadata but has no block
+"#,
+    )
+    .unwrap();
+    manifest
+}
+
+#[test]
+fn query_metadata_surfaces_missing_metadata_block_as_tier2_pr5c_cr1() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = write_manifest_with_broken_metadata_claim(tmp.path());
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let resp = proc.call_tool(
+        "query_metadata",
+        json!({"manifest_path": manifest.to_str().unwrap()}),
+    );
+    assert!(resp.get("error").is_none(), "expected tier-2, got tier-1: {resp}");
+    assert_eq!(resp["result"]["isError"], true, "expected isError: {resp}");
+    let text = resp["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or("");
+    assert!(
+        text.contains("broken-meta") && text.contains("metadata block"),
+        "error text should name the offending claim + the missing block; got {text:?}"
+    );
+    proc.shutdown();
+}
+
+/// PR5c codex F-CR2: `list_claims` must NOT surface a `metadata`
+/// block when the underlying claim is not `kind:
+/// metadata_compatibility`, even if the raw YAML carried a
+/// `metadata:` block.
+fn write_manifest_with_measurement_carrying_metadata(dir: &Path) -> PathBuf {
+    let manifest = dir.join("evident.yaml");
+    std::fs::write(
+        &manifest,
+        r#"version: 0.1
+project: misclassified-meta
+claims:
+  - id: misclassified
+    kind: measurement
+    tier: research
+    source: .
+    title: a measurement claim that also carries metadata
+    claim: c
+    tolerances:
+      - metric: x
+        op: "<"
+        value: 1.0
+        prose: ok
+    evidence:
+      oracle: [Manual]
+      command: echo
+      artifact: out.txt
+    metadata:
+      field: rust_msrv
+      declared_value: "1.67"
+      source_file: Cargo.toml
+      source_path: package.rust-version
+"#,
+    )
+    .unwrap();
+    manifest
+}
+
+#[test]
+fn list_claims_does_not_project_metadata_on_non_metadata_kind_pr5c_cr2() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = write_manifest_with_measurement_carrying_metadata(tmp.path());
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let resp = proc.call_tool(
+        "list_claims",
+        json!({"manifest_path": manifest.to_str().unwrap()}),
+    );
+    let payload = decode_result(&resp);
+    let items = payload["items"].as_array().expect("items");
+    assert_eq!(items.len(), 1);
+    let item = &items[0];
+    assert_eq!(item["kind"], "measurement");
+    assert!(
+        item.get("metadata").is_none(),
+        "list_claims must not project metadata on non-metadata kind: {item}"
+    );
+    proc.shutdown();
+}
+
+/// PR5c codex F-CR3: list_claims provenance projection includes
+/// `source_id` so query_metadata's documented "same audit context"
+/// is accurate.
+#[test]
+fn list_claims_projects_source_id_when_provenance_carries_it_pr5c_cr3() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = write_mixed_metadata_manifest(tmp.path());
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let resp = proc.call_tool(
+        "list_claims",
+        json!({"manifest_path": manifest.to_str().unwrap()}),
+    );
+    let payload = decode_result(&resp);
+    let items = payload["items"].as_array().expect("items");
+    let msrv = items
+        .iter()
+        .find(|i| i["claim_id"] == "cargo-rust-msrv")
+        .unwrap();
+    assert_eq!(msrv["source_id"], "github:Roestlab/pdbtbx@deadbeef");
     proc.shutdown();
 }

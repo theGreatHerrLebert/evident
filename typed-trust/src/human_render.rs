@@ -30,6 +30,13 @@ pub fn render_markdown(augmented_json: &Value) -> String {
         }
     }
 
+    // PR5c: metadata_compatibility claims have no criteria — their
+    // declaration IS the evidence. Surface the typed declaration in
+    // place of the criteria section.
+    if let Some(md) = augmented_json.get("metadata_declaration") {
+        render_metadata_declaration(&mut out, md);
+    }
+
     if let Some(events) = augmented_json
         .get("_graph")
         .and_then(|g| g.get("review_events"))
@@ -143,6 +150,68 @@ pub fn render_markdown(augmented_json: &Value) -> String {
     }
 
     out
+}
+
+fn render_metadata_declaration(out: &mut String, md: &Value) {
+    let field = md.get("field").and_then(Value::as_str).unwrap_or("?");
+    let declared = md
+        .get("declared_value")
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    let source_file = md.get("source_file").and_then(Value::as_str).unwrap_or("?");
+    let source_path = md.get("source_path").and_then(Value::as_str).unwrap_or("?");
+
+    out.push_str("## Metadata declaration\n\n");
+    out.push_str(&format!("- **Field:** {}\n", inline_code(field)));
+    out.push_str(&format!(
+        "- **Declared value:** {}\n",
+        inline_code(declared)
+    ));
+    out.push_str(&format!(
+        "- **Source:** {} → {}\n\n",
+        inline_code(source_file),
+        inline_code(source_path),
+    ));
+}
+
+/// Wrap a string in a markdown inline-code span, defending against
+/// backticks and newlines in the value so an extracted-manifest
+/// string can't break out of the code span and inject markdown
+/// (codex F-PR5c-CR3). Strategy: collapse newlines to spaces, pick
+/// the shortest backtick run that doesn't appear in the value, and
+/// wrap with that fence.
+fn inline_code(value: &str) -> String {
+    let sanitized: String = value
+        .chars()
+        .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+        .collect();
+    // Find the shortest backtick run not in the value; wrap with
+    // (run+1) backticks and surround by a space if value starts/ends
+    // with backtick — the GFM trick.
+    let max_run = max_backtick_run(&sanitized);
+    let fence: String = "`".repeat(max_run + 1);
+    let needs_pad = sanitized.starts_with('`') || sanitized.ends_with('`');
+    if needs_pad {
+        format!("{fence} {sanitized} {fence}")
+    } else {
+        format!("{fence}{sanitized}{fence}")
+    }
+}
+
+fn max_backtick_run(s: &str) -> usize {
+    let mut max = 0usize;
+    let mut cur = 0usize;
+    for c in s.chars() {
+        if c == '`' {
+            cur += 1;
+            if cur > max {
+                max = cur;
+            }
+        } else {
+            cur = 0;
+        }
+    }
+    max
 }
 
 fn status_label(s: &str) -> &'static str {

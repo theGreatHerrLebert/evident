@@ -28,7 +28,7 @@
 
 use serde::Deserialize;
 
-use crate::claim::{Claim, ClaimKind, SourceSpan};
+use crate::claim::{Claim, ClaimKind, MetadataDeclaration, SourceSpan};
 use crate::derivation::{
     Attested, Derivation, Locator, Rerun, ReproductionOutcome, ToolInvocation,
 };
@@ -492,6 +492,13 @@ pub fn translate_claim(
         infer_kind(mc)
     };
 
+    let metadata = mc.metadata.as_ref().map(|m| MetadataDeclaration {
+        field: m.field.clone(),
+        declared_value: m.declared_value.clone(),
+        source_file: m.source_file.clone(),
+        source_path: m.source_path.clone(),
+    });
+
     let claim = Claim {
         id: ClaimId::new(&mc.id),
         text: mc.claim.trim().to_string(),
@@ -507,6 +514,7 @@ pub fn translate_claim(
         // author. Requires either reviewer identity or the degraded
         // `unspecified_human_from_manifest` form.
         requires_assumptions: vec![],
+        metadata,
     };
 
     let derivation = Derivation::Verified {
