@@ -77,6 +77,53 @@ def _extract_tool_input(response: Any) -> dict:
 
 
 # ---------------------------------------------------------------------
+# Raw model output dump (pre-validator)
+# ---------------------------------------------------------------------
+
+
+def _write_raw_extraction(
+    output_dir: Path,
+    *,
+    tool_input: dict,
+    walked: "repo.WalkedSource",
+    model: str,
+    extracted_at: str,
+) -> None:
+    """Write the model's full ``submit_extracted_claims`` tool_input
+    to ``<output_dir>/raw_extraction.json`` so curators can read what
+    the model actually proposed, even when the validator + curation
+    pipeline drops every candidate.
+
+    The file has a small envelope (model, extracted_at, source_id,
+    source_sha, schema_version) wrapping the verbatim tool_input.
+    Schema is stable for downstream tooling but explicitly NOT a
+    promotable manifest — fields like ``claims`` carry the raw
+    pre-validation shape, not the typed-trust schema.
+    """
+    import json
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": "1.0",
+        "purpose": (
+            "Raw model tool_input from the extraction call, "
+            "BEFORE validator filtering or curator review. "
+            "Auditors read this to see what the model proposed. "
+            "NOT a promotable manifest."
+        ),
+        "model": model,
+        "extracted_at": extracted_at,
+        "source_id": walked.source_id,
+        "source_sha": walked.source_sha,
+        "tool_input": tool_input,
+    }
+    (output_dir / "raw_extraction.json").write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+# ---------------------------------------------------------------------
 # Tool-response processor (the validator's hook)
 # ---------------------------------------------------------------------
 
@@ -234,16 +281,33 @@ def run_extract_repo(
         api_client = _default_api_client()
     response = api_client.messages.create(**request)
     tool_input = _extract_tool_input(response)
+    resolved_extracted_at = (
+        extracted_at if extracted_at else render.now_utc_isoformat()
+    )
     result = process_tool_response(
         tool_input,
         walked,
         extractor_model=model,
-        extracted_at=(
-            extracted_at if extracted_at else render.now_utc_isoformat()
-        ),
+        extracted_at=resolved_extracted_at,
     )
     project_name = project or f"extracted/{_repo_id_for_project(walked.source_id)}"
     render.write_outputs(result, output_dir=output_dir, project=project_name)
+    # Always save the model's raw tool_input next to evident.yaml.
+    # The validator + curator pipeline can drop most candidates;
+    # without this dump the model's full structured output (every
+    # claim it proposed, with tolerances + source spans + prose)
+    # would be lost, leaving auditors unable to distinguish
+    # "model produced nothing useful" from "framework rejected
+    # everything the model proposed". The dump is the raw input
+    # to the curator's understanding, not a curator-promotable
+    # artifact.
+    _write_raw_extraction(
+        output_dir,
+        tool_input=tool_input,
+        walked=walked,
+        model=model,
+        extracted_at=resolved_extracted_at,
+    )
     return result
 
 
@@ -303,17 +367,25 @@ def run_extract_paper(
         api_client = _default_api_client()
     response = api_client.messages.create(**request)
     tool_input = _extract_tool_input(response)
+    resolved_extracted_at = (
+        extracted_at if extracted_at else render.now_utc_isoformat()
+    )
     extraction = process_tool_response(
         tool_input,
         walked,
         extractor_model=model,
-        extracted_at=(
-            extracted_at if extracted_at else render.now_utc_isoformat()
-        ),
+        extracted_at=resolved_extracted_at,
     )
     project_name = project or f"extracted/{_repo_id_for_project(walked.source_id)}"
     render.write_outputs(
         extraction, output_dir=output_dir, project=project_name,
+    )
+    _write_raw_extraction(
+        output_dir,
+        tool_input=tool_input,
+        walked=walked,
+        model=model,
+        extracted_at=resolved_extracted_at,
     )
     # PDF experimental warning travels through walked.notes; surface
     # it in EXTRACTION.md by appending after render's writer ran.
