@@ -258,6 +258,63 @@ def test_rephrase_rejects_unknown_claim_id(tmp_path: Path):
 # ---------------------------------------------------------------------
 
 
+def test_rephrase_rejects_adding_null_to_locked_field(tmp_path: Path):
+    """Codex F-REPHRASE-CR1 P1: a curator adding ``last_verified:
+    null`` (where the field was absent in the original) is a CHANGE
+    on a locked field. Using ``dict.get(k)`` alone would have
+    treated absent and null as equal — the sentinel comparison
+    catches it."""
+    manifest_path = _sample_manifest(tmp_path)
+
+    def _editor(initial: str) -> str:
+        parsed = yaml.safe_load(initial)
+        assert "last_verified" not in parsed
+        parsed["last_verified"] = None  # add null
+        return yaml.safe_dump(parsed, sort_keys=False)
+
+    with pytest.raises(CuratorError) as exc:
+        rephrase_claim(
+            manifest_path=manifest_path,
+            claim_id="test-claim-one",
+            editor=_editor,
+        )
+    assert "last_verified" in str(exc.value)
+
+
+def test_rephrase_semantic_noop_does_not_rewrite_manifest(tmp_path: Path):
+    """Codex F-REPHRASE-CR P2: editor reorders keys but the parsed
+    dict compares equal. After validation returns fields_changed=[],
+    the manifest must NOT be re-serialized (which would change
+    bytes and post_edit_sha). Verify by checking the file's bytes
+    are identical."""
+    import hashlib
+
+    manifest_path = _sample_manifest(tmp_path)
+    pre_bytes = manifest_path.read_bytes()
+    pre_sha = hashlib.sha256(pre_bytes).hexdigest()
+
+    def _editor(initial: str) -> str:
+        parsed = yaml.safe_load(initial)
+        # Reorder keys — yaml.safe_dump output bytes differ but
+        # parsed dict equality is unchanged.
+        reordered = {k: parsed[k] for k in reversed(list(parsed.keys()))}
+        return yaml.safe_dump(reordered, sort_keys=False)
+
+    result = rephrase_claim(
+        manifest_path=manifest_path,
+        claim_id="test-claim-one",
+        editor=_editor,
+    )
+    assert result.fields_changed == []
+    assert result.pre_edit_sha == result.post_edit_sha
+    # Manifest bytes unchanged on disk.
+    assert manifest_path.read_bytes() == pre_bytes
+    assert (
+        hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        == pre_sha
+    )
+
+
 def test_rephrase_pre_edit_sha_records_what_curator_reviewed(tmp_path: Path):
     """Load-bearing for the audit trail: the curator's `pre_edit_sha`
     must match the bytes that were on disk BEFORE the editor opened.

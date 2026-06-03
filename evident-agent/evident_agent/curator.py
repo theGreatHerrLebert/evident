@@ -468,25 +468,53 @@ def _spawn_editor(initial_text: str) -> str:
     """Default editor implementation: write the text to a tempfile,
     spawn ``$EDITOR`` (or ``vi`` as fallback), read back. Returns
     the post-edit content.
+
+    Codex F-REPHRASE-CR-P2 editor parsing: supports ``EDITOR``
+    values that include args (e.g. ``code --wait``, ``vim -f``)
+    via ``shlex.split``.
+
+    Codex F-REPHRASE-CR-P2 tempfile robustness: read-back
+    OSError (editor deleted/moved the tempfile, permission
+    error, etc.) is wrapped as ``CuratorError`` so the walker's
+    error handler treats it like any other rephrase failure.
     """
     import os
+    import shlex
     import subprocess
 
-    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "vi"
+    editor_str = (
+        os.environ.get("EDITOR") or os.environ.get("VISUAL") or "vi"
+    )
+    editor_argv = shlex.split(editor_str)
+    if not editor_argv:
+        raise CuratorError(
+            f"EDITOR/VISUAL value {editor_str!r} parsed to empty argv; "
+            "rephrase aborted"
+        )
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".yaml", delete=False,
     ) as tf:
         tf.write(initial_text)
         tmp_path = tf.name
     try:
-        subprocess.run(
-            [editor, tmp_path], check=True
-        )
-        with open(tmp_path, encoding="utf-8") as f:
-            return f.read()
+        subprocess.run(editor_argv + [tmp_path], check=True)
+        try:
+            with open(tmp_path, encoding="utf-8") as f:
+                return f.read()
+        except OSError as exc:
+            raise CuratorError(
+                f"editor {editor_argv[0]!r} produced an unreadable "
+                f"tempfile ({exc}); rephrase aborted"
+            ) from exc
     except subprocess.CalledProcessError as exc:
         raise CuratorError(
-            f"editor {editor!r} exited non-zero ({exc.returncode}); "
+            f"editor {editor_argv[0]!r} exited non-zero "
+            f"({exc.returncode}); rephrase aborted"
+        ) from exc
+    except FileNotFoundError as exc:
+        # Editor binary itself missing.
+        raise CuratorError(
+            f"editor {editor_argv[0]!r} not found on PATH; "
             "rephrase aborted"
         ) from exc
     finally:
@@ -571,6 +599,21 @@ def rephrase_claim(
                 original_claim, edited_claim, claim_id,
             )
 
+            # Codex F-REPHRASE-CR-P2 no-op-after-validation: if the
+            # parsed dicts compare equal (whitespace-only YAML
+            # change, key reordering, etc.), don't write back. The
+            # earlier strip-equality check catches identical text;
+            # this catches semantic identity through the YAML
+            # round-trip.
+            if not fields_changed:
+                return RephraseResult(
+                    claim_id=claim_id,
+                    pre_edit_sha=pre_sha,
+                    post_edit_sha=pre_sha,
+                    fields_changed=[],
+                    manifest_path=manifest_path,
+                )
+
             claims[target_idx] = edited_claim
             manifest["claims"] = claims
             new_yaml = yaml.safe_dump(
@@ -592,17 +635,29 @@ def rephrase_claim(
     )
 
 
+# Sentinel for absent-vs-null distinction (codex F-REPHRASE-CR1 P1).
+# dict.get(k) returns None both when k is missing AND when k is
+# present with an explicit `null` value. A curator could otherwise
+# add `last_verified: null` to bypass the lock. Comparing via
+# .get(k, _MISSING) makes absent != null.
+_MISSING = object()
+
+
 def _validate_rephrase_edits(
     original: dict, edited: dict, claim_id: str,
 ) -> list[str]:
     """Compare original vs edited claim. Returns the list of fields
     that changed. Raises ``CuratorError`` if any locked field
-    changed.
+    changed or if a non-allowlisted field was added.
+
+    Absent-vs-null distinction: a curator inserting ``last_verified:
+    null`` (where the field was absent in the original) is a change
+    and gets rejected (codex F-REPHRASE-CR1 P1).
     """
     changed: list[str] = []
     all_keys = set(original) | set(edited)
     for k in sorted(all_keys):
-        if original.get(k) != edited.get(k):
+        if original.get(k, _MISSING) != edited.get(k, _MISSING):
             if k in _REPHRASE_LOCKED_FIELDS:
                 raise CuratorError(
                     f"rephrase rejected: field {k!r} of claim "
