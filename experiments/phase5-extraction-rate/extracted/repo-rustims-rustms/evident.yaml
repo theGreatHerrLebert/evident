@@ -1,0 +1,66 @@
+version: '0.1'
+project: extracted/rustms-metadata
+claims:
+- id: rustms-cargo-edition
+  title: rustms declares Rust edition
+  kind: metadata_compatibility
+  tier: research
+  source: Cargo.toml
+  case: Cargo.toml#package.edition
+  claim: Cargo.toml declares package.edition = '2021'
+  metadata:
+    field: rust_edition
+    declared_value: '2021'
+    source_file: Cargo.toml
+    source_path: package.edition
+  provenance:
+    kind: extracted-from-repo
+    source_id: local:rustms@no-git
+    source_sha: no-git
+    source_context: repo_authored
+    extractor:
+      model: evident-agent.extract-metadata
+      extracted_at: '2026-06-03T12:16:47Z'
+    curator: null
+- id: rustms-cargo-name
+  title: rustms declares Cargo package name
+  kind: metadata_compatibility
+  tier: research
+  source: Cargo.toml
+  case: Cargo.toml#package.name
+  claim: Cargo.toml declares package.name = 'rustms'
+  metadata:
+    field: cargo_package_name
+    declared_value: rustms
+    source_file: Cargo.toml
+    source_path: package.name
+  provenance:
+    kind: extracted-from-repo
+    source_id: local:rustms@no-git
+    source_sha: no-git
+    source_context: repo_authored
+    extractor:
+      model: evident-agent.extract-metadata
+      extracted_at: '2026-06-03T12:16:47Z'
+    curator: null
+- id: rustms-cargo-version
+  title: rustms declares Cargo package version
+  kind: metadata_compatibility
+  tier: research
+  source: Cargo.toml
+  case: Cargo.toml#package.version
+  claim: Cargo.toml declares package.version = '0.1.0'
+  metadata:
+    field: cargo_package_version
+    declared_value: 0.1.0
+    source_file: Cargo.toml
+    source_path: package.version
+  provenance:
+    kind: extracted-from-repo
+    source_id: local:rustms@no-git
+    source_sha: no-git
+    source_context: repo_authored
+    extractor:
+      model: evident-agent.extract-metadata
+      extracted_at: '2026-06-03T12:16:47Z'
+    curator: null

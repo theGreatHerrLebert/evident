@@ -1,0 +1,228 @@
+{
+  "mode": "dry_run",
+  "no_model_call_was_made": true,
+  "source": {
+    "source_id": "preprint:rustims-v1-covered-6dadf069",
+    "source_sha": "bc94017677e1a73da65ed66daee287d74f4188667fa67f411f64bd52496f3b21"
+  },
+  "sections_included": [
+    {
+      "path": "page-1",
+      "kind": "paper-page",
+      "raw_bytes": 1043,
+      "raw_sha256": "6dc6964f6409520ff4bd32c1e29075e8dae188e0af1f032e5790c413b8ecec55",
+      "post_redaction_bytes": 1043,
+      "post_redaction_sha256": "6dc6964f6409520ff4bd32c1e29075e8dae188e0af1f032e5790c413b8ecec55",
+      "truncated": false
+    },
+    {
+      "path": "page-2",
+      "kind": "paper-page",
+      "raw_bytes": 270,
+      "raw_sha256": "433a4f63a97b8b2a6fecb2b8a8fa1751a81693f5f491751de27c37fc9095f6c9",
+      "post_redaction_bytes": 269,
+      "post_redaction_sha256": "eeedc5161caeafb1a3b68aec55a5cc73c9e859a07a0f6d53e329bec68a67cea7",
+      "truncated": false
+    },
+    {
+      "path": "page-3",
+      "kind": "paper-page",
+      "raw_bytes": 2839,
+      "raw_sha256": "a0f9bcd263846e30dfe9d27bc6404a28ed1a8c35b1ba1cd3b1d9b366fdb9b9b8",
+      "post_redaction_bytes": 2839,
+      "post_redaction_sha256": "a0f9bcd263846e30dfe9d27bc6404a28ed1a8c35b1ba1cd3b1d9b366fdb9b9b8",
+      "truncated": false
+    },
+    {
+      "path": "page-4",
+      "kind": "paper-page",
+      "raw_bytes": 4931,
+      "raw_sha256": "049ebf813316deee883655527d25be4e8284168e2d4382a37cf8aa05d873d9fe",
+      "post_redaction_bytes": 4931,
+      "post_redaction_sha256": "049ebf813316deee883655527d25be4e8284168e2d4382a37cf8aa05d873d9fe",
+      "truncated": false
+    },
+    {
+      "path": "page-5",
+      "kind": "paper-page",
+      "raw_bytes": 4469,
+      "raw_sha256": "6357e4daad1bbbc5f1daad29a488d75bcbc2d7847d8855a0a59cd8bb38ed5d32",
+      "post_redaction_bytes": 4469,
+      "post_redaction_sha256": "6357e4daad1bbbc5f1daad29a488d75bcbc2d7847d8855a0a59cd8bb38ed5d32",
+      "truncated": false
+    },
+    {
+      "path": "page-6",
+      "kind": "paper-page",
+      "raw_bytes": 4529,
+      "raw_sha256": "c5d0a59ed4ec6b02f7ec7b023128d6a875a6f30c4e7bcce6d64a9be5c4d2b3a4",
+      "post_redaction_bytes": 4529,
+      "post_redaction_sha256": "c5d0a59ed4ec6b02f7ec7b023128d6a875a6f30c4e7bcce6d64a9be5c4d2b3a4",
+      "truncated": false
+    },
+    {
+      "path": "page-7",
+      "kind": "paper-page",
+      "raw_bytes": 4667,
+      "raw_sha256": "462ecc1559211aab2915ebf6fc560e94024af609fa2b22503c85e023f869d0bb",
+      "post_redaction_bytes": 4667,
+      "post_redaction_sha256": "462ecc1559211aab2915ebf6fc560e94024af609fa2b22503c85e023f869d0bb",
+      "truncated": false
+    },
+    {
+      "path": "page-8",
+      "kind": "paper-page",
+      "raw_bytes": 4806,
+      "raw_sha256": "f0e5bd5f24d810634da7c913995d613865ebe097f64655063ac9b3c4ecc8ab36",
+      "post_redaction_bytes": 4806,
+      "post_redaction_sha256": "f0e5bd5f24d810634da7c913995d613865ebe097f64655063ac9b3c4ecc8ab36",
+      "truncated": false
+    },
+    {
+      "path": "page-9",
+      "kind": "paper-page",
+      "raw_bytes": 4463,
+      "raw_sha256": "605ce1d4a89ed6749dbf3fcd4291a1ec6a0590f7f45606ddfba60d541bb50d44",
+      "post_redaction_bytes": 4463,
+      "post_redaction_sha256": "605ce1d4a89ed6749dbf3fcd4291a1ec6a0590f7f45606ddfba60d541bb50d44",
+      "truncated": false
+    },
+    {
+      "path": "page-10",
+      "kind": "paper-page",
+      "raw_bytes": 3541,
+      "raw_sha256": "b808ff899f69524295df9a6269e1909bfb451f5e0ca12f25248e87da6e3962c7",
+      "post_redaction_bytes": 3541,
+      "post_redaction_sha256": "b808ff899f69524295df9a6269e1909bfb451f5e0ca12f25248e87da6e3962c7",
+      "truncated": false
+    },
+    {
+      "path": "page-11",
+      "kind": "paper-page",
+      "raw_bytes": 1916,
+      "raw_sha256": "08c3eeefe870526c95af16e822ca23aa039fbff4e3ba420b571428f1ea2d94d6",
+      "post_redaction_bytes": 1916,
+      "post_redaction_sha256": "08c3eeefe870526c95af16e822ca23aa039fbff4e3ba420b571428f1ea2d94d6",
+      "truncated": false
+    },
+    {
+      "path": "page-12",
+      "kind": "paper-page",
+      "raw_bytes": 2147,
+      "raw_sha256": "2bd3dd8d326a366217ccf4f4579501eb7b384f3bf30a3c84fac7e77e4a288a71",
+      "post_redaction_bytes": 2147,
+      "post_redaction_sha256": "2bd3dd8d326a366217ccf4f4579501eb7b384f3bf30a3c84fac7e77e4a288a71",
+      "truncated": false
+    },
+    {
+      "path": "page-13",
+      "kind": "paper-page",
+      "raw_bytes": 2016,
+      "raw_sha256": "bf2c9dd3ff9a0dfe8d7439a7915caba50cb73dfef685415f3347386e0a3775db",
+      "post_redaction_bytes": 2016,
+      "post_redaction_sha256": "bf2c9dd3ff9a0dfe8d7439a7915caba50cb73dfef685415f3347386e0a3775db",
+      "truncated": false
+    },
+    {
+      "path": "page-14",
+      "kind": "paper-page",
+      "raw_bytes": 1485,
+      "raw_sha256": "7ab5f4341e5ef188787a0cf7afb3ecf04b47bee066993b683af2adb0ca7e3767",
+      "post_redaction_bytes": 1485,
+      "post_redaction_sha256": "7ab5f4341e5ef188787a0cf7afb3ecf04b47bee066993b683af2adb0ca7e3767",
+      "truncated": false
+    },
+    {
+      "path": "page-15",
+      "kind": "paper-page",
+      "raw_bytes": 1096,
+      "raw_sha256": "cb63c103c12461e465f0b9e243790dacdd5adc1c80fe5b8e5d5c749741586974",
+      "post_redaction_bytes": 1096,
+      "post_redaction_sha256": "cb63c103c12461e465f0b9e243790dacdd5adc1c80fe5b8e5d5c749741586974",
+      "truncated": false
+    },
+    {
+      "path": "page-16",
+      "kind": "paper-page",
+      "raw_bytes": 2018,
+      "raw_sha256": "28f86377ae41f8548ad2f35cb6ae4cd6ced60e2aa591177f335dc0a764e4ecea",
+      "post_redaction_bytes": 2018,
+      "post_redaction_sha256": "28f86377ae41f8548ad2f35cb6ae4cd6ced60e2aa591177f335dc0a764e4ecea",
+      "truncated": false
+    },
+    {
+      "path": "page-17",
+      "kind": "paper-page",
+      "raw_bytes": 3878,
+      "raw_sha256": "ed88d209ef63dee405f97fcd6fbd9964ff1152b40af7751288b838a7d3c397f6",
+      "post_redaction_bytes": 3878,
+      "post_redaction_sha256": "ed88d209ef63dee405f97fcd6fbd9964ff1152b40af7751288b838a7d3c397f6",
+      "truncated": false
+    },
+    {
+      "path": "page-18",
+      "kind": "paper-page",
+      "raw_bytes": 4037,
+      "raw_sha256": "77e17ef8303369bed9a9627b2b63cb6816d934e224a869d861b41bd309cf8542",
+      "post_redaction_bytes": 4037,
+      "post_redaction_sha256": "77e17ef8303369bed9a9627b2b63cb6816d934e224a869d861b41bd309cf8542",
+      "truncated": false
+    },
+    {
+      "path": "page-19",
+      "kind": "paper-page",
+      "raw_bytes": 2779,
+      "raw_sha256": "96960061345263bbfbf9a9dfb6b8e3d09b42f6599d07f3ca81197c990b7293e4",
+      "post_redaction_bytes": 2863,
+      "post_redaction_sha256": "40353ebefcc5b10f8da16996e5a932d1c5ea2aabfd1e5e98262196819c123e50",
+      "truncated": false
+    },
+    {
+      "path": "page-20",
+      "kind": "paper-page",
+      "raw_bytes": 163,
+      "raw_sha256": "46c361ba5e6e6bc0a795c4be58e0f10ae4ceb511595da4a65860a718a5d8c53c",
+      "post_redaction_bytes": 163,
+      "post_redaction_sha256": "46c361ba5e6e6bc0a795c4be58e0f10ae4ceb511595da4a65860a718a5d8c53c",
+      "truncated": false
+    }
+  ],
+  "files_skipped": [],
+  "redactions": [
+    {
+      "section": "page-2",
+      "span_start": 47,
+      "span_end": 90,
+      "reason": "external_doi",
+      "original_preview": "https://doi.org/10.21203/rs.3.rs-9032301/v1"
+    },
+    {
+      "section": "page-19",
+      "span_start": 2248,
+      "span_end": 2264,
+      "reason": "external_arxiv",
+      "original_preview": "arXiv:2007.08457"
+    },
+    {
+      "section": "page-19",
+      "span_start": 2433,
+      "span_end": 2449,
+      "reason": "external_arxiv",
+      "original_preview": "arXiv:2301.10226"
+    },
+    {
+      "section": "page-19",
+      "span_start": 2625,
+      "span_end": 2641,
+      "reason": "external_arxiv",
+      "original_preview": "arXiv:2402.03473"
+    }
+  ],
+  "notes": [
+    "PDF extraction is experimental. pdftotext-mangled column breaks can defeat the validator's local-binding check. Inspect the extracted text in dry-run mode before trusting a non-dry-run extraction."
+  ],
+  "assembled_text_for_model": {
+    "size_bytes": 57606,
+    "sha256": "c1ff65f6fe2cfbf3e8c9d912d72079c338660cb555525176468f72ffb296307f"
+  }
+}

@@ -1,0 +1,8 @@
+artifact_id: paper-rustims-main
+type: paper
+local_path: /home/administrator/Downloads/v1_covered_6dadf069-c61b-4378-bb20-25b661fd6aa1.pdf
+sha256: bc94017677e1a73da65ed66daee287d74f4188667fa67f411f64bd52496f3b21
+size_bytes: 1624841
+note: main preprint (paired with repo-rustims)
+pre_committed_at: 2026-06-03
+curator: davidteschner@googlemail.com
