@@ -142,6 +142,7 @@ fn render_contested_sasa_report_as_html_with_graph() {
         cycle_contested: &std::collections::HashSet::new(),
         metadata: None,
         concordance: None,
+        concordance_result: None,
     });
 
     // Render the Mermaid graph standalone.
@@ -193,6 +194,7 @@ fn mermaid_graph_sanitizes_dashed_claim_ids() {
         cycle_contested: &std::collections::HashSet::new(),
         metadata: None,
         concordance: None,
+        concordance_result: None,
     });
     let mermaid = render_mermaid_graph(&augmented);
 

@@ -186,6 +186,57 @@ pub enum MonotoneDirection {
     Decreasing,
 }
 
+/// PR5h: typed lift of a `last_concorded.json` entry.
+///
+/// The agent's comparator (`evident_agent.concordance`) produces
+/// a `ConcordanceResult` per concordance claim and writes it to
+/// `last_concorded.json`. typed-trust reads it back here. The
+/// shape mirrors the Python `LastConcordedEntry` exactly so the
+/// two layers round-trip without translation.
+///
+/// `comparison_status` is the load-bearing discriminator the
+/// framework reads for status synthesis. Pattern-specific fields
+/// (`observed_ordering` / `observed_series` etc.) round-trip
+/// through but the synthesizer doesn't interpret them; they're
+/// audit material for render.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ConcordanceResult {
+    /// `"pass" | "fail" | "not_assessed"` — the comparator's
+    /// verdict. Kept as a typed enum so the synthesizer can
+    /// dispatch without string-matching.
+    pub comparison_status: ComparisonStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_value: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_unit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_ordering: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_ordering: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_series: Option<Vec<f64>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parameter_series: Option<Vec<f64>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub produced_at: Option<String>,
+    /// Free-form diagnostics block from the comparator (e.g.
+    /// `{"delta_from_prior": 0.1, "within_band": true}`).
+    /// Preserved verbatim through serde so the rendered output
+    /// can surface whatever the comparator chose to record.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub diagnostics: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComparisonStatus {
+    Pass,
+    Fail,
+    NotAssessed,
+}
+
 /// PR5f: curator-authored prior binding context.
 ///
 /// The five required fields pin down what the prior paper

@@ -383,6 +383,7 @@ fn criterion_result_targeted_event_is_consistent_across_synth_and_render() {
         cycle_contested: &std::collections::HashSet::new(),
         metadata: None,
         concordance: None,
+        concordance_result: None,
     });
 
     // Report-level status is Current (synthesize doesn't match
@@ -500,6 +501,7 @@ fn render_augmented_adds_observed_value_and_criterion_status() {
         cycle_contested: &std::collections::HashSet::new(),
         metadata: None,
         concordance: None,
+        concordance_result: None,
     });
 
     let crit0 = &json["criteria"][0];
@@ -563,6 +565,7 @@ fn render_augmented_contested_includes_graph_and_contested_by() {
         cycle_contested: &std::collections::HashSet::new(),
         metadata: None,
         concordance: None,
+        concordance_result: None,
     });
 
     // Report-level Contested.
@@ -906,6 +909,7 @@ fn render_criterion_status_agrees_with_synthesize_under_cycle_contestation() {
         cycle_contested: &cycled,
         metadata: None,
         concordance: None,
+        concordance_result: None,
     });
 
     // Report is Contested by synthesize.
@@ -1498,6 +1502,7 @@ fn render_augmented_inlines_metadata_declaration_block_pr5c() {
         cycle_contested: &std::collections::HashSet::new(),
         metadata: Some(&md),
         concordance: None,
+        concordance_result: None,
     });
 
     let block = augmented
@@ -1519,6 +1524,7 @@ fn render_augmented_inlines_metadata_declaration_block_pr5c() {
         cycle_contested: &std::collections::HashSet::new(),
         metadata: None,
         concordance: None,
+        concordance_result: None,
     });
     assert!(augmented_no_md.get("metadata_declaration").is_none());
 }
@@ -1552,6 +1558,7 @@ fn human_render_emits_metadata_declaration_section_pr5c() {
         cycle_contested: &std::collections::HashSet::new(),
         metadata: Some(&md),
         concordance: None,
+        concordance_result: None,
     });
     let md_out = render_markdown(&augmented);
     assert!(md_out.contains("## Metadata declaration"));
@@ -1590,6 +1597,7 @@ fn html_render_emits_metadata_declaration_dl_pr5c() {
         cycle_contested: &std::collections::HashSet::new(),
         metadata: Some(&md),
         concordance: None,
+        concordance_result: None,
     });
     let html = render_html_fragment(&augmented);
     assert!(html.contains("<h2>Metadata declaration</h2>"));
@@ -1634,6 +1642,7 @@ fn human_render_escapes_backticks_and_newlines_in_metadata_values_pr5c_cr3() {
         cycle_contested: &std::collections::HashSet::new(),
         metadata: Some(&md),
         concordance: None,
+        concordance_result: None,
     });
     let out = render_markdown(&augmented);
     // The raw backtick character survives but inside a multi-backtick
@@ -1695,6 +1704,7 @@ fn render_augmented_inlines_concordance_declaration_for_numeric_band_pr5f() {
         cycle_contested: &std::collections::HashSet::new(),
         metadata: None,
         concordance: Some(&cd),
+        concordance_result: None,
     });
     let block = augmented
         .get("concordance_declaration")
@@ -1754,6 +1764,7 @@ fn human_render_emits_concordance_section_pr5f() {
         cycle_contested: &std::collections::HashSet::new(),
         metadata: None,
         concordance: Some(&cd),
+        concordance_result: None,
     });
     let md = render_markdown(&augmented);
     assert!(md.contains("## Concordance"));
@@ -1762,4 +1773,214 @@ fn human_render_emits_concordance_section_pr5f() {
     assert!(md.contains("paper_locator") || md.contains("Paper locator"));
     assert!(md.contains("percentage_points"));
     assert!(md.contains("Prior binding"));
+}
+
+// ============================================================
+// PR5h: concordance_result block in augmented JSON + render
+// ============================================================
+
+#[test]
+fn render_augmented_inlines_concordance_result_block_pr5h() {
+    use typed_trust::{
+        claim::{
+            ComparisonStatus, ConcordanceDeclaration, ConcordancePattern,
+            ConcordanceResult, PriorBindingContext,
+        },
+        report::{RenderStatus, TrustReport},
+        render::{render_augmented, RenderInput},
+        ClaimId,
+    };
+    let report = TrustReport {
+        claim: ClaimId::new("rustims-fragpipe-fdr-10k-concords-meier"),
+        status: RenderStatus::Current,
+        criteria: vec![],
+        challenges: vec![],
+        gaps: vec![],
+        aggregate: None,
+    };
+    let cd = ConcordanceDeclaration {
+        pattern: ConcordancePattern::NumericBand {
+            metric_path: "fragpipe.hla_10k.fdr_pct".into(),
+            epsilon: 0.5,
+            prior_value: 1.5,
+        },
+        paper_locator: "src.md".into(),
+        prior_binding: PriorBindingContext {
+            prior_unit: "percentage_points".into(),
+            prior_metric_definition: "FDR".into(),
+            locator: "Meier T3".into(),
+            prior_extraction_note: "curator verified".into(),
+            source_id: "doi:test".into(),
+        },
+    };
+    let mut diag = serde_json::Map::new();
+    diag.insert("delta_from_prior".into(), serde_json::json!(0.1));
+    diag.insert("within_band".into(), serde_json::json!(true));
+    let cr = ConcordanceResult {
+        comparison_status: ComparisonStatus::Pass,
+        observed_value: Some(1.6),
+        observed_unit: Some("percentage_points".into()),
+        observed_ordering: None,
+        prior_ordering: None,
+        observed_series: None,
+        parameter_series: None,
+        image_digest: Some("sha256:abc".into()),
+        produced_at: Some("2026-06-04T10:00:00Z".into()),
+        diagnostics: diag,
+    };
+    let augmented = render_augmented(&RenderInput {
+        report: &report,
+        evidence: &[],
+        related_events: &[],
+        backing_reports: &[],
+        cycle_contested: &std::collections::HashSet::new(),
+        metadata: None,
+        concordance: Some(&cd),
+        concordance_result: Some(&cr),
+    });
+    let block = augmented
+        .get("concordance_result")
+        .expect("concordance_result inlined at top level");
+    assert_eq!(block["comparison_status"], "pass");
+    assert_eq!(block["observed_value"], 1.6);
+    assert_eq!(block["observed_unit"], "percentage_points");
+    assert_eq!(block["image_digest"], "sha256:abc");
+    assert_eq!(block["diagnostics"]["within_band"], true);
+}
+
+#[test]
+fn human_render_emits_concordance_result_section_pr5h() {
+    use typed_trust::{
+        claim::{
+            ComparisonStatus, ConcordanceDeclaration, ConcordancePattern,
+            ConcordanceResult, PriorBindingContext,
+        },
+        human_render::render_markdown,
+        report::{RenderStatus, TrustReport},
+        render::{render_augmented, RenderInput},
+        ClaimId,
+    };
+    let report = TrustReport {
+        claim: ClaimId::new("x"),
+        status: RenderStatus::Current,
+        criteria: vec![],
+        challenges: vec![],
+        gaps: vec![],
+        aggregate: None,
+    };
+    let cd = ConcordanceDeclaration {
+        pattern: ConcordancePattern::NumericBand {
+            metric_path: "x.y".into(),
+            epsilon: 0.5,
+            prior_value: 1.5,
+        },
+        paper_locator: "src.md".into(),
+        prior_binding: PriorBindingContext {
+            prior_unit: "percentage_points".into(),
+            prior_metric_definition: "FDR".into(),
+            locator: "T3".into(),
+            prior_extraction_note: "x".into(),
+            source_id: "doi:test".into(),
+        },
+    };
+    let cr = ConcordanceResult {
+        comparison_status: ComparisonStatus::Pass,
+        observed_value: Some(1.6),
+        observed_unit: Some("percentage_points".into()),
+        observed_ordering: None,
+        prior_ordering: None,
+        observed_series: None,
+        parameter_series: None,
+        image_digest: Some("sha256:abc".into()),
+        produced_at: Some("2026-06-04T10:00:00Z".into()),
+        diagnostics: serde_json::Map::new(),
+    };
+    let augmented = render_augmented(&RenderInput {
+        report: &report,
+        evidence: &[],
+        related_events: &[],
+        backing_reports: &[],
+        cycle_contested: &std::collections::HashSet::new(),
+        metadata: None,
+        concordance: Some(&cd),
+        concordance_result: Some(&cr),
+    });
+    let md = render_markdown(&augmented);
+    assert!(md.contains("## Concordance result"));
+    assert!(md.contains("Pass"));
+    assert!(md.contains("1.6"));
+    assert!(md.contains("sha256:abc"));
+}
+
+#[test]
+fn human_render_emits_concordance_result_ordering_for_ordinal_match_pr5h() {
+    use typed_trust::{
+        claim::{
+            ComparisonStatus, ConcordanceDeclaration, ConcordancePattern,
+            ConcordanceResult, PriorBindingContext, RankingDirection, TiePolicy,
+        },
+        human_render::render_markdown,
+        report::{RenderStatus, TrustReport},
+        render::{render_augmented, RenderInput},
+        ClaimId,
+    };
+    let report = TrustReport {
+        claim: ClaimId::new("ord"),
+        status: RenderStatus::Current,
+        criteria: vec![],
+        challenges: vec![],
+        gaps: vec![],
+        aggregate: None,
+    };
+    let mut e2p = std::collections::BTreeMap::new();
+    e2p.insert("FragPipe".into(), "fragpipe.fdr".into());
+    e2p.insert("PEAKS".into(), "peaks.fdr".into());
+    let mut prior = std::collections::BTreeMap::new();
+    prior.insert("FragPipe".into(), 1.5);
+    prior.insert("PEAKS".into(), 1.8);
+    let cd = ConcordanceDeclaration {
+        pattern: ConcordancePattern::OrdinalMatch {
+            entity_to_path: e2p,
+            direction: RankingDirection::LowerIsBetter,
+            tie_policy: TiePolicy::Strict,
+            prior_value: prior,
+        },
+        paper_locator: "src.md".into(),
+        prior_binding: PriorBindingContext {
+            prior_unit: "percentage_points".into(),
+            prior_metric_definition: "FDR".into(),
+            locator: "T3".into(),
+            prior_extraction_note: "x".into(),
+            source_id: "doi:test".into(),
+        },
+    };
+    let cr = ConcordanceResult {
+        comparison_status: ComparisonStatus::Pass,
+        observed_value: None,
+        observed_unit: None,
+        observed_ordering: Some(vec!["FragPipe".into(), "PEAKS".into()]),
+        prior_ordering: Some(vec!["FragPipe".into(), "PEAKS".into()]),
+        observed_series: None,
+        parameter_series: None,
+        image_digest: None,
+        produced_at: None,
+        diagnostics: serde_json::Map::new(),
+    };
+    let augmented = render_augmented(&RenderInput {
+        report: &report,
+        evidence: &[],
+        related_events: &[],
+        backing_reports: &[],
+        cycle_contested: &std::collections::HashSet::new(),
+        metadata: None,
+        concordance: Some(&cd),
+        concordance_result: Some(&cr),
+    });
+    let md = render_markdown(&augmented);
+    assert!(md.contains("## Concordance result"));
+    assert!(md.contains("Observed ordering"));
+    assert!(md.contains("FragPipe"));
+    assert!(md.contains("PEAKS"));
+    // Arrow separator used in human_render.
+    assert!(md.contains("→"));
 }

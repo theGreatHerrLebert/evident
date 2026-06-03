@@ -201,7 +201,7 @@ fn initialize_handshake_advertises_protocol_version() {
 }
 
 #[test]
-fn tools_list_returns_nine_tools() {
+fn tools_list_returns_ten_tools() {
     let tmp = tempfile::tempdir().unwrap();
     let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
     let resp = proc.tools_list();
@@ -210,7 +210,7 @@ fn tools_list_returns_nine_tools() {
         .iter()
         .map(|t| t["name"].as_str().unwrap_or(""))
         .collect();
-    assert_eq!(tools.len(), 9, "expected 9 tools, got names {names:?}");
+    assert_eq!(tools.len(), 10, "expected 10 tools, got names {names:?}");
     for expected in [
         "list_claims",
         "read_report",
@@ -221,6 +221,7 @@ fn tools_list_returns_nine_tools() {
         "walk_backing_chain",
         "render_report",
         "query_metadata",
+        "query_concordance",
     ] {
         assert!(names.contains(&expected), "missing tool: {expected}");
     }
@@ -1300,5 +1301,116 @@ fn list_claims_projects_source_id_when_provenance_carries_it_pr5c_cr3() {
         .find(|i| i["claim_id"] == "cargo-rust-msrv")
         .unwrap();
     assert_eq!(msrv["source_id"], "github:Roestlab/pdbtbx@deadbeef");
+    proc.shutdown();
+}
+
+// ============================================================
+// PR5h: query_concordance MCP tool
+// ============================================================
+
+fn write_concordance_manifest(dir: &Path) -> PathBuf {
+    let manifest = dir.join("evident.yaml");
+    std::fs::write(
+        &manifest,
+        r#"version: 0.1
+project: rustims-concordance-demo
+claims:
+  - id: rustims-fragpipe-fdr-10k-concords-meier
+    kind: behavioral_concordance
+    tier: research
+    title: FragPipe FDR on rustims-simulated HLA-I 10k tracks Meier 2024
+    claim: Bound the FDR within 0.5 pp of Meier's reported value.
+    concordance:
+      pattern:
+        pattern_kind: numeric_band
+        metric_path: fragpipe.hla_10k.fdr_pct
+        epsilon: 0.5
+        prior_value: 1.5
+      paper_locator: source/cited.md#rustims-fragpipe-fdr-10k
+      prior_binding:
+        prior_unit: percentage_points
+        prior_metric_definition: Empirical true FDR per Meier 2024.
+        locator: Meier 2024 Table 3
+        prior_extraction_note: Curator verified Table 3
+        source_id: doi:10.1038/PLACEHOLDER
+  - id: rustims-tools-fdr-ordering-concords-meier
+    kind: behavioral_concordance
+    tier: research
+    title: Tool FDR ordering on rustims-simulated HLA-I 10k
+    claim: Ordering matches Meier 2024 measured ordering.
+    concordance:
+      pattern:
+        pattern_kind: ordinal_match
+        entity_to_path:
+          FragPipe_v22: fragpipe_v22.hla_10k.fdr_pct
+          PEAKS_XPro: peaks_xpro.hla_10k.fdr_pct
+        direction: lower_is_better
+        tie_policy: adjacent_swap_ok
+        prior_value:
+          FragPipe_v22: 1.5
+          PEAKS_XPro: 1.8
+      paper_locator: source/cited.md#rustims-fdr-ordering
+      prior_binding:
+        prior_unit: percentage_points
+        prior_metric_definition: Empirical true FDR.
+        locator: Meier 2024 Table 3
+        prior_extraction_note: Curator verified
+        source_id: doi:10.1038/PLACEHOLDER
+"#,
+    )
+    .unwrap();
+    manifest
+}
+
+#[test]
+fn query_concordance_returns_all_concordance_claims_when_unfiltered_pr5h() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = write_concordance_manifest(tmp.path());
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let resp = proc.call_tool(
+        "query_concordance",
+        json!({"manifest_path": manifest.to_str().unwrap()}),
+    );
+    let payload = decode_result(&resp);
+    let items = payload["items"].as_array().expect("items");
+    assert_eq!(items.len(), 2);
+    let kinds: Vec<&str> = items.iter().map(|i| i["pattern_kind"].as_str().unwrap_or("")).collect();
+    assert!(kinds.contains(&"numeric_band"));
+    assert!(kinds.contains(&"ordinal_match"));
+    proc.shutdown();
+}
+
+#[test]
+fn query_concordance_filters_by_pattern_kind_pr5h() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = write_concordance_manifest(tmp.path());
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let resp = proc.call_tool(
+        "query_concordance",
+        json!({
+            "manifest_path": manifest.to_str().unwrap(),
+            "pattern_kind": "numeric_band"
+        }),
+    );
+    let payload = decode_result(&resp);
+    let items = payload["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["claim_id"], "rustims-fragpipe-fdr-10k-concords-meier");
+    assert_eq!(items[0]["paper_locator"], "source/cited.md#rustims-fragpipe-fdr-10k");
+    assert_eq!(items[0]["prior_source_id"], "doi:10.1038/PLACEHOLDER");
+    proc.shutdown();
+}
+
+#[test]
+fn query_concordance_empty_when_no_concordance_claims_pr5h() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = write_simple_manifest(tmp.path(), "x");
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let resp = proc.call_tool(
+        "query_concordance",
+        json!({"manifest_path": manifest.to_str().unwrap()}),
+    );
+    let payload = decode_result(&resp);
+    assert!(payload["items"].as_array().unwrap().is_empty());
     proc.shutdown();
 }

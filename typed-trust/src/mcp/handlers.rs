@@ -110,6 +110,7 @@ pub fn dispatch_sync(
         "walk_backing_chain" => walk_backing_chain(state, arguments),
         "render_report" => render_report(state, arguments),
         "query_metadata" => query_metadata(state, arguments),
+        "query_concordance" => query_concordance(state, arguments),
         other => Err(ToolError::protocol(
             -32601,
             format!("Unknown tool: {other}"),
@@ -756,6 +757,7 @@ fn synthesize_for(
         cycle_contested: &HashSet::new(),
         metadata: typed_claim.metadata.as_ref(),
             concordance: typed_claim.concordance.as_ref(),
+            concordance_result: None,
     });
     let _ = supersede_projection; // reserved for future expansion
     Ok(augmented)
@@ -766,4 +768,69 @@ fn parse_sidecar(path: &str) -> Result<ReviewEventSidecar, ToolError> {
         .map_err(|e| ToolError::data(format!("read sidecar {path}: {e}")))?;
     serde_json::from_str(&bytes)
         .map_err(|e| ToolError::data(format!("parse sidecar {path}: {e}")))
+}
+
+/// PR5h: structured query path for behavioral_concordance claims.
+fn query_concordance(state: &ServerState, args: Value) -> Result<Value, ToolError> {
+    let manifest_path = arg_str(&args, "manifest_path")?;
+    authorize_manifest(state, &manifest_path)?;
+    let pattern_kind_filter = arg_str_opt(&args, "pattern_kind");
+
+    let claims = load_claims_with_policy(&manifest_path, &state.policy)?;
+    for c in claims.iter() {
+        if c.claim.kind == "behavioral_concordance" && c.claim.concordance.is_none() {
+            return Err(ToolError::data(format!(
+                "claim {}: kind=behavioral_concordance requires a concordance block",
+                c.claim.id
+            )));
+        }
+    }
+    let items: Vec<Value> = claims
+        .iter()
+        .filter(|c| c.claim.kind == "behavioral_concordance")
+        .filter(|c| c.claim.concordance.is_some())
+        .filter_map(|c| {
+            let block = c.claim.concordance.as_ref().unwrap();
+            let pk = match &block.pattern {
+                crate::translate::ManifestConcordancePattern::NumericBand { .. } => "numeric_band",
+                crate::translate::ManifestConcordancePattern::RelativeBand { .. } => "relative_band",
+                crate::translate::ManifestConcordancePattern::SameOrderOfMagnitude { .. } => "same_order_of_magnitude",
+                crate::translate::ManifestConcordancePattern::OrdinalMatch { .. } => "ordinal_match",
+                crate::translate::ManifestConcordancePattern::MonotoneWith { .. } => "monotone_with",
+            };
+            if let Some(ref filt) = pattern_kind_filter {
+                if pk != filt.as_str() {
+                    return None;
+                }
+            }
+            let mut item = json!({
+                "claim_id": c.claim.id,
+                "title": c.claim.title,
+                "tier": c.claim.tier,
+                "pattern_kind": pk,
+                "paper_locator": block.paper_locator,
+                "prior_source_id": block.prior_binding.source_id,
+            });
+            if let Some(prov) = c.claim.provenance.as_ref() {
+                item.as_object_mut().unwrap().insert(
+                    "provenance_kind".into(),
+                    json!(prov.effective_kind()),
+                );
+                if let Some(sid) = prov.source_id() {
+                    item.as_object_mut().unwrap().insert(
+                        "source_id".into(),
+                        json!(sid),
+                    );
+                }
+                if let Some(sc) = prov.source_context() {
+                    item.as_object_mut().unwrap().insert(
+                        "source_context".into(),
+                        json!(sc),
+                    );
+                }
+            }
+            Some(item)
+        })
+        .collect();
+    Ok(json!({"items": items}))
 }

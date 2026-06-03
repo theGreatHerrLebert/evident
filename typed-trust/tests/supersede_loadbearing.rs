@@ -139,6 +139,7 @@ fn supersede_on_challenge_flips_status_back_to_current() {
         cycle_contested: &HashSet::new(),
         metadata: None,
         concordance: None,
+        concordance_result: None,
     });
     let crit = &augmented["criteria"][0];
     let contested_by = crit["result"].get("contested_by");

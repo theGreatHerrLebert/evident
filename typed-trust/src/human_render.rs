@@ -44,6 +44,12 @@ pub fn render_markdown(augmented_json: &Value) -> String {
         render_concordance_declaration(&mut out, cd);
     }
 
+    // PR5h: render the comparator's verdict (pass / fail /
+    // not_assessed) when last_concorded.json carried an entry.
+    if let Some(cr) = augmented_json.get("concordance_result") {
+        render_concordance_result(&mut out, cr);
+    }
+
     if let Some(events) = augmented_json
         .get("_graph")
         .and_then(|g| g.get("review_events"))
@@ -225,6 +231,86 @@ fn render_concordance_declaration(out: &mut String, cd: &Value) {
         }
         out.push('\n');
     }
+}
+
+/// PR5h: render the comparator's verdict for a concordance claim.
+/// Shows the pass/fail/not_assessed status, observed value (when
+/// scalar), pattern-specific observed shape (ordering / series),
+/// and the artifact provenance (image_digest + produced_at) so a
+/// reader can chase the docker run that produced the verdict.
+fn render_concordance_result(out: &mut String, cr: &Value) {
+    let status = cr
+        .get("comparison_status")
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    let status_label = match status {
+        "pass" => "Pass ✓",
+        "fail" => "Fail ✗",
+        "not_assessed" => "Not assessed",
+        _ => "Unknown",
+    };
+    out.push_str("## Concordance result\n\n");
+    out.push_str(&format!("- **Status:** {status_label}\n"));
+
+    if let Some(observed) = cr.get("observed_value").and_then(Value::as_f64) {
+        let unit = cr
+            .get("observed_unit")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        out.push_str(&format!(
+            "- **Observed value:** {}{}\n",
+            inline_code(&observed.to_string()),
+            if unit.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", inline_code(unit))
+            }
+        ));
+    }
+
+    if let Some(obs) = cr.get("observed_ordering").and_then(Value::as_array) {
+        let parts: Vec<String> = obs
+            .iter()
+            .map(|v| inline_code(v.as_str().unwrap_or("?")))
+            .collect();
+        out.push_str(&format!("- **Observed ordering:** {}\n", parts.join(" → ")));
+    }
+    if let Some(prior) = cr.get("prior_ordering").and_then(Value::as_array) {
+        let parts: Vec<String> = prior
+            .iter()
+            .map(|v| inline_code(v.as_str().unwrap_or("?")))
+            .collect();
+        out.push_str(&format!("- **Prior ordering:** {}\n", parts.join(" → ")));
+    }
+
+    if let Some(series) = cr.get("observed_series").and_then(Value::as_array) {
+        let parts: Vec<String> = series.iter().map(|v| v.to_string()).collect();
+        out.push_str(&format!(
+            "- **Observed series:** {}\n",
+            inline_code(&format!("[{}]", parts.join(", ")))
+        ));
+    }
+
+    if let Some(diag) = cr.get("diagnostics").and_then(Value::as_object) {
+        if !diag.is_empty() {
+            out.push_str("- **Diagnostics:**\n");
+            for (k, v) in diag {
+                out.push_str(&format!(
+                    "    - {}: {}\n",
+                    inline_code(k),
+                    inline_code(&v.to_string())
+                ));
+            }
+        }
+    }
+
+    if let Some(img) = cr.get("image_digest").and_then(Value::as_str) {
+        out.push_str(&format!("- **Image digest:** {}\n", inline_code(img)));
+    }
+    if let Some(at) = cr.get("produced_at").and_then(Value::as_str) {
+        out.push_str(&format!("- **Produced at:** {}\n", inline_code(at)));
+    }
+    out.push('\n');
 }
 
 fn render_concordance_pattern(out: &mut String, kind: &str, pattern: &Value) {

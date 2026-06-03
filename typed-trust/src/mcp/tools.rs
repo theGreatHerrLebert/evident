@@ -19,6 +19,7 @@ pub fn tool_definitions() -> Vec<Value> {
         walk_backing_chain_tool(),
         render_report_tool(),
         query_metadata_tool(),
+        query_concordance_tool(),
     ]
 }
 
@@ -179,6 +180,21 @@ fn render_report_tool() -> Value {
                 "format": {"type": "string", "enum": ["markdown", "html", "mermaid"]}
             },
             "required": ["manifest_path", "claim_id", "format"]
+        }
+    })
+}
+
+fn query_concordance_tool() -> Value {
+    json!({
+        "name": "query_concordance",
+        "description": "Query declarative `behavioral_concordance` claims in a manifest. Use when the user asks about claims that compare measured behavior to a prior paper's reported behavior (numeric_band / relative_band / same_order_of_magnitude / ordinal_match / monotone_with). For empirical / measurement claims use list_claims + read_report; for declarative config-file claims use query_metadata.\n\nFilter compose conjunctively (exact, case-sensitive): `pattern_kind` (one of the five primitives). Each result item carries the pattern_kind, paper_locator, prior_binding source_id, and the same audit context list_claims returns (title, tier, provenance_kind, source_id, source_context).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "manifest_path": {"type": "string"},
+                "pattern_kind": {"type": "string", "description": "Filter by pattern primitive name (exact, case-sensitive)"}
+            },
+            "required": ["manifest_path"]
         }
     })
 }
