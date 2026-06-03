@@ -1060,6 +1060,89 @@ def rephrase(manifest_path: Path, claim_id: str) -> None:
     )
 
 
+@main.command("extract-metadata")
+@click.option(
+    "--repo",
+    "repo_path",
+    required=True,
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+    help="Path to a local repo to read pyproject.toml / Cargo.toml / package.json from.",
+)
+@click.option(
+    "--output-dir",
+    "output_dir",
+    required=True,
+    type=click.Path(file_okay=False, path_type=Path),
+    help="Directory to write evident.yaml + EXTRACTION.md into.",
+)
+@click.option(
+    "--project",
+    default=None,
+    help=(
+        "Override the manifest's `project:` field. Defaults to "
+        "`extracted/<repo-basename>-metadata`."
+    ),
+)
+def extract_metadata(
+    repo_path: Path,
+    output_dir: Path,
+    project: Optional[str],
+) -> None:
+    """Phase 5 PR5b: deterministic metadata extraction.
+
+    Reads pyproject.toml / Cargo.toml / package.json from the repo
+    root and emits `kind: metadata_compatibility` claims. No model
+    call — metadata is structural; the declaration IS the claim.
+
+    Output:
+    - <output-dir>/evident.yaml — the draft manifest
+    - <output-dir>/EXTRACTION.md — what was emitted and skipped
+    """
+    from evident_agent.extract import metadata as mdwalker
+
+    result = mdwalker.walk_repo_metadata(repo_path)
+    if project is None:
+        project = f"extracted/{repo_path.resolve().name}-metadata"
+    manifest = mdwalker.render_metadata_manifest(result, project=project)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    import yaml as _yaml
+    (output_dir / "evident.yaml").write_text(
+        _yaml.safe_dump(manifest, sort_keys=False, default_flow_style=False),
+        encoding="utf-8",
+    )
+
+    # Brief EXTRACTION.md so the operator can see what was emitted.
+    lines = [
+        "# Metadata extraction summary\n",
+        f"Source: `{result.source_id}` (sha256: `{result.source_sha}`)\n",
+        f"\n## Emitted claims ({len(result.claims)})\n",
+    ]
+    for c in result.claims:
+        lines.append(
+            f"- **{c.id}** — {c.title}  \n"
+            f"  `{c.source_file}::{c.source_path}` = `{c.declared_value}`"
+        )
+    if result.skipped_files:
+        lines.append(
+            f"\n## Skipped files ({len(result.skipped_files)})\n"
+        )
+        for s in result.skipped_files:
+            lines.append(f"- `{s}` (parsed but no recognised fields)")
+    if result.notes:
+        lines.append("\n## Notes\n")
+        for n in result.notes:
+            lines.append(f"- {n}")
+    (output_dir / "EXTRACTION.md").write_text(
+        "\n".join(lines) + "\n", encoding="utf-8",
+    )
+
+    click.echo(
+        f"extracted {len(result.claims)} metadata claim(s) from {repo_path}\n"
+        f"  output: {output_dir}"
+    )
+
+
 @main.command("review-extracted")
 @click.option(
     "--manifest",

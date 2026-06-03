@@ -29,6 +29,12 @@ pub enum ClaimKind {
     Existence,
     Reproducibility,
     Provenance,
+    /// PR5b: declarative claim about a configuration field
+    /// (e.g. ``requires-python = ">=3.10"`` in pyproject.toml).
+    /// Not an empirical measurement — the declaration IS the
+    /// evidence. Synthesizer emits a metadata-flavored
+    /// TrustReport without empirical Criteria.
+    MetadataCompatibility,
     Other(String),
 }
 

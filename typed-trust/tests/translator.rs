@@ -1371,3 +1371,199 @@ claims:
         panic!("expected Judged derivation, got {:?}", evidence.supports.derivation);
     }
 }
+
+// ----------------------------------------------------------------------
+// PR5b: metadata_compatibility claim kind
+// ----------------------------------------------------------------------
+
+#[test]
+fn metadata_claim_translates_with_metadata_block() {
+    let yaml = r#"
+claims:
+  - id: pdbtbx-rust-msrv
+    title: pdbtbx requires Rust MSRV 1.67+
+    kind: metadata_compatibility
+    tier: research
+    source: ..
+    claim: |
+      pdbtbx's Cargo.toml declares rust-version = "1.67"
+    metadata:
+      field: rust_msrv
+      declared_value: "1.67"
+      source_file: Cargo.toml
+      source_path: package.rust-version
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let ctx = ctx("any.yaml");
+    let attested = translate_claim(&ctx, mc, "claims[0]").unwrap();
+    assert_eq!(attested.value.kind, ClaimKind::MetadataCompatibility);
+    assert_eq!(attested.value.id.as_str(), "pdbtbx-rust-msrv");
+}
+
+#[test]
+fn metadata_claim_without_metadata_block_is_rejected() {
+    let yaml = r#"
+claims:
+  - id: missing-meta
+    title: missing metadata block
+    kind: metadata_compatibility
+    tier: research
+    source: ..
+    claim: missing metadata block
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let ctx = ctx("any.yaml");
+    let err = translate_claim(&ctx, mc, "claims[0]").unwrap_err();
+    match err {
+        TranslateError::MetadataClaimMissingBlock { id } => {
+            assert_eq!(id, "missing-meta");
+        }
+        other => panic!("expected MetadataClaimMissingBlock, got {other:?}"),
+    }
+}
+
+#[test]
+fn metadata_claim_with_tolerances_is_rejected() {
+    let yaml = r#"
+claims:
+  - id: bad-meta
+    title: metadata claim with tolerances
+    kind: metadata_compatibility
+    tier: research
+    source: ..
+    claim: bad meta
+    metadata:
+      field: x
+      declared_value: "1"
+      source_file: pyproject.toml
+      source_path: x
+    tolerances:
+      - metric: x
+        op: "<"
+        value: 1.0
+        prose: should not be allowed
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let ctx = ctx("any.yaml");
+    let err = translate_claim(&ctx, mc, "claims[0]").unwrap_err();
+    assert!(
+        matches!(err, TranslateError::MetadataClaimCarriesTolerances { .. }),
+        "expected MetadataClaimCarriesTolerances, got {err:?}",
+    );
+}
+
+#[test]
+fn measurement_claim_with_metadata_block_is_rejected() {
+    let yaml = r#"
+claims:
+  - id: bad-measurement
+    title: measurement claim with metadata block
+    kind: measurement
+    tier: research
+    case: src.md
+    source: ..
+    claim: should not have metadata
+    tolerances:
+      - metric: x
+        op: "<"
+        value: 1.0
+        prose: ok
+    evidence:
+      oracle: [Manual]
+      command: echo
+      artifact: out.txt
+    metadata:
+      field: x
+      declared_value: "1"
+      source_file: pyproject.toml
+      source_path: x
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let ctx = ctx("any.yaml");
+    let err = translate_claim(&ctx, mc, "claims[0]").unwrap_err();
+    assert!(
+        matches!(err, TranslateError::MeasurementClaimCarriesMetadata { .. }),
+        "expected MeasurementClaimCarriesMetadata, got {err:?}",
+    );
+}
+
+#[test]
+fn metadata_claim_emits_no_criteria() {
+    let yaml = r#"
+claims:
+  - id: pkg-python
+    title: package requires Python >= 3.10
+    kind: metadata_compatibility
+    tier: research
+    source: ..
+    claim: pkg requires Python >= 3.10
+    metadata:
+      field: python_version_requirement
+      declared_value: ">=3.10"
+      source_file: pyproject.toml
+      source_path: project.requires-python
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let criteria = translate_tolerances(mc).unwrap();
+    assert!(
+        criteria.is_empty(),
+        "metadata claim should have empty criteria, got {criteria:?}",
+    );
+}
+
+#[test]
+fn metadata_claim_emits_no_evidence() {
+    let yaml = r#"
+claims:
+  - id: pkg-rust
+    title: package requires Rust MSRV 1.67
+    kind: metadata_compatibility
+    tier: research
+    source: ..
+    claim: pkg requires Rust MSRV 1.67
+    metadata:
+      field: rust_msrv
+      declared_value: "1.67"
+      source_file: Cargo.toml
+      source_path: package.rust-version
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let ctx = ctx("any.yaml");
+    let criteria = translate_tolerances(mc).unwrap();
+    let evidence = translate_evidence(&ctx, mc, &criteria).unwrap();
+    assert!(
+        evidence.is_none(),
+        "metadata claim should produce no Evidence, got Some(_)",
+    );
+}
+
+#[test]
+fn metadata_claim_rejects_unknown_field_in_block() {
+    let yaml = r#"
+claims:
+  - id: bad-extra-field
+    title: extra field in metadata
+    kind: metadata_compatibility
+    tier: research
+    source: ..
+    claim: bad
+    metadata:
+      field: x
+      declared_value: "1"
+      source_file: pyproject.toml
+      source_path: x
+      unknown_field: this should be rejected
+"#;
+    let err = parse_manifest_file(yaml).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("unknown_field") || msg.contains("unknown field"),
+        "expected error mentioning the unknown field, got: {msg}",
+    );
+}
