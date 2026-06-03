@@ -347,6 +347,9 @@ pub enum TranslateError {
     /// PR5b: metadata claims must NOT carry tolerances; they're
     /// declarative not empirical.
     MetadataClaimCarriesTolerances { id: String },
+    /// PR5b: metadata claims must NOT carry an `evidence` block;
+    /// the declaration IS the evidence (codex F-PR5b-CR1 P2).
+    MetadataClaimCarriesEvidence { id: String },
     /// PR5b: measurement claims must NOT carry a metadata block.
     MeasurementClaimCarriesMetadata { id: String },
 }
@@ -408,6 +411,11 @@ impl std::fmt::Display for TranslateError {
                 "claim {id}: kind=metadata_compatibility must NOT carry \
                  tolerances; metadata is declarative, not empirical"
             ),
+            TranslateError::MetadataClaimCarriesEvidence { id } => write!(
+                f,
+                "claim {id}: kind=metadata_compatibility must NOT carry \
+                 an `evidence` block; the declaration IS the evidence"
+            ),
             TranslateError::MeasurementClaimCarriesMetadata { id } => write!(
                 f,
                 "claim {id}: kind=measurement must NOT carry a `metadata` \
@@ -459,6 +467,14 @@ pub fn translate_claim(
         }
         if mc.tolerances.is_some() {
             return Err(TranslateError::MetadataClaimCarriesTolerances {
+                id: mc.id.clone(),
+            });
+        }
+        // Codex F-PR5b-CR1 (P2): also reject `evidence:` on a
+        // metadata claim. The two paths are disjoint; the
+        // declaration IS the evidence.
+        if mc.evidence.is_some() {
+            return Err(TranslateError::MetadataClaimCarriesEvidence {
                 id: mc.id.clone(),
             });
         }

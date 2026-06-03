@@ -1128,7 +1128,15 @@ def extract_metadata(
             f"\n## Skipped files ({len(result.skipped_files)})\n"
         )
         for s in result.skipped_files:
-            lines.append(f"- `{s}` (parsed but no recognised fields)")
+            if s.reason == "parse_error":
+                detail = s.detail or "parse error"
+                lines.append(
+                    f"- `{s.path}` — **parse error**: {detail}"
+                )
+            else:
+                lines.append(
+                    f"- `{s.path}` (parsed but no recognised fields)"
+                )
     if result.notes:
         lines.append("\n## Notes\n")
         for n in result.notes:

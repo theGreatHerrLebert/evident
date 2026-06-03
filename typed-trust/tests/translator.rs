@@ -1567,3 +1567,36 @@ claims:
         "expected error mentioning the unknown field, got: {msg}",
     );
 }
+
+#[test]
+fn metadata_claim_with_evidence_block_is_rejected() {
+    // Codex F-PR5b-CR1 (P2): the disjointness rule must reject
+    // `evidence:` on a metadata claim. The declaration IS the
+    // evidence; carrying a command would be misleading.
+    let yaml = r#"
+claims:
+  - id: bad-meta-evidence
+    title: metadata claim with evidence
+    kind: metadata_compatibility
+    tier: research
+    source: ..
+    claim: bad
+    metadata:
+      field: x
+      declared_value: "1"
+      source_file: pyproject.toml
+      source_path: x
+    evidence:
+      oracle: [Manual]
+      command: echo no
+      artifact: out.txt
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let ctx = ctx("any.yaml");
+    let err = translate_claim(&ctx, mc, "claims[0]").unwrap_err();
+    assert!(
+        matches!(err, TranslateError::MetadataClaimCarriesEvidence { .. }),
+        "expected MetadataClaimCarriesEvidence, got {err:?}",
+    );
+}

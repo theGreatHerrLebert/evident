@@ -81,36 +81,69 @@ def test_empty_repo_emits_no_claims_and_one_note(tmp_path: Path):
     assert any("no pyproject" in n.lower() for n in result.notes)
 
 
-def test_pyproject_with_no_project_section_skips_quietly(tmp_path: Path):
+def test_pyproject_with_no_project_section_skips_with_recognised_reason(
+    tmp_path: Path,
+):
     """A pyproject.toml that only has [build-system] is recognised
-    as parseable but has no recognized compatibility fields; we
-    skip silently."""
+    as parseable but has no recognized compatibility fields."""
     (tmp_path / "pyproject.toml").write_text(
         '[build-system]\nrequires = ["hatchling>=1.18"]\n'
     )
     result = mdwalker.walk_repo_metadata(tmp_path)
     assert result.claims == []
-    assert "pyproject.toml" in result.skipped_files
+    assert len(result.skipped_files) == 1
+    assert result.skipped_files[0].path == "pyproject.toml"
+    assert result.skipped_files[0].reason == "no_recognised_fields"
 
 
-def test_malformed_toml_is_skipped_without_error(tmp_path: Path):
-    """Corrupt TOML returns no claims and doesn't crash."""
+def test_malformed_toml_skip_reason_is_parse_error(tmp_path: Path):
+    """Codex F-PR5b-CR2 (P2): a corrupt config file must be
+    distinguished from one with no recognized fields. EXTRACTION.md
+    can then tell the curator whether to investigate."""
     (tmp_path / "pyproject.toml").write_text(
         "this = is not = valid toml\n"
     )
     result = mdwalker.walk_repo_metadata(tmp_path)
     assert result.claims == []
+    assert len(result.skipped_files) == 1
+    assert result.skipped_files[0].reason == "parse_error"
+    assert "parse error" in (result.skipped_files[0].detail or "").lower()
 
 
-def test_malformed_json_is_skipped_without_error(tmp_path: Path):
+def test_malformed_json_skip_reason_is_parse_error(tmp_path: Path):
     (tmp_path / "package.json").write_text("{ this: is not json }\n")
     result = mdwalker.walk_repo_metadata(tmp_path)
     assert result.claims == []
+    assert len(result.skipped_files) == 1
+    assert result.skipped_files[0].reason == "parse_error"
 
 
 # ---------------------------------------------------------------------
 # Claim id discipline
 # ---------------------------------------------------------------------
+
+
+def test_claim_id_prefix_uses_source_id_when_available(tmp_path: Path):
+    """Codex F-PR5b-CR3 (P2/P3): two repos with the same basename
+    must NOT generate colliding claim ids. The walker now uses
+    source_id-derived prefix when a stable id is available."""
+    # Same basename, different source_id (passed explicitly).
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "pyproject.toml").write_text(
+        '[project]\nname = "p"\nversion = "0.1.0"\nrequires-python = ">=3.10"\n'
+    )
+    r_a = mdwalker.walk_repo_metadata(
+        tmp_path / "a", source_id="github:org-a/project@deadbeef",
+    )
+    r_b = mdwalker.walk_repo_metadata(
+        tmp_path / "a", source_id="github:org-b/project@cafebabe",
+    )
+    ids_a = {c.id for c in r_a.claims}
+    ids_b = {c.id for c in r_b.claims}
+    assert ids_a != ids_b
+    # Each set carries the owner in the prefix.
+    assert any("org-a" in i for i in ids_a)
+    assert any("org-b" in i for i in ids_b)
 
 
 def test_claim_ids_are_stable_and_slug_safe(tmp_path: Path):

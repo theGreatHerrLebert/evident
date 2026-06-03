@@ -53,13 +53,27 @@ class MetadataClaim:
 
 
 @dataclass
+class SkippedFile:
+    """Why a config file didn't contribute claims.
+
+    Codex F-PR5b-CR2 (P2): distinguish "file exists but corrupt"
+    from "file exists but has no recognized fields" so the
+    EXTRACTION.md tells the curator whether to investigate.
+    """
+
+    path: str
+    reason: str  # "no_recognised_fields" | "parse_error"
+    detail: Optional[str] = None
+
+
+@dataclass
 class MetadataWalkResult:
     """Bundle of everything one metadata walk produces."""
 
     source_id: str
     source_sha: str
     claims: list[MetadataClaim]
-    skipped_files: list[str]
+    skipped_files: list[SkippedFile]
     notes: list[str]
 
 
@@ -81,9 +95,13 @@ def _slug(s: str) -> str:
 
 def _extract_pyproject(
     path: Path, repo_slug: str,
-) -> list[MetadataClaim]:
+) -> "list[MetadataClaim] | tuple[None, str]":
     """Read a pyproject.toml and emit metadata claims for the
     well-known compatibility fields.
+
+    Returns either a list of claims OR ``(None, detail)`` indicating
+    a parse error (codex F-PR5b-CR2 P2 distinguishes parse failures
+    from no-recognized-fields).
 
     Emitted claims:
     - ``python_version_requirement`` from ``project.requires-python``
@@ -93,8 +111,10 @@ def _extract_pyproject(
     try:
         with path.open("rb") as f:
             doc = tomllib.load(f)
-    except (tomllib.TOMLDecodeError, OSError):
-        return []
+    except tomllib.TOMLDecodeError as exc:
+        return (None, f"TOML parse error: {exc}")
+    except OSError as exc:
+        return (None, f"OS error: {exc}")
     project = doc.get("project") or {}
     out: list[MetadataClaim] = []
     pyreq = project.get("requires-python")
@@ -152,16 +172,20 @@ def _extract_pyproject(
 
 def _extract_cargo_toml(
     path: Path, repo_slug: str,
-) -> list[MetadataClaim]:
+) -> "list[MetadataClaim] | tuple[None, str]":
     """Read a Cargo.toml and emit metadata claims for well-known
     fields: ``package.rust-version`` (MSRV), ``package.name``,
     ``package.version``, ``package.edition``.
+
+    Returns ``(None, detail)`` on parse error (codex F-PR5b-CR2 P2).
     """
     try:
         with path.open("rb") as f:
             doc = tomllib.load(f)
-    except (tomllib.TOMLDecodeError, OSError):
-        return []
+    except tomllib.TOMLDecodeError as exc:
+        return (None, f"TOML parse error: {exc}")
+    except OSError as exc:
+        return (None, f"OS error: {exc}")
     package = doc.get("package") or {}
     out: list[MetadataClaim] = []
     rust_version = package.get("rust-version")
@@ -236,17 +260,21 @@ def _extract_cargo_toml(
 
 def _extract_package_json(
     path: Path, repo_slug: str,
-) -> list[MetadataClaim]:
+) -> "list[MetadataClaim] | tuple[None, str]":
     """Read a package.json and emit metadata claims for
     ``name``, ``version``, ``engines.node``.
+
+    Returns ``(None, detail)`` on parse error (codex F-PR5b-CR2 P2).
     """
     try:
         with path.open(encoding="utf-8") as f:
             doc = json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return []
+    except json.JSONDecodeError as exc:
+        return (None, f"JSON parse error: {exc}")
+    except OSError as exc:
+        return (None, f"OS error: {exc}")
     if not isinstance(doc, dict):
-        return []
+        return (None, "JSON top-level is not an object")
     out: list[MetadataClaim] = []
     name = doc.get("name")
     if isinstance(name, str) and name.strip():
@@ -305,6 +333,26 @@ def _extract_package_json(
 # ---------------------------------------------------------------------
 
 
+def _slug_prefix_from_source_id(source_id: str, fallback: str) -> str:
+    """Codex F-PR5b-CR3 (P2/P3): derive the claim id prefix from
+    the resolved source_id (e.g. ``github:owner/repo@<sha>`` →
+    ``owner-repo``) so two repos that share a basename (``src``,
+    ``repo``, ``evident``) don't collide.
+
+    Strips the ``@<sha>`` suffix. Falls back to ``fallback``
+    (typically the repo basename slug) if the source_id has no
+    structured owner/repo prefix.
+    """
+    base = source_id.split("@", 1)[0]
+    if base.startswith("github:"):
+        path = base[len("github:"):]  # owner/repo
+        return _slug(path.replace("/", "-"))
+    if base.startswith("local:"):
+        # local:<basename> — same as fallback.
+        return _slug(base[len("local:"):])
+    return fallback
+
+
 def walk_repo_metadata(
     repo_path: Path,
     *,
@@ -326,14 +374,17 @@ def walk_repo_metadata(
         source_id, source_sha = repo_walker.resolve_source_id(repo_path)
     else:
         _, source_sha = repo_walker.resolve_source_id(repo_path)
-    repo_slug = _slug(repo_path.name)
+    # Codex F-PR5b-CR3: prefer source-id-derived prefix to avoid
+    # claim id collisions across repos with the same basename.
+    fallback_slug = _slug(repo_path.name)
+    repo_slug = _slug_prefix_from_source_id(source_id, fallback_slug)
 
     claims: list[MetadataClaim] = []
-    skipped_files: list[str] = []
+    skipped_files: list[SkippedFile] = []
     notes: list[str] = []
 
     # Each candidate file → its extractor function.
-    candidates: list[tuple[str, str, callable]] = [
+    candidates = [
         ("pyproject.toml", "pyproject.toml", _extract_pyproject),
         ("Cargo.toml", "Cargo.toml", _extract_cargo_toml),
         ("package.json", "package.json", _extract_package_json),
@@ -342,9 +393,30 @@ def walk_repo_metadata(
         path = repo_path / rel_name
         if not path.is_file():
             continue
-        new_claims = fn(path, repo_slug)
+        result = fn(path, repo_slug)
+        # Codex F-PR5b-CR2: parse-error returns are a tuple
+        # (None, detail). list returns are claims (possibly empty).
+        if isinstance(result, tuple) and result[0] is None:
+            detail = result[1]
+            skipped_files.append(
+                SkippedFile(
+                    path=rel_name,
+                    reason="parse_error",
+                    detail=detail,
+                )
+            )
+            notes.append(
+                f"{display_name}: parse failed — {detail}"
+            )
+            continue
+        new_claims = result if isinstance(result, list) else []
         if not new_claims:
-            skipped_files.append(rel_name)
+            skipped_files.append(
+                SkippedFile(
+                    path=rel_name,
+                    reason="no_recognised_fields",
+                )
+            )
             notes.append(
                 f"{display_name}: parsed but no recognised "
                 "compatibility fields"
