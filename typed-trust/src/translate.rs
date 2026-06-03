@@ -28,7 +28,7 @@
 
 use serde::Deserialize;
 
-use crate::claim::{Claim, ClaimKind, SourceSpan};
+use crate::claim::{Claim, ClaimKind, MetadataDeclaration, SourceSpan};
 use crate::derivation::{
     Attested, Derivation, Locator, Rerun, ReproductionOutcome, ToolInvocation,
 };
@@ -74,6 +74,36 @@ pub struct ManifestClaim {
     pub last_verified: Option<ManifestLastVerified>,
     pub assumptions: Option<Vec<String>>,
     pub failure_modes: Option<Vec<String>>,
+    /// PR5b: required when ``kind == "metadata_compatibility"``.
+    /// Carries the declarative configuration claim — what field is
+    /// being asserted, what value the source declares, and which
+    /// config file the value came from. Absent for empirical
+    /// (measurement) claims.
+    #[serde(default)]
+    pub metadata: Option<ManifestMetadataBlock>,
+}
+
+/// PR5b: structured block for ``kind: metadata_compatibility``
+/// claims. The declaration IS the evidence: the source's
+/// pyproject.toml / Cargo.toml / package.json stated this value,
+/// no synthesis or measurement required.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestMetadataBlock {
+    /// Semantic name of the field being declared (e.g.
+    /// ``python_version_requirement``, ``rust_msrv``,
+    /// ``node_version_requirement``).
+    pub field: String,
+    /// The literal value the source declares (e.g. ``">=3.10"``,
+    /// ``"1.67"``).
+    pub declared_value: String,
+    /// The config file the declaration came from
+    /// (e.g. ``"pyproject.toml"``).
+    pub source_file: String,
+    /// The path within the config file where the value lives
+    /// (e.g. ``"project.requires-python"`` for TOML, ``"engines.node"``
+    /// for package.json).
+    pub source_path: String,
 }
 
 /// Phase 5 PR2: the manifest's `provenance` field accepts either the
@@ -311,6 +341,17 @@ pub enum TranslateError {
         status: String,
         reason: Option<String>,
     },
+    /// PR5b: `kind: metadata_compatibility` claim missing the
+    /// required `metadata` block.
+    MetadataClaimMissingBlock { id: String },
+    /// PR5b: metadata claims must NOT carry tolerances; they're
+    /// declarative not empirical.
+    MetadataClaimCarriesTolerances { id: String },
+    /// PR5b: metadata claims must NOT carry an `evidence` block;
+    /// the declaration IS the evidence (codex F-PR5b-CR1 P2).
+    MetadataClaimCarriesEvidence { id: String },
+    /// PR5b: measurement claims must NOT carry a metadata block.
+    MeasurementClaimCarriesMetadata { id: String },
 }
 
 impl std::fmt::Display for TranslateError {
@@ -359,6 +400,27 @@ impl std::fmt::Display for TranslateError {
                  ({status:?}, {reason:?}); legal pairs are (available, null), \
                  (not_attempted, null), (unavailable_artifacts, <reason>)"
             ),
+            TranslateError::MetadataClaimMissingBlock { id } => write!(
+                f,
+                "claim {id}: kind=metadata_compatibility requires a \
+                 `metadata` block with field/declared_value/source_file/\
+                 source_path"
+            ),
+            TranslateError::MetadataClaimCarriesTolerances { id } => write!(
+                f,
+                "claim {id}: kind=metadata_compatibility must NOT carry \
+                 tolerances; metadata is declarative, not empirical"
+            ),
+            TranslateError::MetadataClaimCarriesEvidence { id } => write!(
+                f,
+                "claim {id}: kind=metadata_compatibility must NOT carry \
+                 an `evidence` block; the declaration IS the evidence"
+            ),
+            TranslateError::MeasurementClaimCarriesMetadata { id } => write!(
+                f,
+                "claim {id}: kind=measurement must NOT carry a `metadata` \
+                 block; metadata belongs only to metadata_compatibility claims"
+            ),
         }
     }
 }
@@ -383,18 +445,64 @@ pub fn translate_claim(
     mc: &ManifestClaim,
     span: &str,
 ) -> Result<Attested<Claim>, TranslateError> {
-    // §0 scope: only propositional empirical (measurement) claims.
-    if mc.kind != "measurement" {
+    // §0 scope: measurement claims (empirical) or
+    // metadata_compatibility claims (PR5b — declarative
+    // configuration claims that don't fit the empirical model).
+    if mc.kind != "measurement" && mc.kind != "metadata_compatibility" {
         return Err(TranslateError::OutOfScope {
             id: mc.id.clone(),
             kind: mc.kind.clone(),
         });
     }
 
+    // PR5b: metadata_compatibility claims require the `metadata`
+    // block (field/declared_value/source_file/source_path) and must
+    // NOT carry tolerances/evidence — those belong to the empirical
+    // path.
+    if mc.kind == "metadata_compatibility" {
+        if mc.metadata.is_none() {
+            return Err(TranslateError::MetadataClaimMissingBlock {
+                id: mc.id.clone(),
+            });
+        }
+        if mc.tolerances.is_some() {
+            return Err(TranslateError::MetadataClaimCarriesTolerances {
+                id: mc.id.clone(),
+            });
+        }
+        // Codex F-PR5b-CR1 (P2): also reject `evidence:` on a
+        // metadata claim. The two paths are disjoint; the
+        // declaration IS the evidence.
+        if mc.evidence.is_some() {
+            return Err(TranslateError::MetadataClaimCarriesEvidence {
+                id: mc.id.clone(),
+            });
+        }
+    } else if mc.metadata.is_some() {
+        // A measurement claim that accidentally carries a metadata
+        // block is rejected — keeps the two paths disjoint.
+        return Err(TranslateError::MeasurementClaimCarriesMetadata {
+            id: mc.id.clone(),
+        });
+    }
+
+    let kind = if mc.kind == "metadata_compatibility" {
+        ClaimKind::MetadataCompatibility
+    } else {
+        infer_kind(mc)
+    };
+
+    let metadata = mc.metadata.as_ref().map(|m| MetadataDeclaration {
+        field: m.field.clone(),
+        declared_value: m.declared_value.clone(),
+        source_file: m.source_file.clone(),
+        source_path: m.source_path.clone(),
+    });
+
     let claim = Claim {
         id: ClaimId::new(&mc.id),
         text: mc.claim.trim().to_string(),
-        kind: infer_kind(mc),
+        kind,
         source: SourceSpan {
             path: ctx.manifest_path.clone(),
             span: span.into(),
@@ -406,6 +514,7 @@ pub fn translate_claim(
         // author. Requires either reviewer identity or the degraded
         // `unspecified_human_from_manifest` form.
         requires_assumptions: vec![],
+        metadata,
     };
 
     let derivation = Derivation::Verified {

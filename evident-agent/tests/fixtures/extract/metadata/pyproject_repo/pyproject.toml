@@ -1,0 +1,5 @@
+[project]
+name = "fictional-pkg"
+version = "0.4.2"
+requires-python = ">=3.10"
+description = "A fictional package for testing the metadata walker."

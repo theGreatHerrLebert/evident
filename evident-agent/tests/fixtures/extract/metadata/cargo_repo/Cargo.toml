@@ -1,0 +1,6 @@
+[package]
+name = "fictional-cargo"
+version = "0.2.1"
+edition = "2021"
+rust-version = "1.67"
+description = "Fictional Cargo crate for metadata tests."

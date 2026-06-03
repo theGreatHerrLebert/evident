@@ -18,6 +18,7 @@ pub fn tool_definitions() -> Vec<Value> {
         get_superseded_events_tool(),
         walk_backing_chain_tool(),
         render_report_tool(),
+        query_metadata_tool(),
     ]
 }
 
@@ -144,6 +145,22 @@ fn walk_backing_chain_tool() -> Value {
                 "max_depth": {"type": "integer", "minimum": 1, "default": 4}
             },
             "required": ["manifest_path", "claim_id", "sidecar"]
+        }
+    })
+}
+
+fn query_metadata_tool() -> Value {
+    json!({
+        "name": "query_metadata",
+        "description": "Query declarative `metadata_compatibility` claims in a manifest. Use when the user asks about config-file claims (Python version requirements, Rust MSRV, Node engine ranges, etc.). For empirical / measurement claims use list_claims + read_report instead.\n\nFilters compose conjunctively, all exact-match and case-sensitive: `field` (semantic name like `rust_msrv`), `source_file` (e.g. `Cargo.toml`). Each result item carries the four metadata fields plus the same audit context list_claims returns (title, tier, provenance_kind, source_id, source_context) so the response is self-contained.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "manifest_path": {"type": "string"},
+                "field": {"type": "string", "description": "Filter by metadata field name (exact, case-sensitive)"},
+                "source_file": {"type": "string", "description": "Filter by source config file (exact, case-sensitive)"}
+            },
+            "required": ["manifest_path"]
         }
     })
 }
