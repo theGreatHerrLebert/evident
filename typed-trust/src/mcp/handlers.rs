@@ -109,6 +109,7 @@ pub fn dispatch_sync(
         "get_superseded_events" => get_superseded_events(state, arguments),
         "walk_backing_chain" => walk_backing_chain(state, arguments),
         "render_report" => render_report(state, arguments),
+        "query_metadata" => query_metadata(state, arguments),
         other => Err(ToolError::protocol(
             -32601,
             format!("Unknown tool: {other}"),
@@ -218,10 +219,43 @@ fn list_claims(state: &ServerState, args: Value) -> Result<Value, ToolError> {
                     "provenance_kind".into(),
                     json!(prov.effective_kind()),
                 );
+                // PR5c (codex F-PR5c-CR3): surface source_id so the
+                // query_metadata tool description ("same audit
+                // context as list_claims") is accurate. Audit
+                // workflows need the extracted source id at the
+                // summary tier.
+                if let Some(sid) = prov.source_id() {
+                    item.as_object_mut().unwrap().insert(
+                        "source_id".into(),
+                        json!(sid),
+                    );
+                }
                 if let Some(sc) = prov.source_context() {
                     item.as_object_mut().unwrap().insert(
                         "source_context".into(),
                         json!(sc),
+                    );
+                }
+            }
+            // PR5c: surface the metadata block on metadata claims so
+            // consumers using list_claims can spot the declaration
+            // without an extra query_metadata call. Codex F-PR5c-CR2
+            // (P2): gate on kind, not raw block presence — keeps the
+            // measurement/metadata disjointness invariant visible at
+            // this projection layer. A measurement claim that
+            // accidentally carries `metadata:` is a translator-
+            // rejected manifest bug; list_claims must not expose it
+            // as a normal metadata claim.
+            if c.claim.kind == "metadata_compatibility" {
+                if let Some(md) = c.claim.metadata.as_ref() {
+                    item.as_object_mut().unwrap().insert(
+                        "metadata".into(),
+                        json!({
+                            "field": md.field,
+                            "declared_value": md.declared_value,
+                            "source_file": md.source_file,
+                            "source_path": md.source_path,
+                        }),
                     );
                 }
             }
@@ -482,6 +516,87 @@ fn walk_backing_chain(state: &ServerState, args: Value) -> Result<Value, ToolErr
     }))
 }
 
+/// PR5c: structured query path for metadata_compatibility claims.
+///
+/// Walks the manifest, filters to `kind == metadata_compatibility`,
+/// applies optional `field` / `source_file` filters (exact,
+/// case-sensitive), and returns the audit-context summary plus the
+/// four metadata fields per match. Self-contained: a caller can
+/// route the result without a follow-up list_claims call.
+fn query_metadata(state: &ServerState, args: Value) -> Result<Value, ToolError> {
+    let manifest_path = arg_str(&args, "manifest_path")?;
+    authorize_manifest(state, &manifest_path)?;
+    let field_filter = arg_str_opt(&args, "field");
+    let source_file_filter = arg_str_opt(&args, "source_file");
+
+    let claims = load_claims_with_policy(&manifest_path, &state.policy)?;
+    // Codex F-PR5c-CR1 (P1): a `kind: metadata_compatibility` claim
+    // without a `metadata:` block is a translator-rejected manifest
+    // bug. Other MCP report-producing paths surface that as a
+    // tier-2 data error; query_metadata previously silently dropped
+    // such claims and made a broken manifest look like "no metadata
+    // claims." Validate up front so the caller sees the bug.
+    for c in claims.iter() {
+        if c.claim.kind == "metadata_compatibility" && c.claim.metadata.is_none() {
+            return Err(ToolError::data(format!(
+                "claim {}: kind=metadata_compatibility requires a metadata block",
+                c.claim.id
+            )));
+        }
+    }
+    let items: Vec<Value> = claims
+        .iter()
+        .filter(|c| c.claim.kind == "metadata_compatibility")
+        .filter(|c| c.claim.metadata.is_some())
+        .filter(|c| {
+            let md = c.claim.metadata.as_ref().unwrap();
+            field_filter
+                .as_ref()
+                .map_or(true, |f| md.field == *f)
+        })
+        .filter(|c| {
+            let md = c.claim.metadata.as_ref().unwrap();
+            source_file_filter
+                .as_ref()
+                .map_or(true, |f| md.source_file == *f)
+        })
+        .map(|c| {
+            let md = c.claim.metadata.as_ref().unwrap();
+            let mut item = json!({
+                "claim_id": c.claim.id,
+                "title": c.claim.title,
+                "tier": c.claim.tier,
+                "field": md.field,
+                "declared_value": md.declared_value,
+                "source_file": md.source_file,
+                "source_path": md.source_path,
+            });
+            // Mirror list_claims' audit context so a metadata query
+            // result is self-contained.
+            if let Some(prov) = c.claim.provenance.as_ref() {
+                item.as_object_mut().unwrap().insert(
+                    "provenance_kind".into(),
+                    json!(prov.effective_kind()),
+                );
+                if let Some(sid) = prov.source_id() {
+                    item.as_object_mut().unwrap().insert(
+                        "source_id".into(),
+                        json!(sid),
+                    );
+                }
+                if let Some(sc) = prov.source_context() {
+                    item.as_object_mut().unwrap().insert(
+                        "source_context".into(),
+                        json!(sc),
+                    );
+                }
+            }
+            item
+        })
+        .collect();
+    Ok(json!({"items": items}))
+}
+
 fn render_report(state: &ServerState, args: Value) -> Result<Value, ToolError> {
     let manifest_path = arg_str(&args, "manifest_path")?;
     let claim_id = arg_str(&args, "claim_id")?;
@@ -532,7 +647,9 @@ fn synthesize_for(
         now: now.clone(),
         manifest_path: target.source_path.clone(),
     };
-    translate_claim(&ctx, &target.claim, &target.span).map_err(|e| ToolError::data(e.to_string()))?;
+    let typed_claim = translate_claim(&ctx, &target.claim, &target.span)
+        .map_err(|e| ToolError::data(e.to_string()))?
+        .value;
     let criteria = translate_tolerances(&target.claim).map_err(|e| ToolError::data(e.to_string()))?;
     let evidence = translate_evidence(&ctx, &target.claim, &criteria)
         .map_err(|e| ToolError::data(e.to_string()))?
@@ -637,6 +754,7 @@ fn synthesize_for(
         related_events: events,
         backing_reports: &backing_reports,
         cycle_contested: &HashSet::new(),
+        metadata: typed_claim.metadata.as_ref(),
     });
     let _ = supersede_projection; // reserved for future expansion
     Ok(augmented)

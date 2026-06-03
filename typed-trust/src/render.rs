@@ -21,6 +21,7 @@ use std::collections::HashSet;
 
 use serde_json::{json, Map, Value};
 
+use crate::claim::MetadataDeclaration;
 use crate::derivation::{Derivation, Rerun};
 use crate::evidence::Evidence;
 use crate::ids::{ClaimId, CriterionId, EventId};
@@ -182,6 +183,14 @@ pub struct RenderInput<'a> {
     /// the per-criterion render status agrees with the synthesized
     /// report status.
     pub cycle_contested: &'a HashSet<ClaimId>,
+    /// PR5c: the typed Claim's metadata declaration when this is a
+    /// `MetadataCompatibility` claim. The TrustReport carries only
+    /// `claim: ClaimId`, so renderers can't reach the declaration
+    /// through the report — RenderInput is the only delivery path.
+    /// Inlined into the augmented JSON as a top-level
+    /// `metadata_declaration` block; consumed by `human_render` and
+    /// `html_render`.
+    pub metadata: Option<&'a MetadataDeclaration>,
 }
 
 /// Produce the augmented JSON. The normative report is serialized first;
@@ -198,6 +207,17 @@ pub fn render_augmented(input: &RenderInput) -> Value {
     if let Some(obj) = json.as_object_mut() {
         if let Some(graph) = build_graph_aux(input) {
             obj.insert("_graph".into(), graph);
+        }
+        // PR5c: surface the typed metadata declaration when the
+        // claim is a MetadataCompatibility kind. Inlined at the top
+        // level (not inside `_graph` or `criteria`) so the human and
+        // HTML renderers can pick it up without traversing criteria
+        // — metadata claims have no criteria to traverse.
+        if let Some(md) = input.metadata {
+            obj.insert(
+                "metadata_declaration".into(),
+                serde_json::to_value(md).expect("serialize MetadataDeclaration"),
+            );
         }
     }
 

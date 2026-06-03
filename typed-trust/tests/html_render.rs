@@ -140,6 +140,7 @@ fn render_contested_sasa_report_as_html_with_graph() {
         related_events: std::slice::from_ref(&challenge),
         backing_reports: std::slice::from_ref(&backing_report),
         cycle_contested: &std::collections::HashSet::new(),
+        metadata: None,
     });
 
     // Render the Mermaid graph standalone.
@@ -189,6 +190,7 @@ fn mermaid_graph_sanitizes_dashed_claim_ids() {
         related_events: &[],
         backing_reports: &[],
         cycle_contested: &std::collections::HashSet::new(),
+        metadata: None,
     });
     let mermaid = render_mermaid_graph(&augmented);
 

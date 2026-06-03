@@ -381,6 +381,7 @@ fn criterion_result_targeted_event_is_consistent_across_synth_and_render() {
         related_events: std::slice::from_ref(&event),
         backing_reports: &[],
         cycle_contested: &std::collections::HashSet::new(),
+        metadata: None,
     });
 
     // Report-level status is Current (synthesize doesn't match
@@ -496,6 +497,7 @@ fn render_augmented_adds_observed_value_and_criterion_status() {
         related_events: &[],
         backing_reports: &[],
         cycle_contested: &std::collections::HashSet::new(),
+        metadata: None,
     });
 
     let crit0 = &json["criteria"][0];
@@ -557,6 +559,7 @@ fn render_augmented_contested_includes_graph_and_contested_by() {
         related_events: std::slice::from_ref(&challenge),
         backing_reports: std::slice::from_ref(&backing_report),
         cycle_contested: &std::collections::HashSet::new(),
+        metadata: None,
     });
 
     // Report-level Contested.
@@ -898,6 +901,7 @@ fn render_criterion_status_agrees_with_synthesize_under_cycle_contestation() {
         related_events: std::slice::from_ref(&challenge),
         backing_reports: &backing,
         cycle_contested: &cycled,
+        metadata: None,
     });
 
     // Report is Contested by synthesize.
@@ -1455,4 +1459,182 @@ fn compute_backing_reports_respects_max_depth() {
     assert!(visited_ids.contains(&&ids[1]));
     assert!(!visited_ids.contains(&&ids[2]));
     assert!(!visited_ids.contains(&&ids[3]));
+}
+
+// ============================================================
+// PR5c: metadata declaration flows through render_augmented
+// ============================================================
+
+#[test]
+fn render_augmented_inlines_metadata_declaration_block_pr5c() {
+    use typed_trust::{
+        claim::MetadataDeclaration,
+        report::{RenderStatus, TrustReport},
+        render::{render_augmented, RenderInput},
+        ClaimId,
+    };
+
+    let report = TrustReport {
+        claim: ClaimId::new("pdbtbx-rust-msrv"),
+        status: RenderStatus::Current,
+        criteria: vec![],
+        challenges: vec![], gaps: vec![], aggregate: None,
+    };
+    let md = MetadataDeclaration {
+        field: "rust_msrv".into(),
+        declared_value: "1.67".into(),
+        source_file: "Cargo.toml".into(),
+        source_path: "package.rust-version".into(),
+    };
+    let augmented = render_augmented(&RenderInput {
+        report: &report,
+        evidence: &[],
+        related_events: &[],
+        backing_reports: &[],
+        cycle_contested: &std::collections::HashSet::new(),
+        metadata: Some(&md),
+    });
+
+    let block = augmented
+        .get("metadata_declaration")
+        .expect("metadata_declaration inlined at top level");
+    assert_eq!(block["field"], "rust_msrv");
+    assert_eq!(block["declared_value"], "1.67");
+    assert_eq!(block["source_file"], "Cargo.toml");
+    assert_eq!(block["source_path"], "package.rust-version");
+
+    // Sanity: a None metadata input omits the field rather than
+    // serializing as null — keeps the JSON shape stable for
+    // measurement claims.
+    let augmented_no_md = render_augmented(&RenderInput {
+        report: &report,
+        evidence: &[],
+        related_events: &[],
+        backing_reports: &[],
+        cycle_contested: &std::collections::HashSet::new(),
+        metadata: None,
+    });
+    assert!(augmented_no_md.get("metadata_declaration").is_none());
+}
+
+#[test]
+fn human_render_emits_metadata_declaration_section_pr5c() {
+    use typed_trust::{
+        claim::MetadataDeclaration,
+        human_render::render_markdown,
+        report::{RenderStatus, TrustReport},
+        render::{render_augmented, RenderInput},
+        ClaimId,
+    };
+    let report = TrustReport {
+        claim: ClaimId::new("pkg-python-3-10"),
+        status: RenderStatus::Current,
+        criteria: vec![],
+        challenges: vec![], gaps: vec![], aggregate: None,
+    };
+    let md = MetadataDeclaration {
+        field: "python_version_requirement".into(),
+        declared_value: ">=3.10".into(),
+        source_file: "pyproject.toml".into(),
+        source_path: "project.requires-python".into(),
+    };
+    let augmented = render_augmented(&RenderInput {
+        report: &report,
+        evidence: &[],
+        related_events: &[],
+        backing_reports: &[],
+        cycle_contested: &std::collections::HashSet::new(),
+        metadata: Some(&md),
+    });
+    let md_out = render_markdown(&augmented);
+    assert!(md_out.contains("## Metadata declaration"));
+    assert!(md_out.contains("python_version_requirement"));
+    assert!(md_out.contains(">=3.10"));
+    assert!(md_out.contains("pyproject.toml"));
+    assert!(md_out.contains("project.requires-python"));
+}
+
+#[test]
+fn html_render_emits_metadata_declaration_dl_pr5c() {
+    use typed_trust::{
+        claim::MetadataDeclaration,
+        html_render::render_html_fragment,
+        report::{RenderStatus, TrustReport},
+        render::{render_augmented, RenderInput},
+        ClaimId,
+    };
+    let report = TrustReport {
+        claim: ClaimId::new("pkg-node"),
+        status: RenderStatus::Current,
+        criteria: vec![],
+        challenges: vec![], gaps: vec![], aggregate: None,
+    };
+    let md = MetadataDeclaration {
+        field: "node_engine".into(),
+        declared_value: ">=18".into(),
+        source_file: "package.json".into(),
+        source_path: "engines.node".into(),
+    };
+    let augmented = render_augmented(&RenderInput {
+        report: &report,
+        evidence: &[],
+        related_events: &[],
+        backing_reports: &[],
+        cycle_contested: &std::collections::HashSet::new(),
+        metadata: Some(&md),
+    });
+    let html = render_html_fragment(&augmented);
+    assert!(html.contains("<h2>Metadata declaration</h2>"));
+    assert!(html.contains("class=\"metadata-declaration\""));
+    assert!(html.contains("node_engine"));
+    assert!(html.contains("&gt;=18"));
+    assert!(html.contains("package.json"));
+    assert!(html.contains("engines.node"));
+}
+
+/// PR5c codex F-CR3 (P2): metadata values containing backticks or
+/// newlines must not break out of the markdown code span. The
+/// renderer picks a longer backtick fence when needed and collapses
+/// newlines so the section stays well-formed.
+#[test]
+fn human_render_escapes_backticks_and_newlines_in_metadata_values_pr5c_cr3() {
+    use typed_trust::{
+        claim::MetadataDeclaration,
+        human_render::render_markdown,
+        report::{RenderStatus, TrustReport},
+        render::{render_augmented, RenderInput},
+        ClaimId,
+    };
+    let report = TrustReport {
+        claim: ClaimId::new("evil"),
+        status: RenderStatus::Current,
+        criteria: vec![], challenges: vec![], gaps: vec![], aggregate: None,
+    };
+    let md = MetadataDeclaration {
+        field: "f".into(),
+        // Backtick inside the value would close a single-tick span;
+        // newlines would terminate the list item.
+        declared_value: "value with ` and\nnewline".into(),
+        source_file: "Cargo.toml".into(),
+        source_path: "package.rust-version".into(),
+    };
+    let augmented = render_augmented(&RenderInput {
+        report: &report,
+        evidence: &[],
+        related_events: &[],
+        backing_reports: &[],
+        cycle_contested: &std::collections::HashSet::new(),
+        metadata: Some(&md),
+    });
+    let out = render_markdown(&augmented);
+    // The raw backtick character survives but inside a multi-backtick
+    // fence (so it doesn't terminate the span). Newline replaced by
+    // a space.
+    assert!(
+        out.contains("``value with ` and newline``"),
+        "metadata value not safely fenced; got:\n{out}"
+    );
+    // Confirm the bullet list ends with a blank line, not a broken
+    // list item.
+    assert!(out.contains("\n\n## ") || out.ends_with("\n"));
 }

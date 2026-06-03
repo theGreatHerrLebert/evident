@@ -149,6 +149,12 @@ pub fn render_html_fragment(augmented_json: &Value) -> String {
         }
     }
 
+    // PR5c: metadata_compatibility claims surface the typed
+    // declaration in place of the (absent) criteria section.
+    if let Some(md) = augmented_json.get("metadata_declaration") {
+        render_metadata_declaration(&mut out, md);
+    }
+
     // Challenges (filtered to kind == challenge).
     if let Some(events) = augmented_json
         .pointer("/_graph/review_events")
@@ -317,6 +323,33 @@ fn render_criterion(out: &mut String, c: &Value) {
     }
 
     out.push_str("  </div>\n");
+}
+
+fn render_metadata_declaration(out: &mut String, md: &Value) {
+    let field = md.get("field").and_then(Value::as_str).unwrap_or("?");
+    let declared = md
+        .get("declared_value")
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    let source_file = md.get("source_file").and_then(Value::as_str).unwrap_or("?");
+    let source_path = md.get("source_path").and_then(Value::as_str).unwrap_or("?");
+
+    out.push_str("  <h2>Metadata declaration</h2>\n");
+    out.push_str("  <dl class=\"metadata-declaration\">\n");
+    out.push_str(&format!(
+        "    <dt>Field</dt><dd><code>{}</code></dd>\n",
+        escape_html(field)
+    ));
+    out.push_str(&format!(
+        "    <dt>Declared value</dt><dd><code>{}</code></dd>\n",
+        escape_html(declared)
+    ));
+    out.push_str(&format!(
+        "    <dt>Source</dt><dd><code>{}</code> &rarr; <code>{}</code></dd>\n",
+        escape_html(source_file),
+        escape_html(source_path)
+    ));
+    out.push_str("  </dl>\n");
 }
 
 fn render_challenge(out: &mut String, e: &Value) {

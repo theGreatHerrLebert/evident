@@ -166,17 +166,23 @@ fn main() -> ExitCode {
             manifest_path: cw.source_path.clone(),
         };
 
-        if let Err(e) = translate_claim(&ctx, mc, &cw.span) {
-            // OutOfScope is a deliberate scope boundary (policy /
-            // reference claims); any other error is a manifest bug.
-            let fatal = !matches!(e, typed_trust::translate::TranslateError::OutOfScope { .. });
-            skipped.push(SkipReason {
-                id: mc.id.clone(),
-                reason: format!("{e}"),
-                fatal,
-            });
-            continue;
-        }
+        let typed_claim = match translate_claim(&ctx, mc, &cw.span) {
+            Ok(attested) => attested.value,
+            Err(e) => {
+                // OutOfScope is a deliberate scope boundary (policy /
+                // reference claims); any other error is a manifest bug.
+                let fatal = !matches!(
+                    e,
+                    typed_trust::translate::TranslateError::OutOfScope { .. }
+                );
+                skipped.push(SkipReason {
+                    id: mc.id.clone(),
+                    reason: format!("{e}"),
+                    fatal,
+                });
+                continue;
+            }
+        };
 
         let criteria = match translate_tolerances(mc) {
             Ok(c) => c,
@@ -253,7 +259,8 @@ fn main() -> ExitCode {
             evidence: &evidence,
             related_events: events,
             backing_reports: &backing_reports,
-        cycle_contested: &std::collections::HashSet::new(),
+            cycle_contested: &std::collections::HashSet::new(),
+            metadata: typed_claim.metadata.as_ref(),
         });
 
         // Decorate _graph.review_events entries with their structured

@@ -281,3 +281,46 @@ def test_cli_extract_metadata_writes_yaml_and_md(tmp_path: Path):
     assert all(
         c["kind"] == "metadata_compatibility" for c in manifest["claims"]
     )
+
+
+@pytest.mark.skipif(
+    _typed_trust_binary() is None,
+    reason="typed-trust binary not built (run `cargo build` in typed-trust/)",
+)
+def test_extract_metadata_manifest_renders_metadata_declaration_section_pr5c(
+    tmp_path: Path,
+):
+    """End-to-end PR5c: a metadata-extracted manifest piped through
+    typed-trust's markdown render must surface the Metadata
+    declaration section per claim, with the four typed fields.
+
+    The Rust integration tests cover the unit assertion; this test
+    proves the agent's generated manifest survives the actual binary
+    pipeline."""
+    result = mdwalker.walk_repo_metadata(FIXTURES / "multi_file_repo")
+    manifest = mdwalker.render_metadata_manifest(
+        result,
+        project="extracted/multi-file-repo",
+        extracted_at="2026-05-01T10:00:00Z",
+    )
+    manifest_path = tmp_path / "evident.yaml"
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False))
+    binary = _typed_trust_binary()
+    assert binary is not None
+    proc = subprocess.run(
+        [str(binary), "--format", "md", str(manifest_path)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = proc.stdout
+    # At least one claim's metadata declaration section is rendered.
+    assert "## Metadata declaration" in out, (
+        f"markdown render missing Metadata declaration heading. "
+        f"first 800 chars:\n{out[:800]}"
+    )
+    # Pick a sentinel: rust_msrv comes from the multi_file_repo's
+    # Cargo.toml fixture.
+    assert "rust_msrv" in out, "rust_msrv field not rendered"
+    assert "Cargo.toml" in out, "source_file not rendered"
