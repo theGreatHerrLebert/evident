@@ -161,6 +161,11 @@ pub fn render_html_fragment(augmented_json: &Value) -> String {
         render_concordance_declaration(&mut out, cd);
     }
 
+    // PR5h: comparator verdict.
+    if let Some(cr) = augmented_json.get("concordance_result") {
+        render_concordance_result(&mut out, cr);
+    }
+
     // Challenges (filtered to kind == challenge).
     if let Some(events) = augmented_json
         .pointer("/_graph/review_events")
@@ -393,6 +398,45 @@ fn render_concordance_declaration(out: &mut String, cd: &Value) {
                 escape_html(v)
             ));
         }
+    }
+    out.push_str("  </dl>\n");
+}
+
+fn render_concordance_result(out: &mut String, cr: &Value) {
+    let status = cr
+        .get("comparison_status")
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    out.push_str("  <h2>Concordance result</h2>\n");
+    out.push_str(&format!(
+        "  <p class=\"concordance-status concordance-status-{}\"><strong>Status:</strong> {}</p>\n",
+        escape_html(status),
+        escape_html(status),
+    ));
+    out.push_str("  <dl class=\"concordance-result\">\n");
+    if let Some(observed) = cr.get("observed_value").and_then(Value::as_f64) {
+        out.push_str(&format!(
+            "    <dt>Observed value</dt><dd><code>{}</code></dd>\n",
+            observed
+        ));
+    }
+    if let Some(unit) = cr.get("observed_unit").and_then(Value::as_str) {
+        out.push_str(&format!(
+            "    <dt>Observed unit</dt><dd><code>{}</code></dd>\n",
+            escape_html(unit)
+        ));
+    }
+    if let Some(img) = cr.get("image_digest").and_then(Value::as_str) {
+        out.push_str(&format!(
+            "    <dt>Image digest</dt><dd><code>{}</code></dd>\n",
+            escape_html(img)
+        ));
+    }
+    if let Some(at) = cr.get("produced_at").and_then(Value::as_str) {
+        out.push_str(&format!(
+            "    <dt>Produced at</dt><dd><code>{}</code></dd>\n",
+            escape_html(at)
+        ));
     }
     out.push_str("  </dl>\n");
 }

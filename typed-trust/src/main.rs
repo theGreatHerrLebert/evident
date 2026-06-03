@@ -61,6 +61,7 @@ fn main() -> ExitCode {
     let format = parsed.format;
     let sidecar_path = parsed.sidecar;
     let review_sidecar_path = parsed.review_sidecar;
+    let concorded_sidecar_path = parsed.concorded_sidecar;
     let positional = parsed.positional;
 
     let Some(path) = positional.first() else {
@@ -80,20 +81,62 @@ fn main() -> ExitCode {
     // Overlay sidecar entries onto each claim's last_verified field
     // before translation. Sidecar key is the claim id; value matches
     // ManifestLastVerified's deserialization shape.
-    if let Some(sidecar_path) = &sidecar_path {
-        match load_sidecar(sidecar_path) {
-            Ok(overlay) => {
-                for cw in claims.iter_mut() {
-                    if let Some(lv) = overlay.get(&cw.claim.id) {
-                        cw.claim.last_verified = Some(lv.clone());
-                    }
+    let last_verified_overlay: HashMap<String, ManifestLastVerified> =
+        if let Some(sidecar_path) = &sidecar_path {
+            match load_sidecar(sidecar_path) {
+                Ok(o) => o,
+                Err(e) => {
+                    eprintln!("{e}");
+                    return ExitCode::FAILURE;
                 }
             }
-            Err(e) => {
-                eprintln!("{e}");
-                return ExitCode::FAILURE;
-            }
+        } else {
+            HashMap::new()
+        };
+    for cw in claims.iter_mut() {
+        if let Some(lv) = last_verified_overlay.get(&cw.claim.id) {
+            cw.claim.last_verified = Some(lv.clone());
         }
+    }
+
+    // PR5h: load `last_concorded.json` (concordance comparator
+    // results). The two sidecars are disjoint by claim_id per v4
+    // design's sidecar boundary section — measurement claims use
+    // `last_verified`, concordance claims use `last_concorded`.
+    // Same id appearing in both is a manifest+sidecar bug; we
+    // refuse to load.
+    let concorded_overlay: HashMap<String, typed_trust::claim::ConcordanceResult> =
+        if let Some(p) = &concorded_sidecar_path {
+            match load_concorded_sidecar(p) {
+                Ok(o) => o,
+                Err(e) => {
+                    eprintln!("{e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        } else {
+            HashMap::new()
+        };
+    let mut id_overlap: Vec<&String> = last_verified_overlay
+        .keys()
+        .filter(|k| concorded_overlay.contains_key(*k))
+        .collect();
+    id_overlap.sort();
+    if !id_overlap.is_empty() {
+        eprintln!(
+            "error: {} claim id(s) appear in BOTH last_verified.json and last_concorded.json: {}",
+            id_overlap.len(),
+            id_overlap
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        eprintln!(
+            "hint: measurement claims use last_verified; concordance claims use last_concorded. \
+             They MUST be disjoint by claim id."
+        );
+        return ExitCode::FAILURE;
     }
 
     // Load and group the review-events sidecar by claim_id. Any event
@@ -262,6 +305,7 @@ fn main() -> ExitCode {
             cycle_contested: &std::collections::HashSet::new(),
             metadata: typed_claim.metadata.as_ref(),
             concordance: typed_claim.concordance.as_ref(),
+            concordance_result: concorded_overlay.get(&mc.id),
         });
 
         // Decorate _graph.review_events entries with their structured
@@ -315,6 +359,10 @@ struct ParsedArgs {
     positional: Vec<String>,
     sidecar: Option<String>,
     review_sidecar: Option<String>,
+    /// PR5h: `--last-concorded-sidecar <path>`. Concordance claims'
+    /// status comes from `last_concorded.json`; measurement claims'
+    /// from `last_verified.json` (the `sidecar` field above).
+    concorded_sidecar: Option<String>,
 }
 
 fn parse_args(args: &[String]) -> Option<ParsedArgs> {
@@ -326,6 +374,7 @@ fn parse_args(args: &[String]) -> Option<ParsedArgs> {
     let mut positional: Vec<String> = Vec::new();
     let mut sidecar: Option<String> = None;
     let mut review_sidecar: Option<String> = None;
+    let mut concorded_sidecar: Option<String> = None;
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
         if let Some(value) = arg.strip_prefix("--format=") {
@@ -352,6 +401,14 @@ fn parse_args(args: &[String]) -> Option<ParsedArgs> {
                 return None;
             };
             review_sidecar = Some(value.clone());
+        } else if let Some(value) = arg.strip_prefix("--last-concorded-sidecar=") {
+            concorded_sidecar = Some(value.to_string());
+        } else if arg == "--last-concorded-sidecar" {
+            let Some(value) = iter.next() else {
+                eprintln!("error: --last-concorded-sidecar requires a path");
+                return None;
+            };
+            concorded_sidecar = Some(value.clone());
         } else {
             positional.push(arg.clone());
         }
@@ -361,6 +418,7 @@ fn parse_args(args: &[String]) -> Option<ParsedArgs> {
         positional,
         sidecar,
         review_sidecar,
+        concorded_sidecar,
     })
 }
 
@@ -615,6 +673,18 @@ fn load_sidecar(path: &str) -> Result<HashMap<String, ManifestLastVerified>, Str
         .map_err(|e| format!("error reading sidecar {path}: {e}"))?;
     serde_json::from_str(&bytes)
         .map_err(|e| format!("error parsing sidecar {path}: {e}"))
+}
+
+/// PR5h: load `last_concorded.json`. The shape matches the Python
+/// agent's `LastConcordedEntry` exactly, so the Rust side just
+/// deserializes through `ConcordanceResult`.
+fn load_concorded_sidecar(
+    path: &str,
+) -> Result<HashMap<String, typed_trust::claim::ConcordanceResult>, String> {
+    let bytes = fs::read_to_string(path)
+        .map_err(|e| format!("error reading concorded sidecar {path}: {e}"))?;
+    serde_json::from_str(&bytes)
+        .map_err(|e| format!("error parsing concorded sidecar {path}: {e}"))
 }
 
 /// Load a review-events sidecar (`{events: [...]}` shape) and group

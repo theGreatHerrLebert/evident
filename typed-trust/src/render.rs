@@ -21,7 +21,7 @@ use std::collections::HashSet;
 
 use serde_json::{json, Map, Value};
 
-use crate::claim::{ConcordanceDeclaration, MetadataDeclaration};
+use crate::claim::{ConcordanceDeclaration, ConcordanceResult, MetadataDeclaration};
 use crate::derivation::{Derivation, Rerun};
 use crate::evidence::Evidence;
 use crate::ids::{ClaimId, CriterionId, EventId};
@@ -196,6 +196,12 @@ pub struct RenderInput<'a> {
     /// augmented JSON as a top-level `concordance_declaration`
     /// block; consumed by `human_render` and `html_render`.
     pub concordance: Option<&'a ConcordanceDeclaration>,
+    /// PR5h: the comparator's verdict for this concordance claim,
+    /// read from `last_concorded.json`. None when the comparator
+    /// hasn't run yet (replay not attempted) or when this isn't
+    /// a concordance claim. Inlined into the augmented JSON as a
+    /// top-level `concordance_result` block.
+    pub concordance_result: Option<&'a ConcordanceResult>,
 }
 
 /// Produce the augmented JSON. The normative report is serialized first;
@@ -234,6 +240,13 @@ pub fn render_augmented(input: &RenderInput) -> Value {
             obj.insert(
                 "concordance_declaration".into(),
                 serde_json::to_value(cd).expect("serialize ConcordanceDeclaration"),
+            );
+        }
+        // PR5h: surface the sidecar's comparator verdict.
+        if let Some(cr) = input.concordance_result {
+            obj.insert(
+                "concordance_result".into(),
+                serde_json::to_value(cr).expect("serialize ConcordanceResult"),
             );
         }
     }
