@@ -224,6 +224,230 @@ def test_walkthrough_drop_removes_claim_and_records_decision(tmp_path: Path):
     assert recs["claim-a"].decision == "drop"
 
 
+def test_walkthrough_rephrase_invokes_editor_and_records_changes(tmp_path: Path):
+    """Curator picks rephrase, editor modifies the claim's title,
+    walkthrough records decision='rephrase' with the sha pair and
+    fields_changed."""
+    manifest_path = _sample_manifest(tmp_path)
+    decision, tier, text = _scripted(
+        ["rephrase", "skip", "skip"], [], []
+    )
+
+    def _editor(initial: str) -> str:
+        parsed = yaml.safe_load(initial)
+        parsed["title"] = "Rephrased title"
+        return yaml.safe_dump(parsed, sort_keys=False)
+
+    result = rw.walk_manifest(
+        manifest_path=manifest_path,
+        curator="Jane",
+        prompt_decision=decision,
+        prompt_tier=tier,
+        prompt_text=text,
+        editor=_editor,
+    )
+    recs = {r.extracted_id: r for r in result.records}
+    assert recs["claim-a"].decision == "rephrase"
+    assert recs["claim-a"].fields_changed == ["title"]
+    assert recs["claim-a"].pre_edit_sha != recs["claim-a"].post_edit_sha
+    # Manifest reflects the edit.
+    parsed = yaml.safe_load(manifest_path.read_text())
+    assert parsed["claims"][0]["title"] == "Rephrased title"
+
+
+def test_walkthrough_rephrase_no_changes_is_recorded_as_skip(tmp_path: Path):
+    """Curator picks rephrase but exits the editor without
+    changes. Record as skip with a notes indicating why — keeps the
+    accept/drop/rephrase counts meaningful for the experiment
+    metrics."""
+    manifest_path = _sample_manifest(tmp_path)
+    decision, tier, text = _scripted(
+        ["rephrase", "skip", "skip"], [], []
+    )
+
+    def _editor(initial: str) -> str:
+        return initial  # unchanged
+
+    result = rw.walk_manifest(
+        manifest_path=manifest_path,
+        curator="Jane",
+        prompt_decision=decision,
+        prompt_tier=tier,
+        prompt_text=text,
+        editor=_editor,
+    )
+    recs = {r.extracted_id: r for r in result.records}
+    assert recs["claim-a"].decision == "skip"
+    assert "without changes" in (recs["claim-a"].notes or "")
+
+
+def test_walkthrough_rephrase_locked_field_change_is_recorded_as_skip(
+    tmp_path: Path,
+):
+    """The curator tries to change `tier` via the editor. The
+    rephrase rejects (tier needs a typed event), and the walkthrough
+    records the claim as a skip with the error message in notes."""
+    manifest_path = _sample_manifest(tmp_path)
+    decision, tier, text = _scripted(
+        ["rephrase", "skip", "skip"], [], []
+    )
+
+    def _editor(initial: str) -> str:
+        parsed = yaml.safe_load(initial)
+        parsed["tier"] = "ci"  # locked
+        return yaml.safe_dump(parsed, sort_keys=False)
+
+    result = rw.walk_manifest(
+        manifest_path=manifest_path,
+        curator="Jane",
+        prompt_decision=decision,
+        prompt_tier=tier,
+        prompt_text=text,
+        editor=_editor,
+    )
+    recs = {r.extracted_id: r for r in result.records}
+    assert recs["claim-a"].decision == "skip"
+    assert "rephrase failed" in (recs["claim-a"].notes or "")
+    assert "tier" in (recs["claim-a"].notes or "")
+    # Manifest tier unchanged.
+    parsed = yaml.safe_load(manifest_path.read_text())
+    assert parsed["claims"][0]["tier"] == "research"
+
+
+def test_walkthrough_rephrase_chain_preserves_original_pre_edit_sha(
+    tmp_path: Path,
+):
+    """Codex F-REPHRASE-CR-P1 cumulative audit: a curator who
+    rephrases claim-a in run 1 and rephrases it AGAIN in run 2
+    must keep the ORIGINAL pre_edit_sha and accumulate
+    fields_changed."""
+    manifest_path = _sample_manifest(tmp_path)
+    log_path = tmp_path / "curation_log.yaml"
+
+    def _editor_run1(initial: str) -> str:
+        parsed = yaml.safe_load(initial)
+        parsed["title"] = "Run 1 title"
+        return yaml.safe_dump(parsed, sort_keys=False)
+
+    decision, tier, text = _scripted(
+        ["rephrase", "skip", "skip"], [], []
+    )
+    r1 = rw.walk_manifest(
+        manifest_path=manifest_path,
+        curator="Jane",
+        curation_log_path=log_path,
+        prompt_decision=decision,
+        prompt_tier=tier,
+        prompt_text=text,
+        editor=_editor_run1,
+    )
+    rw.write_curation_log(r1, log_path)
+    run1_pre_sha = r1.records[0].pre_edit_sha
+    assert r1.records[0].fields_changed == ["title"]
+
+    # Run 2: rephrase the claim block (different field).
+    def _editor_run2(initial: str) -> str:
+        parsed = yaml.safe_load(initial)
+        parsed["claim"] = "Run 2 prose"
+        return yaml.safe_dump(parsed, sort_keys=False)
+
+    decision, tier, text = _scripted(
+        ["rephrase", "skip", "skip"], [], []
+    )
+    r2 = rw.walk_manifest(
+        manifest_path=manifest_path,
+        curator="Jane",
+        curation_log_path=log_path,
+        prompt_decision=decision,
+        prompt_tier=tier,
+        prompt_text=text,
+        editor=_editor_run2,
+    )
+    by_id = {r.extracted_id: r for r in r2.records}
+    # Original pre_edit_sha preserved.
+    assert by_id["claim-a"].pre_edit_sha == run1_pre_sha
+    # Fields changed union of run 1 + run 2.
+    assert by_id["claim-a"].fields_changed == ["title", "claim"]
+
+
+def test_walkthrough_carries_prior_rephrase_audit_into_accept_record(
+    tmp_path: Path,
+):
+    """Codex F-REPHRASE-CR-P1: rephrase in run 1, accept in run 2.
+    The accept record carries the prior rephrase's sha pair so the
+    cumulative log self-contains the audit."""
+    manifest_path = _sample_manifest(tmp_path)
+    log_path = tmp_path / "curation_log.yaml"
+
+    def _editor_run1(initial: str) -> str:
+        parsed = yaml.safe_load(initial)
+        parsed["title"] = "Rephrased title"
+        return yaml.safe_dump(parsed, sort_keys=False)
+
+    decision, tier, text = _scripted(
+        ["rephrase", "skip", "skip"], [], []
+    )
+    r1 = rw.walk_manifest(
+        manifest_path=manifest_path,
+        curator="Jane",
+        curation_log_path=log_path,
+        prompt_decision=decision,
+        prompt_tier=tier,
+        prompt_text=text,
+        editor=_editor_run1,
+    )
+    rw.write_curation_log(r1, log_path)
+    run1_pre_sha = r1.records[0].pre_edit_sha
+
+    # Run 2: accept claim-a. The new record should preserve the
+    # rephrase audit.
+    decision, tier, text = _scripted(
+        ["accept", "skip", "skip"], ["ci"], ["rationale"]
+    )
+    r2 = rw.walk_manifest(
+        manifest_path=manifest_path,
+        curator="Jane",
+        curation_log_path=log_path,
+        prompt_decision=decision,
+        prompt_tier=tier,
+        prompt_text=text,
+        editor=lambda _: "",  # not called
+    )
+    by_id = {r.extracted_id: r for r in r2.records}
+    assert by_id["claim-a"].decision == "accept"
+    # Carried-over rephrase audit.
+    assert by_id["claim-a"].pre_edit_sha == run1_pre_sha
+    assert by_id["claim-a"].fields_changed == ["title"]
+    assert "prior rephrase" in (by_id["claim-a"].notes or "")
+
+
+def test_render_curation_log_includes_rephrase_count_and_sha_pair(tmp_path: Path):
+    manifest_path = _sample_manifest(tmp_path)
+    decision, tier, text = _scripted(
+        ["rephrase", "skip", "skip"], [], []
+    )
+
+    def _editor(initial: str) -> str:
+        parsed = yaml.safe_load(initial)
+        parsed["title"] = "Rephrased"
+        return yaml.safe_dump(parsed, sort_keys=False)
+
+    result = rw.walk_manifest(
+        manifest_path=manifest_path,
+        curator="Jane",
+        prompt_decision=decision,
+        prompt_tier=tier,
+        prompt_text=text,
+        editor=_editor,
+    )
+    log = rw.render_curation_log(result)
+    assert log["curation"]["rephrased_count"] == 1
+    by_id = {c["extracted_id"]: c for c in log["extracted_claims"]}
+    assert by_id["claim-a"]["decision"] == "rephrase"
+    assert by_id["claim-a"]["pre_edit_sha"] != by_id["claim-a"]["post_edit_sha"]
+    assert by_id["claim-a"]["fields_changed"] == ["title"]
+
+
 def test_walkthrough_skip_leaves_manifest_unchanged(tmp_path: Path):
     manifest_path = _sample_manifest(tmp_path)
     pre = manifest_path.read_text()

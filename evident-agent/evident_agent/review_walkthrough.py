@@ -60,6 +60,8 @@ class ClaimReviewRecord:
     Decision values:
     - ``accept`` — curator promoted the claim
     - ``drop`` — curator removed the claim from the manifest
+    - ``rephrase`` — curator edited the claim's prose/tolerance
+      fields via the editor; tier/id/provenance unchanged
     - ``skip`` — curator declined to decide (claim stays
       tier:research, will re-prompt on re-run)
     - ``unreviewed`` — walkthrough quit before reaching this
@@ -75,6 +77,11 @@ class ClaimReviewRecord:
     minutes_spent: float = 0.0
     matched_ground_truth_id: Optional[str] = None
     notes: Optional[str] = None
+    # Rephrase-only: per-rephrase sha pair so the curation log
+    # carries the pre/post state for audit.
+    pre_edit_sha: Optional[str] = None
+    post_edit_sha: Optional[str] = None
+    fields_changed: Optional[list[str]] = None
 
 
 @dataclass
@@ -196,18 +203,20 @@ def _click_prompt_decision(display: str) -> str:
     click.echo(display)
     while True:
         ans = click.prompt(
-            "[a]ccept / [d]rop / [s]kip / [q]uit",
+            "[a]ccept / [d]rop / [r]ephrase / [s]kip / [q]uit",
             type=str,
         ).strip().lower()
         if ans in ("a", "accept"):
             return "accept"
         if ans in ("d", "drop"):
             return "drop"
+        if ans in ("r", "rephrase"):
+            return "rephrase"
         if ans in ("s", "skip"):
             return "skip"
         if ans in ("q", "quit"):
             return "quit"
-        click.echo("  ? choose a/d/s/q")
+        click.echo("  ? choose a/d/r/s/q")
 
 
 def _click_prompt_tier() -> str:
@@ -224,6 +233,36 @@ def _click_prompt_text(prompt: str) -> str:
 # ---------------------------------------------------------------------
 # Walkthrough core
 # ---------------------------------------------------------------------
+
+
+def _carry_prior_rephrase_audit(
+    new_rec: ClaimReviewRecord,
+    prior: Optional[ClaimReviewRecord],
+) -> None:
+    """Preserve a prior rephrase's audit trail (pre_edit_sha,
+    post_edit_sha, fields_changed) into a new accept/drop/skip
+    record (codex F-REPHRASE-CR-P1).
+
+    Without this, a curator who rephrases in run 1 and then
+    accepts in run 2 loses the run-1 rephrase audit from the
+    cumulative log — git history still has the manifest changes,
+    but the per-claim curation_log entry forgets the rephrase
+    happened. Carrying the prior fields keeps the log
+    self-contained.
+    """
+    if prior is None or prior.decision != "rephrase":
+        return
+    new_rec.pre_edit_sha = prior.pre_edit_sha
+    new_rec.post_edit_sha = prior.post_edit_sha
+    new_rec.fields_changed = list(prior.fields_changed or [])
+    prior_note = (
+        f"prior rephrase: fields changed: "
+        f"{', '.join(new_rec.fields_changed)}"
+    )
+    new_rec.notes = (
+        prior_note if not new_rec.notes
+        else f"{prior_note}; {new_rec.notes}"
+    )
 
 
 def _load_prior_records(
@@ -254,6 +293,13 @@ def _load_prior_records(
             minutes_spent=float(raw.get("minutes_spent") or 0.0),
             matched_ground_truth_id=raw.get("matched_ground_truth_id"),
             notes=raw.get("notes"),
+            # Codex F-REPHRASE-CR-P1 audit preservation: load the
+            # rephrase sha pair + fields_changed so a multi-session
+            # rephrase chain keeps the original pre_edit_sha and
+            # the union of fields_changed across sessions.
+            pre_edit_sha=raw.get("pre_edit_sha"),
+            post_edit_sha=raw.get("post_edit_sha"),
+            fields_changed=raw.get("fields_changed"),
         )
     return out
 
@@ -295,6 +341,7 @@ def walk_manifest(
     prompt_decision: PromptDecision = _click_prompt_decision,
     prompt_tier: PromptTier = _click_prompt_tier,
     prompt_text: PromptText = _click_prompt_text,
+    editor: Optional[curator_mod.EditorFunc] = None,
     out: Optional[TextIO] = None,
 ) -> WalkthroughResult:
     """Walk each claim in ``manifest_path`` and handle the curator's
@@ -399,15 +446,15 @@ def walk_manifest(
 
         if choice == "skip":
             ended = _now_utc()
-            records.append(
-                ClaimReviewRecord(
-                    extracted_id=cid,
-                    decision="skip",
-                    started_at=_iso(started),
-                    ended_at=_iso(ended),
-                    minutes_spent=_minutes(started, ended),
-                )
+            rec = ClaimReviewRecord(
+                extracted_id=cid,
+                decision="skip",
+                started_at=_iso(started),
+                ended_at=_iso(ended),
+                minutes_spent=_minutes(started, ended),
             )
+            _carry_prior_rephrase_audit(rec, prior_records.get(cid))
+            records.append(rec)
             continue
 
         if choice == "drop":
@@ -416,13 +463,92 @@ def walk_manifest(
                 claim_id=cid,
             )
             ended = _now_utc()
+            rec = ClaimReviewRecord(
+                extracted_id=cid,
+                decision="drop",
+                started_at=_iso(started),
+                ended_at=_iso(ended),
+                minutes_spent=_minutes(started, ended),
+            )
+            _carry_prior_rephrase_audit(rec, prior_records.get(cid))
+            records.append(rec)
+            continue
+
+        if choice == "rephrase":
+            try:
+                rresult = curator_mod.rephrase_claim(
+                    manifest_path=manifest_path,
+                    claim_id=cid,
+                    editor=editor,
+                )
+            except curator_mod.CuratorError as exc:
+                ended = _now_utc()
+                records.append(
+                    ClaimReviewRecord(
+                        extracted_id=cid,
+                        decision="skip",
+                        started_at=_iso(started),
+                        ended_at=_iso(ended),
+                        minutes_spent=_minutes(started, ended),
+                        notes=f"rephrase failed: {exc}",
+                    )
+                )
+                continue
+            ended = _now_utc()
+            # No-op edit (curator opened editor, didn't change
+            # anything) is recorded as skip rather than rephrase
+            # so the per-decision counts stay meaningful.
+            if not rresult.fields_changed:
+                records.append(
+                    ClaimReviewRecord(
+                        extracted_id=cid,
+                        decision="skip",
+                        started_at=_iso(started),
+                        ended_at=_iso(ended),
+                        minutes_spent=_minutes(started, ended),
+                        notes="rephrase: editor exited without changes",
+                    )
+                )
+                continue
+            # Codex F-REPHRASE-CR-P1 audit preservation: if there's
+            # a prior rephrase on this claim from an earlier
+            # session, chain the audit trail. pre_edit_sha stays
+            # at the FIRST rephrase's pre-edit sha; fields_changed
+            # is the union across sessions (de-duplicated, sorted).
+            chained_pre = rresult.pre_edit_sha
+            chained_fields = list(rresult.fields_changed)
+            chained_minutes = _minutes(started, ended)
+            prior = (
+                prior_records.get(cid)
+                if prior_records.get(cid)
+                and prior_records[cid].decision == "rephrase"
+                else None
+            )
+            if prior is not None:
+                chained_pre = prior.pre_edit_sha or chained_pre
+                # Merge fields preserving order; union semantics.
+                merged_fields = list(prior.fields_changed or [])
+                for f in rresult.fields_changed:
+                    if f not in merged_fields:
+                        merged_fields.append(f)
+                chained_fields = merged_fields
+                # Accumulate minutes across sessions.
+                chained_minutes = round(
+                    prior.minutes_spent + chained_minutes, 4
+                )
             records.append(
                 ClaimReviewRecord(
                     extracted_id=cid,
-                    decision="drop",
+                    decision="rephrase",
                     started_at=_iso(started),
                     ended_at=_iso(ended),
-                    minutes_spent=_minutes(started, ended),
+                    minutes_spent=chained_minutes,
+                    pre_edit_sha=chained_pre,
+                    post_edit_sha=rresult.post_edit_sha,
+                    fields_changed=chained_fields,
+                    notes=(
+                        f"fields changed: {', '.join(chained_fields)}"
+                    ),
                 )
             )
             continue
@@ -453,17 +579,17 @@ def walk_manifest(
                 )
                 continue
             ended = _now_utc()
-            records.append(
-                ClaimReviewRecord(
-                    extracted_id=cid,
-                    decision="accept",
-                    to_tier=to_tier,
-                    rationale=rationale,
-                    started_at=_iso(started),
-                    ended_at=_iso(ended),
-                    minutes_spent=_minutes(started, ended),
-                )
+            rec = ClaimReviewRecord(
+                extracted_id=cid,
+                decision="accept",
+                to_tier=to_tier,
+                rationale=rationale,
+                started_at=_iso(started),
+                ended_at=_iso(ended),
+                minutes_spent=_minutes(started, ended),
             )
+            _carry_prior_rephrase_audit(rec, prior_records.get(cid))
+            records.append(rec)
             continue
 
     # Preserve prior drop records for claims no longer in the
@@ -506,10 +632,30 @@ def render_curation_log(result: WalkthroughResult) -> dict:
     """
     n_accept = sum(1 for r in result.records if r.decision == "accept")
     n_drop = sum(1 for r in result.records if r.decision == "drop")
+    n_rephrase = sum(1 for r in result.records if r.decision == "rephrase")
     n_skip = sum(1 for r in result.records if r.decision == "skip")
     n_unreviewed = sum(
         1 for r in result.records if r.decision == "unreviewed"
     )
+
+    def _claim_dict(r: ClaimReviewRecord) -> dict:
+        out = {
+            "extracted_id": r.extracted_id,
+            "matched_ground_truth_id": r.matched_ground_truth_id,
+            "decision": r.decision,
+            "to_tier": r.to_tier,
+            "rationale": r.rationale,
+            "minutes_spent": round(r.minutes_spent, 4),
+            "started_at": r.started_at,
+            "ended_at": r.ended_at,
+            "notes": r.notes,
+        }
+        if r.decision == "rephrase":
+            out["pre_edit_sha"] = r.pre_edit_sha
+            out["post_edit_sha"] = r.post_edit_sha
+            out["fields_changed"] = r.fields_changed
+        return out
+
     return {
         "artifact_id": result.artifact_id,
         "curator": result.curator,
@@ -528,23 +674,11 @@ def render_curation_log(result: WalkthroughResult) -> dict:
             "quit_early": result.quit_early,
             "accepted_count": n_accept,
             "dropped_count": n_drop,
+            "rephrased_count": n_rephrase,
             "skipped_count": n_skip,
             "unreviewed_count": n_unreviewed,
         },
-        "extracted_claims": [
-            {
-                "extracted_id": r.extracted_id,
-                "matched_ground_truth_id": r.matched_ground_truth_id,
-                "decision": r.decision,
-                "to_tier": r.to_tier,
-                "rationale": r.rationale,
-                "minutes_spent": round(r.minutes_spent, 4),
-                "started_at": r.started_at,
-                "ended_at": r.ended_at,
-                "notes": r.notes,
-            }
-            for r in result.records
-        ],
+        "extracted_claims": [_claim_dict(r) for r in result.records],
     }
 
 
