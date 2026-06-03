@@ -1,0 +1,4 @@
+[project]
+name = "uv-ws-vis"
+version = "0.5.0"
+requires-python = ">=3.12,<3.14"

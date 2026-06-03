@@ -281,8 +281,6 @@ def test_cli_extract_metadata_writes_yaml_and_md(tmp_path: Path):
     assert all(
         c["kind"] == "metadata_compatibility" for c in manifest["claims"]
     )
-
-
 @pytest.mark.skipif(
     _typed_trust_binary() is None,
     reason="typed-trust binary not built (run `cargo build` in typed-trust/)",
@@ -324,3 +322,103 @@ def test_extract_metadata_manifest_renders_metadata_declaration_section_pr5c(
     # Cargo.toml fixture.
     assert "rust_msrv" in out, "rust_msrv field not rendered"
     assert "Cargo.toml" in out, "source_file not rendered"
+
+
+# ---------------------------------------------------------------------
+# PR5d: workspace-aware walker (Cargo + uv)
+# ---------------------------------------------------------------------
+
+
+def test_cargo_workspace_root_descends_into_members():
+    """A Cargo workspace root (no [package], only [workspace].members)
+    must emit metadata claims from each declared member's
+    Cargo.toml. Discovered via rustims experiment which had 0 claims
+    at the workspace root pre-fix."""
+    result = mdwalker.walk_repo_metadata(
+        FIXTURES / "cargo_workspace_repo"
+    )
+    by_field = {(c.source_file, c.metadata_field): c for c in result.claims}
+    # Both members contribute their package fields.
+    assert ("mscore/Cargo.toml", "rust_edition") in by_field
+    assert ("mscore/Cargo.toml", "cargo_package_name") in by_field
+    assert ("mscore/Cargo.toml", "cargo_package_version") in by_field
+    assert ("mscore/Cargo.toml", "rust_msrv") in by_field
+    assert ("rustms/Cargo.toml", "rust_edition") in by_field
+    assert ("rustms/Cargo.toml", "cargo_package_name") in by_field
+    # Each member's claim id is unique (no collision across members)
+    ids = [c.id for c in result.claims]
+    assert len(set(ids)) == len(ids), f"duplicate claim ids: {ids}"
+    # mscore-scoped id should mention mscore; same for rustms
+    assert any("mscore" in i for i in ids)
+    assert any("rustms" in i for i in ids)
+
+
+def test_cargo_workspace_member_source_file_pins_member_dir():
+    """The emitted claim's source_file points at the workspace-
+    relative path of the member's config file, not just
+    `Cargo.toml`. Auditors can navigate to the actual file."""
+    result = mdwalker.walk_repo_metadata(
+        FIXTURES / "cargo_workspace_repo"
+    )
+    sources = {c.source_file for c in result.claims}
+    assert "mscore/Cargo.toml" in sources
+    assert "rustms/Cargo.toml" in sources
+    # No claim points at the bare workspace root — the root has no
+    # [package] so it would emit nothing.
+    assert "Cargo.toml" not in sources
+
+
+def test_uv_workspace_glob_member_expansion():
+    """A uv workspace using a glob (``packages/*``) must expand to
+    each subdirectory's pyproject.toml."""
+    result = mdwalker.walk_repo_metadata(
+        FIXTURES / "uv_workspace_repo"
+    )
+    sources = {c.source_file for c in result.claims}
+    assert "packages/core/pyproject.toml" in sources
+    assert "packages/vis/pyproject.toml" in sources
+    by_field = {(c.source_file, c.metadata_field): c for c in result.claims}
+    assert (
+        by_field[("packages/core/pyproject.toml", "python_version_requirement")]
+        .declared_value
+        == ">=3.11"
+    )
+    assert (
+        by_field[("packages/vis/pyproject.toml", "python_version_requirement")]
+        .declared_value
+        == ">=3.12,<3.14"
+    )
+
+
+@pytest.mark.skipif(
+    _typed_trust_binary() is None,
+    reason="typed-trust binary not built",
+)
+def test_workspace_extracted_manifest_parses_through_typed_trust_pr5d(
+    tmp_path: Path,
+):
+    """Workspace expansion must produce a manifest the typed-trust
+    translator accepts. Guards against off-by-one slug/source_file
+    inconsistencies introduced by the workspace path."""
+    result = mdwalker.walk_repo_metadata(
+        FIXTURES / "cargo_workspace_repo"
+    )
+    manifest = mdwalker.render_metadata_manifest(
+        result,
+        project="extracted/cargo-workspace",
+        extracted_at="2026-06-03T10:00:00Z",
+    )
+    manifest_path = tmp_path / "evident.yaml"
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False))
+    binary = _typed_trust_binary()
+    assert binary is not None
+    proc = subprocess.run(
+        [str(binary), str(manifest_path)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, (
+        f"typed-trust rejected workspace manifest.\n"
+        f"stderr:\n{proc.stderr}\nstdout:\n{proc.stdout[:500]}"
+    )
