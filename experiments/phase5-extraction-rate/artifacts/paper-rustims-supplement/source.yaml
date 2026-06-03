@@ -1,0 +1,8 @@
+artifact_id: paper-rustims-supplement
+type: paper
+local_path: /home/administrator/Downloads/df40ee33a170142f1737250a.pdf
+sha256: cf09b769e3804fbd10c8a6a1454696ca65fc8b37743a6a99d318b1a9d2f0d587
+size_bytes: 823103
+note: supplement / methods PDF (paired with paper-rustims-main)
+pre_committed_at: 2026-06-03
+curator: davidteschner@googlemail.com

@@ -1,0 +1,8 @@
+artifact_id: repo-rustims
+type: repo
+local_path: /scratch/timsim-demo/SUBMISSION/rustims
+upstream: https://github.com/theGreatHerrLebert/rustims
+git_sha: b8971f3183df643023d9bdf5b60c4120a865efc5
+git_subject: "test(midia): pytest covering writer duplicate-Id guard"
+pre_committed_at: 2026-06-03
+curator: davidteschner@googlemail.com
