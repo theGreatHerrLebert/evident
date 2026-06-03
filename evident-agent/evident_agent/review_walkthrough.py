@@ -60,6 +60,8 @@ class ClaimReviewRecord:
     Decision values:
     - ``accept`` — curator promoted the claim
     - ``drop`` — curator removed the claim from the manifest
+    - ``rephrase`` — curator edited the claim's prose/tolerance
+      fields via the editor; tier/id/provenance unchanged
     - ``skip`` — curator declined to decide (claim stays
       tier:research, will re-prompt on re-run)
     - ``unreviewed`` — walkthrough quit before reaching this
@@ -75,6 +77,11 @@ class ClaimReviewRecord:
     minutes_spent: float = 0.0
     matched_ground_truth_id: Optional[str] = None
     notes: Optional[str] = None
+    # Rephrase-only: per-rephrase sha pair so the curation log
+    # carries the pre/post state for audit.
+    pre_edit_sha: Optional[str] = None
+    post_edit_sha: Optional[str] = None
+    fields_changed: Optional[list[str]] = None
 
 
 @dataclass
@@ -196,18 +203,20 @@ def _click_prompt_decision(display: str) -> str:
     click.echo(display)
     while True:
         ans = click.prompt(
-            "[a]ccept / [d]rop / [s]kip / [q]uit",
+            "[a]ccept / [d]rop / [r]ephrase / [s]kip / [q]uit",
             type=str,
         ).strip().lower()
         if ans in ("a", "accept"):
             return "accept"
         if ans in ("d", "drop"):
             return "drop"
+        if ans in ("r", "rephrase"):
+            return "rephrase"
         if ans in ("s", "skip"):
             return "skip"
         if ans in ("q", "quit"):
             return "quit"
-        click.echo("  ? choose a/d/s/q")
+        click.echo("  ? choose a/d/r/s/q")
 
 
 def _click_prompt_tier() -> str:
@@ -295,6 +304,7 @@ def walk_manifest(
     prompt_decision: PromptDecision = _click_prompt_decision,
     prompt_tier: PromptTier = _click_prompt_tier,
     prompt_text: PromptText = _click_prompt_text,
+    editor: Optional[curator_mod.EditorFunc] = None,
     out: Optional[TextIO] = None,
 ) -> WalkthroughResult:
     """Walk each claim in ``manifest_path`` and handle the curator's
@@ -427,6 +437,60 @@ def walk_manifest(
             )
             continue
 
+        if choice == "rephrase":
+            try:
+                rresult = curator_mod.rephrase_claim(
+                    manifest_path=manifest_path,
+                    claim_id=cid,
+                    editor=editor,
+                )
+            except curator_mod.CuratorError as exc:
+                ended = _now_utc()
+                records.append(
+                    ClaimReviewRecord(
+                        extracted_id=cid,
+                        decision="skip",
+                        started_at=_iso(started),
+                        ended_at=_iso(ended),
+                        minutes_spent=_minutes(started, ended),
+                        notes=f"rephrase failed: {exc}",
+                    )
+                )
+                continue
+            ended = _now_utc()
+            # No-op edit (curator opened editor, didn't change
+            # anything) is recorded as skip rather than rephrase
+            # so the per-decision counts stay meaningful.
+            if not rresult.fields_changed:
+                records.append(
+                    ClaimReviewRecord(
+                        extracted_id=cid,
+                        decision="skip",
+                        started_at=_iso(started),
+                        ended_at=_iso(ended),
+                        minutes_spent=_minutes(started, ended),
+                        notes="rephrase: editor exited without changes",
+                    )
+                )
+                continue
+            records.append(
+                ClaimReviewRecord(
+                    extracted_id=cid,
+                    decision="rephrase",
+                    started_at=_iso(started),
+                    ended_at=_iso(ended),
+                    minutes_spent=_minutes(started, ended),
+                    pre_edit_sha=rresult.pre_edit_sha,
+                    post_edit_sha=rresult.post_edit_sha,
+                    fields_changed=rresult.fields_changed,
+                    notes=(
+                        f"fields changed: "
+                        f"{', '.join(rresult.fields_changed)}"
+                    ),
+                )
+            )
+            continue
+
         if choice == "accept":
             to_tier = prompt_tier()
             rationale = prompt_text("rationale (required)")
@@ -506,10 +570,30 @@ def render_curation_log(result: WalkthroughResult) -> dict:
     """
     n_accept = sum(1 for r in result.records if r.decision == "accept")
     n_drop = sum(1 for r in result.records if r.decision == "drop")
+    n_rephrase = sum(1 for r in result.records if r.decision == "rephrase")
     n_skip = sum(1 for r in result.records if r.decision == "skip")
     n_unreviewed = sum(
         1 for r in result.records if r.decision == "unreviewed"
     )
+
+    def _claim_dict(r: ClaimReviewRecord) -> dict:
+        out = {
+            "extracted_id": r.extracted_id,
+            "matched_ground_truth_id": r.matched_ground_truth_id,
+            "decision": r.decision,
+            "to_tier": r.to_tier,
+            "rationale": r.rationale,
+            "minutes_spent": round(r.minutes_spent, 4),
+            "started_at": r.started_at,
+            "ended_at": r.ended_at,
+            "notes": r.notes,
+        }
+        if r.decision == "rephrase":
+            out["pre_edit_sha"] = r.pre_edit_sha
+            out["post_edit_sha"] = r.post_edit_sha
+            out["fields_changed"] = r.fields_changed
+        return out
+
     return {
         "artifact_id": result.artifact_id,
         "curator": result.curator,
@@ -528,23 +612,11 @@ def render_curation_log(result: WalkthroughResult) -> dict:
             "quit_early": result.quit_early,
             "accepted_count": n_accept,
             "dropped_count": n_drop,
+            "rephrased_count": n_rephrase,
             "skipped_count": n_skip,
             "unreviewed_count": n_unreviewed,
         },
-        "extracted_claims": [
-            {
-                "extracted_id": r.extracted_id,
-                "matched_ground_truth_id": r.matched_ground_truth_id,
-                "decision": r.decision,
-                "to_tier": r.to_tier,
-                "rationale": r.rationale,
-                "minutes_spent": round(r.minutes_spent, 4),
-                "started_at": r.started_at,
-                "ended_at": r.ended_at,
-                "notes": r.notes,
-            }
-            for r in result.records
-        ],
+        "extracted_claims": [_claim_dict(r) for r in result.records],
     }
 
 

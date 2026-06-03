@@ -68,7 +68,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import yaml
 
@@ -115,6 +115,44 @@ class DropResult:
     claim_id: str
     manifest_path: Path
     remaining_claim_ids: list[str]
+
+
+@dataclass
+class RephraseResult:
+    """Outcome of a successful ``rephrase_claim`` call."""
+
+    claim_id: str
+    pre_edit_sha: str
+    post_edit_sha: str
+    fields_changed: list[str]
+    manifest_path: Path
+
+
+# Fields that the curator is allowed to edit during rephrase.
+# Anything outside this set triggers a CuratorError so substantive
+# changes (id, tier, provenance) go through the typed paths
+# (PromoteFromExtracted events, separate schema work).
+_REPHRASE_EDITABLE_FIELDS = frozenset({
+    "title",
+    "claim",
+    "tolerances",
+    "case",
+    "source",
+    "assumptions",
+    "failure_modes",
+})
+
+# Fields that MUST NOT change during rephrase. These require
+# typed events (promote/drop) or schema migrations rather than
+# free-form curator edits.
+_REPHRASE_LOCKED_FIELDS = frozenset({
+    "id",
+    "kind",
+    "tier",
+    "evidence",
+    "provenance",
+    "last_verified",
+})
 
 
 class CuratorError(Exception):
@@ -417,3 +455,167 @@ def drop_claim(
         manifest_path=manifest_path,
         remaining_claim_ids=[c.get("id") for c in new_claims],
     )
+
+
+# Type alias for a callable that takes the claim's YAML text and
+# returns the curator's edited version. In production the CLI
+# spawns ``$EDITOR``; in tests this is stubbed to return canned
+# output deterministically.
+EditorFunc = Callable[[str], str]
+
+
+def _spawn_editor(initial_text: str) -> str:
+    """Default editor implementation: write the text to a tempfile,
+    spawn ``$EDITOR`` (or ``vi`` as fallback), read back. Returns
+    the post-edit content.
+    """
+    import os
+    import subprocess
+
+    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "vi"
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".yaml", delete=False,
+    ) as tf:
+        tf.write(initial_text)
+        tmp_path = tf.name
+    try:
+        subprocess.run(
+            [editor, tmp_path], check=True
+        )
+        with open(tmp_path, encoding="utf-8") as f:
+            return f.read()
+    except subprocess.CalledProcessError as exc:
+        raise CuratorError(
+            f"editor {editor!r} exited non-zero ({exc.returncode}); "
+            "rephrase aborted"
+        ) from exc
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+
+
+def rephrase_claim(
+    *,
+    manifest_path: Path,
+    claim_id: str,
+    editor: Optional[EditorFunc] = None,
+) -> RephraseResult:
+    """Spawn an editor on the claim's YAML, validate edits, write
+    back atomically. Returns a ``RephraseResult`` describing what
+    changed.
+
+    Reject rules:
+    - The edited YAML must still be valid YAML and represent a dict.
+    - ``id``, ``kind``, ``tier``, ``evidence``, ``provenance``, and
+      ``last_verified`` must not change. Those fields require typed
+      events (PromoteFromExtracted) or schema work; rephrase is for
+      free-form prose/tolerance edits.
+    - If the curator exits the editor without changing anything,
+      ``RephraseResult.fields_changed`` is the empty list.
+
+    The ``editor`` callable is injected for testability. In normal
+    CLI use, pass ``None`` and ``_spawn_editor`` runs ``$EDITOR``.
+    """
+    if editor is None:
+        editor = _spawn_editor
+
+    lock_path = _lock_path_for_manifest(manifest_path)
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+") as lock_f:
+        fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
+        try:
+            raw = manifest_path.read_bytes()
+            pre_sha = _sha256_bytes(raw)
+            manifest = yaml.safe_load(raw.decode("utf-8")) or {}
+            claims = manifest.get("claims") or []
+            target_idx = None
+            for i, c in enumerate(claims):
+                if c.get("id") == claim_id:
+                    target_idx = i
+                    break
+            if target_idx is None:
+                raise CuratorError(
+                    f"claim_id {claim_id!r} not in manifest {manifest_path}"
+                )
+            original_claim = claims[target_idx]
+            initial_text = yaml.safe_dump(
+                original_claim, sort_keys=False, default_flow_style=False,
+            )
+            edited_text = editor(initial_text)
+            if edited_text.strip() == initial_text.strip():
+                # Curator opened the editor but didn't change anything.
+                # No-op — record no changes.
+                return RephraseResult(
+                    claim_id=claim_id,
+                    pre_edit_sha=pre_sha,
+                    post_edit_sha=pre_sha,
+                    fields_changed=[],
+                    manifest_path=manifest_path,
+                )
+            try:
+                edited_claim = yaml.safe_load(edited_text)
+            except yaml.YAMLError as exc:
+                raise CuratorError(
+                    f"rephrase rejected: edited text is not valid YAML "
+                    f"({exc})"
+                ) from exc
+            if not isinstance(edited_claim, dict):
+                raise CuratorError(
+                    "rephrase rejected: edited text must be a YAML "
+                    "mapping (the claim object)"
+                )
+
+            fields_changed = _validate_rephrase_edits(
+                original_claim, edited_claim, claim_id,
+            )
+
+            claims[target_idx] = edited_claim
+            manifest["claims"] = claims
+            new_yaml = yaml.safe_dump(
+                manifest, sort_keys=False, default_flow_style=False,
+            )
+            _atomic_write_text(manifest_path, new_yaml)
+            post_sha = _sha256_bytes(
+                manifest_path.read_bytes()
+            )
+        finally:
+            fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+
+    return RephraseResult(
+        claim_id=claim_id,
+        pre_edit_sha=pre_sha,
+        post_edit_sha=post_sha,
+        fields_changed=fields_changed,
+        manifest_path=manifest_path,
+    )
+
+
+def _validate_rephrase_edits(
+    original: dict, edited: dict, claim_id: str,
+) -> list[str]:
+    """Compare original vs edited claim. Returns the list of fields
+    that changed. Raises ``CuratorError`` if any locked field
+    changed.
+    """
+    changed: list[str] = []
+    all_keys = set(original) | set(edited)
+    for k in sorted(all_keys):
+        if original.get(k) != edited.get(k):
+            if k in _REPHRASE_LOCKED_FIELDS:
+                raise CuratorError(
+                    f"rephrase rejected: field {k!r} of claim "
+                    f"{claim_id!r} cannot be changed via rephrase. "
+                    f"Locked fields: {sorted(_REPHRASE_LOCKED_FIELDS)}. "
+                    "Use the typed paths (promote/drop) or schema "
+                    "work instead."
+                )
+            if k not in _REPHRASE_EDITABLE_FIELDS:
+                raise CuratorError(
+                    f"rephrase rejected: field {k!r} of claim "
+                    f"{claim_id!r} is not in the editable allowlist. "
+                    f"Allowed: {sorted(_REPHRASE_EDITABLE_FIELDS)}."
+                )
+            changed.append(k)
+    return changed

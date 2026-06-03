@@ -1012,6 +1012,54 @@ def drop(manifest_path: Path, claim_id: str) -> None:
     )
 
 
+@main.command()
+@click.option(
+    "--manifest",
+    "manifest_path",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Path to the extracted evident.yaml.",
+)
+@click.option(
+    "--claim",
+    "claim_id",
+    required=True,
+    help="Claim id to rephrase.",
+)
+def rephrase(manifest_path: Path, claim_id: str) -> None:
+    """Open a claim in $EDITOR for free-form curator edits.
+
+    Editable fields: title, claim, tolerances, case, source,
+    assumptions, failure_modes. Locked fields (id, kind, tier,
+    evidence, provenance, last_verified) must NOT be changed —
+    those require typed paths (promote/drop) or schema work.
+
+    The walkthrough subcommand (`review-extracted`) wraps this in
+    an interactive loop. Use this standalone command when you
+    already know exactly which claim you want to edit.
+    """
+    try:
+        result = curator_mod.rephrase_claim(
+            manifest_path=manifest_path,
+            claim_id=claim_id,
+        )
+    except curator_mod.CuratorError as exc:
+        click.echo(f"error: {exc}", err=True)
+        sys.exit(2)
+    if not result.fields_changed:
+        click.echo(
+            f"rephrase: no changes for {result.claim_id} "
+            f"(editor exited without edits)"
+        )
+        return
+    click.echo(
+        f"rephrased {result.claim_id}\n"
+        f"  fields changed: {', '.join(result.fields_changed)}\n"
+        f"  pre  sha: {result.pre_edit_sha}\n"
+        f"  post sha: {result.post_edit_sha}"
+    )
+
+
 @main.command("review-extracted")
 @click.option(
     "--manifest",
@@ -1110,6 +1158,7 @@ def review_extracted(
     review_walkthrough.write_curation_log(result, curation_log_path)
     n_accept = sum(1 for r in result.records if r.decision == "accept")
     n_drop = sum(1 for r in result.records if r.decision == "drop")
+    n_rephrase = sum(1 for r in result.records if r.decision == "rephrase")
     n_skip = sum(1 for r in result.records if r.decision == "skip")
     n_unreviewed = sum(
         1 for r in result.records if r.decision == "unreviewed"
@@ -1120,8 +1169,8 @@ def review_extracted(
     click.echo(
         f"reviewed {len(result.records)} claim(s): "
         f"{n_accept} accepted, {n_drop} dropped, "
-        f"{n_skip} skipped, {n_unreviewed} unreviewed, "
-        f"{n_already} already curated"
+        f"{n_rephrase} rephrased, {n_skip} skipped, "
+        f"{n_unreviewed} unreviewed, {n_already} already curated"
     )
     click.echo(
         f"curation log: {curation_log_path}\n"
