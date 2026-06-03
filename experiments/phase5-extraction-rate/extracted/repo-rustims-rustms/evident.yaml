@@ -20,7 +20,7 @@ claims:
     source_context: repo_authored
     extractor:
       model: evident-agent.extract-metadata
-      extracted_at: '2026-06-03T12:16:47Z'
+      extracted_at: '2026-06-03T13:53:27Z'
     curator: null
 - id: rustms-cargo-name
   title: rustms declares Cargo package name
@@ -41,7 +41,7 @@ claims:
     source_context: repo_authored
     extractor:
       model: evident-agent.extract-metadata
-      extracted_at: '2026-06-03T12:16:47Z'
+      extracted_at: '2026-06-03T13:53:27Z'
     curator: null
 - id: rustms-cargo-version
   title: rustms declares Cargo package version
@@ -62,5 +62,5 @@ claims:
     source_context: repo_authored
     extractor:
       model: evident-agent.extract-metadata
-      extracted_at: '2026-06-03T12:16:47Z'
+      extracted_at: '2026-06-03T13:53:27Z'
     curator: null

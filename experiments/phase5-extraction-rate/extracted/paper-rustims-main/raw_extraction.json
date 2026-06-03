@@ -1,0 +1,225 @@
+{
+  "schema_version": "1.0",
+  "purpose": "Raw model tool_input from the extraction call, BEFORE validator filtering or curator review. Auditors read this to see what the model proposed. NOT a promotable manifest.",
+  "model": "claude-opus-4-7",
+  "extracted_at": "2026-06-03T13:52:39Z",
+  "source_id": "preprint:rustims-v1-covered-6dadf069",
+  "source_sha": "bc94017677e1a73da65ed66daee287d74f4188667fa67f411f64bd52496f3b21",
+  "tool_input": {
+    "claims": [
+      {
+        "id": "rustims-maxquant-peak-matching-error-7p5min",
+        "title": "MaxQuant peak matching error reaches up to 30% in 7.5 min, 150,000-peptide setup",
+        "claim": "MaxQuant's peak matching error rate rose sharply, reaching up to 30% in the 7.5 min, 150,000-peptide setup.",
+        "subject_aliases": [
+          "MaxQuant"
+        ],
+        "tolerances": [
+          {
+            "metric": "peak_matching_error_rate",
+            "op": "<=",
+            "value": 30,
+            "source_span": "MaxQuant's peak matching error rate rose sharply, reaching up to 30% in the 7.5 min, 150,000-peptide setup",
+            "prose": "In the 7.5-minute gradient with 150,000 peptides setup, MaxQuant's peak matching error rate reached up to 30%."
+          }
+        ]
+      },
+      {
+        "id": "rustims-peaks-xpro-fdr-10k",
+        "title": "PEAKS-XPro real FDR on 10k HLA-I dataset",
+        "claim": "PEAKS-XPro reported real FDRs of 1.8% (10k) and 1.15% (100k).",
+        "subject_aliases": [
+          "PEAKS-XPro"
+        ],
+        "tolerances": [
+          {
+            "metric": "real_FDR_10k_HLA",
+            "op": "<=",
+            "value": 1.8,
+            "source_span": "PEAKS-XPro reported real FDRs of 1.8% (10k) and 1.15% (100k)",
+            "prose": "PEAKS-XPro reported a real FDR of 1.8% on the 10,000-peptide HLA-I dataset."
+          },
+          {
+            "metric": "real_FDR_100k_HLA",
+            "op": "<=",
+            "value": 1.15,
+            "source_span": "PEAKS-XPro reported real FDRs of 1.8% (10k) and 1.15% (100k)",
+            "prose": "PEAKS-XPro reported a real FDR of 1.15% on the 100,000-peptide HLA-I dataset."
+          }
+        ]
+      },
+      {
+        "id": "rustims-fragpipe-fdr-hla",
+        "title": "FragPipe real FDR on HLA-I datasets",
+        "claim": "FragPipe achieved 0.91% and 1.16% on the same datasets (10k and 100k HLA-I).",
+        "subject_aliases": [
+          "FragPipe"
+        ],
+        "tolerances": [
+          {
+            "metric": "real_FDR_10k_HLA",
+            "op": "<=",
+            "value": 0.91,
+            "source_span": "FragPipe achieved 0.91% and 1.16% on the same datasets",
+            "prose": "FragPipe achieved a real FDR of 0.91% on the 10,000-peptide HLA-I dataset."
+          },
+          {
+            "metric": "real_FDR_100k_HLA",
+            "op": "<=",
+            "value": 1.16,
+            "source_span": "FragPipe achieved 0.91% and 1.16% on the same datasets",
+            "prose": "FragPipe achieved a real FDR of 1.16% on the 100,000-peptide HLA-I dataset."
+          }
+        ]
+      },
+      {
+        "id": "rustims-fragpipe-hla-10k-identification",
+        "title": "FragPipe identification rate in HLA-I 10k dataset",
+        "claim": "Of the 9,825 fragmented peptides in the 10k dataset, FragPipe identified 3,617 (36.8%).",
+        "subject_aliases": [
+          "FragPipe"
+        ],
+        "tolerances": [
+          {
+            "metric": "fraction_of_fragmented_peptides_identified_10k",
+            "op": "<=",
+            "value": 36.8,
+            "source_span": "Of the 9,825 fragmented peptides in the 10k dataset, FragPipe identified 3,617 (36.8%)",
+            "prose": "FragPipe identified 36.8% (3,617 of 9,825) of fragmented peptides in the 10k HLA-I dataset."
+          }
+        ]
+      },
+      {
+        "id": "rustims-peaks-xpro-hla-10k-identification",
+        "title": "PEAKS-XPro identification rate in HLA-I 10k dataset",
+        "claim": "PEAKS-XPro identified 3,233 (32.9%) of the 9,825 fragmented peptides in the 10k dataset.",
+        "subject_aliases": [
+          "PEAKS-XPro"
+        ],
+        "tolerances": [
+          {
+            "metric": "fraction_of_fragmented_peptides_identified_10k",
+            "op": "<=",
+            "value": 32.9,
+            "source_span": "PEAKS-XPro 3,233 (32.9%)",
+            "prose": "PEAKS-XPro identified 32.9% (3,233 of 9,825) of fragmented peptides in the 10k HLA-I dataset."
+          }
+        ]
+      },
+      {
+        "id": "rustims-fragpipe-hla-100k-identification",
+        "title": "FragPipe identification rate in HLA-I 100k dataset",
+        "claim": "In the 100k dataset, 92,047 peptides were fragmented, of which FragPipe recovered 28,108 (30.5%).",
+        "subject_aliases": [
+          "FragPipe"
+        ],
+        "tolerances": [
+          {
+            "metric": "fraction_of_fragmented_peptides_identified_100k",
+            "op": "<=",
+            "value": 30.5,
+            "source_span": "FragPipe recovered 28,108 (30.5%)",
+            "prose": "FragPipe recovered 30.5% (28,108 of 92,047) of fragmented peptides in the 100k HLA-I dataset."
+          }
+        ]
+      },
+      {
+        "id": "rustims-peaks-xpro-hla-100k-identification",
+        "title": "PEAKS-XPro identification rate in HLA-I 100k dataset",
+        "claim": "PEAKS-XPro recovered 27,182 (29.5%) of the 92,047 fragmented peptides in the 100k dataset.",
+        "subject_aliases": [
+          "PEAKS-XPro"
+        ],
+        "tolerances": [
+          {
+            "metric": "fraction_of_fragmented_peptides_identified_100k",
+            "op": "<=",
+            "value": 29.5,
+            "source_span": "PEAKS-XPro 27,182 (29.5%)",
+            "prose": "PEAKS-XPro recovered 29.5% (27,182 of 92,047) of fragmented peptides in the 100k HLA-I dataset."
+          }
+        ]
+      }
+    ],
+    "rejections": [
+      {
+        "candidate_text": "several dia-PASEF workflows control FDR near the nominal 1% threshold at stripped-sequence level but exhibit inflated true FDR (3–5%) when modified peptidoforms are considered",
+        "locator": "Abstract, page 3",
+        "reason": "comparator_bound_to_wrong_subject",
+        "rationale": "Subject is generic 'several dia-PASEF workflows', not a specific named tool. The 3-5% range is also not tied to a single subject with a comparator."
+      },
+      {
+        "candidate_text": "match-between-runs produced peak-matching errors of up to 30% under high-density conditions",
+        "locator": "Abstract",
+        "reason": "metric_not_named",
+        "rationale": "Same finding is captured more specifically in body text and attributed to MaxQuant; abstract version is not tool-specific."
+      },
+      {
+        "candidate_text": "identifying a 0.65 site-probability cutoff as an optimal tradeoff between sensitivity and false localization",
+        "locator": "Abstract",
+        "reason": "bound_not_stated",
+        "rationale": "This is a recommended cutoff, not an empirical bound on a measured metric of a system."
+      },
+      {
+        "candidate_text": "DIA-NN v2.0, Spectronaut v20, and both tested FragPipe versions (v22 and v23) achieved a true FDR close to the nominal 1% threshold on ion level",
+        "locator": "page 6, ~line 99",
+        "reason": "hedged_qualitative_only",
+        "rationale": "'Close to' is not a strict comparator with a specific numeric bound."
+      },
+      {
+        "candidate_text": "DIA-NN v1.9 ... converged below 1% at higher complexities",
+        "locator": "page 6",
+        "reason": "hedged_qualitative_only",
+        "rationale": "Conditional on 'higher complexities' (not precisely defined) and no specific measurement value tied to a clear comparator+subject in a way suitable for extraction."
+      },
+      {
+        "candidate_text": "we observed 3-4% for Spectronaut, up to 5% for DIA-NN v1.8, and 1.5-2% for DIA-NN v1.9 and v2.0",
+        "locator": "page 6, lines 106-107",
+        "reason": "bound_not_stated",
+        "rationale": "These are observed ranges rather than stated upper/lower bound comparators in the form required."
+      },
+      {
+        "candidate_text": "FragPipe was the only tool controlling FDR at the expected value of 1%",
+        "locator": "page 6",
+        "reason": "hedged_qualitative_only",
+        "rationale": "Qualitative statement without strict comparator and value bound on a specific metric."
+      },
+      {
+        "candidate_text": "in DIA-NN v1.9 and v2.0, the spurious oxidized form replaced the correct unmodified identification in 99% and 86% of cases",
+        "locator": "page 6, line 110",
+        "reason": "bound_not_stated",
+        "rationale": "Reports point values without a comparator (no '<', '>', 'at least', 'at most' phrasing on these percentages)."
+      },
+      {
+        "candidate_text": "all DIA-NN versions identified the largest number of precursors, up to 10% more than FragPipe",
+        "locator": "page 6, line 118",
+        "reason": "comparator_bound_to_wrong_subject",
+        "rationale": "'Up to 10% more' is a vague upper bound on a difference metric; not a cleanly tied claim of (metric, comparator, value, subject)."
+      },
+      {
+        "candidate_text": "FragPipe reached 90% sensitivity of DIA-NN",
+        "locator": "page 6",
+        "reason": "bound_not_stated",
+        "rationale": "Point value without comparator."
+      },
+      {
+        "candidate_text": "MBR contributed to 10–20% of identifications per run",
+        "locator": "page 9, line 224",
+        "reason": "bound_not_stated",
+        "rationale": "Range value without a strict comparator."
+      },
+      {
+        "candidate_text": "Overall identification errors remained below 1% across both tools",
+        "locator": "page 8, line 206",
+        "reason": "comparator_bound_to_wrong_subject",
+        "rationale": "Subject is 'both tools' generically; not tied to a single named subject for which the validator can match a source_span."
+      },
+      {
+        "candidate_text": "Each tool also contributed 10–15% unique identifications",
+        "locator": "page 9",
+        "reason": "bound_not_stated",
+        "rationale": "Vague range, no comparator."
+      }
+    ]
+  }
+}

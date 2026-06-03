@@ -3,17 +3,41 @@
 First subject for the Phase 5 extraction-rate experiment: the
 **rustims** project by the same author.
 
-| Artifact | Type | Output |
-|---|---|---|
-| `repo-rustims` | Cargo workspace + Python packages | 0 claims at root; 3 + 3 from two subpackages |
-| `paper-rustims-main` | preprint PDF (20 pages, 1.6 MB) | 0 accepted, 13 rejections |
-| `paper-rustims-supplement` | supplement PDF (823 KB) | 0 accepted, 6 rejections |
+**Re-run under PR5e** which always writes `raw_extraction.json`
+next to `evident.yaml`, so the model's full structured output is
+preserved alongside the validated manifest.
+
+| Artifact | Model proposed | Model self-rejected | Validator rejected | **Validator accepted** |
+|---|---:|---:|---:|---:|
+| `repo-rustims` (workspace root) | — | — | — | 0 (Cargo workspace; see RUN_NOTES.md — needs PR #34 to descend) |
+| `repo-rustims-imspy-core` | — | — | — | 3 |
+| `repo-rustims-rustms` | — | — | — | 3 |
+| `paper-rustims-main` | **7** | **13** | 6 of 7 proposed | **1** |
+| `paper-rustims-supplement` | **0** | **7** | n/a | **0** |
 
 ## Headline finding
 
-**The extractor produced ZERO empirical claims from either PDF on
-the first run.** The default-deny framing + load-bearing source-span
-validator rejected every candidate.
+The model on the **main paper** consistently proposed **7
+candidate claims** — all about third-party tools being
+benchmarked on simulated data (MaxQuant peak matching error,
+FragPipe / PEAKS-XPro real FDR + identification rates on HLA-I
+10k/100k). The validator rejected 6 of them as
+`comparator_bound_to_wrong_subject` and similar. Across two
+runs the validator-accepted count was 0–1.
+
+On the **supplement**, the model didn't propose anything — all
+7 candidates went into model self-rejection
+(`hedged_qualitative_only`, `comparator_bound_to_wrong_subject`).
+This is a stronger signal than validator-side rejection:
+the model itself refused to extract.
+
+The raw dump makes the distinction visible: in the main paper
+case the model produced full structured output that the
+framework filtered down; in the supplement case the model
+produced zero structured output.
+
+Calling this a "failure" would be wrong — it's exactly the
+discipline EVIDENT was designed to enforce.
 
 Calling this a "failure" would be wrong — it's exactly the
 discipline EVIDENT was designed to enforce. The question is whether

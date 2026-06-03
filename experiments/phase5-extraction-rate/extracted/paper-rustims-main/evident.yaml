@@ -1,3 +1,42 @@
 version: '0.1'
 project: extracted/preprint-rustims-v1-covered-6dadf069
-claims: []
+claims:
+- id: rustims-maxquant-peak-matching-error-7p5min
+  title: MaxQuant peak matching error reaches up to 30% in 7.5 min, 150,000-peptide
+    setup
+  kind: measurement
+  tier: research
+  source: source/cited.md
+  case: source/cited.md#rustims-maxquant-peak-matching-error-7p5min
+  claim: MaxQuant's peak matching error rate rose sharply, reaching up to 30% in the
+    7.5 min, 150,000-peptide setup.
+  tolerances:
+  - metric: peak_matching_error_rate
+    op: <=
+    value: 30
+    prose: 'In the 7.5-minute gradient with 150,000 peptides setup, MaxQuant''s peak
+      matching error rate reached up to 30%.
+
+      source_span: "MaxQuant''s peak matching error rate rose sharply, reaching up
+      to 30% in the 7.5 min, 150,000-peptide setup"'
+  evidence:
+    oracle:
+    - Paper-Authority
+    command: no-replay-path
+    artifact: source/cited.md#rustims-maxquant-peak-matching-error-7p5min
+    replay_status: unavailable_artifacts
+    replay_reason: code_private
+  provenance:
+    kind: extracted-from-paper
+    source_id: preprint:rustims-v1-covered-6dadf069
+    source_sha: bc94017677e1a73da65ed66daee287d74f4188667fa67f411f64bd52496f3b21
+    source_context: unknown
+    extractor:
+      model: claude-opus-4-7
+      extracted_at: '2026-06-03T13:52:39Z'
+    curator: null
+  last_verified:
+    commit: null
+    date: null
+    value: null
+    corpus_sha: null
