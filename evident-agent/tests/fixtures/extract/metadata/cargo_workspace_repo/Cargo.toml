@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "mscore",
+    "rustms",
+]
+resolver = "2"

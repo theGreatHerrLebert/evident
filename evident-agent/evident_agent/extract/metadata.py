@@ -94,7 +94,7 @@ def _slug(s: str) -> str:
 
 
 def _extract_pyproject(
-    path: Path, repo_slug: str,
+    path: Path, repo_slug: str, source_file_label: str = "pyproject.toml",
 ) -> "list[MetadataClaim] | tuple[None, str]":
     """Read a pyproject.toml and emit metadata claims for the
     well-known compatibility fields.
@@ -131,7 +131,7 @@ def _extract_pyproject(
                 ),
                 metadata_field="python_version_requirement",
                 declared_value=pyreq.strip(),
-                source_file="pyproject.toml",
+                source_file=source_file_label,
                 source_path="project.requires-python",
             )
         )
@@ -147,7 +147,7 @@ def _extract_pyproject(
                 ),
                 metadata_field="project_name",
                 declared_value=name.strip(),
-                source_file="pyproject.toml",
+                source_file=source_file_label,
                 source_path="project.name",
             )
         )
@@ -163,7 +163,7 @@ def _extract_pyproject(
                 ),
                 metadata_field="project_version",
                 declared_value=version.strip(),
-                source_file="pyproject.toml",
+                source_file=source_file_label,
                 source_path="project.version",
             )
         )
@@ -171,7 +171,7 @@ def _extract_pyproject(
 
 
 def _extract_cargo_toml(
-    path: Path, repo_slug: str,
+    path: Path, repo_slug: str, source_file_label: str = "Cargo.toml",
 ) -> "list[MetadataClaim] | tuple[None, str]":
     """Read a Cargo.toml and emit metadata claims for well-known
     fields: ``package.rust-version`` (MSRV), ``package.name``,
@@ -203,7 +203,7 @@ def _extract_cargo_toml(
                 ),
                 metadata_field="rust_msrv",
                 declared_value=rust_version.strip(),
-                source_file="Cargo.toml",
+                source_file=source_file_label,
                 source_path="package.rust-version",
             )
         )
@@ -219,7 +219,7 @@ def _extract_cargo_toml(
                 ),
                 metadata_field="rust_edition",
                 declared_value=edition.strip(),
-                source_file="Cargo.toml",
+                source_file=source_file_label,
                 source_path="package.edition",
             )
         )
@@ -235,7 +235,7 @@ def _extract_cargo_toml(
                 ),
                 metadata_field="cargo_package_name",
                 declared_value=name.strip(),
-                source_file="Cargo.toml",
+                source_file=source_file_label,
                 source_path="package.name",
             )
         )
@@ -251,7 +251,7 @@ def _extract_cargo_toml(
                 ),
                 metadata_field="cargo_package_version",
                 declared_value=version.strip(),
-                source_file="Cargo.toml",
+                source_file=source_file_label,
                 source_path="package.version",
             )
         )
@@ -259,7 +259,7 @@ def _extract_cargo_toml(
 
 
 def _extract_package_json(
-    path: Path, repo_slug: str,
+    path: Path, repo_slug: str, source_file_label: str = "package.json",
 ) -> "list[MetadataClaim] | tuple[None, str]":
     """Read a package.json and emit metadata claims for
     ``name``, ``version``, ``engines.node``.
@@ -287,7 +287,7 @@ def _extract_package_json(
                 ),
                 metadata_field="npm_package_name",
                 declared_value=name.strip(),
-                source_file="package.json",
+                source_file=source_file_label,
                 source_path="name",
             )
         )
@@ -303,7 +303,7 @@ def _extract_package_json(
                 ),
                 metadata_field="npm_package_version",
                 declared_value=version.strip(),
-                source_file="package.json",
+                source_file=source_file_label,
                 source_path="version",
             )
         )
@@ -321,11 +321,92 @@ def _extract_package_json(
                     ),
                     metadata_field="node_version_requirement",
                     declared_value=node.strip(),
-                    source_file="package.json",
+                    source_file=source_file_label,
                     source_path="engines.node",
                 )
             )
     return out
+
+
+# ---------------------------------------------------------------------
+# Workspace detection
+# ---------------------------------------------------------------------
+
+
+def _detect_workspace_members(repo_path: Path) -> list[str]:
+    """Detect Cargo / uv-workspace member directories at the repo
+    root. Returns a deduplicated, sorted list of POSIX-style relative
+    paths.
+
+    Two sources today:
+    - ``Cargo.toml`` ``[workspace].members`` (Cargo workspaces).
+      Members can be glob patterns (``crates/*``).
+    - ``pyproject.toml`` ``[tool.uv.workspace].members`` (uv
+      workspaces). Same glob semantics.
+
+    Returns an empty list when neither workspace marker is present;
+    callers fall back to root-only extraction. Glob expansion uses
+    pathlib so a missing intermediate directory or a non-matching
+    pattern silently contributes nothing rather than failing the
+    walk.
+    """
+    members: set[str] = set()
+    cargo_root = repo_path / "Cargo.toml"
+    if cargo_root.is_file():
+        try:
+            with cargo_root.open("rb") as f:
+                doc = tomllib.load(f)
+        except (tomllib.TOMLDecodeError, OSError):
+            doc = {}
+        ws = doc.get("workspace") or {}
+        cargo_members = ws.get("members")
+        if isinstance(cargo_members, list):
+            for entry in cargo_members:
+                if isinstance(entry, str):
+                    members.update(_expand_member_glob(repo_path, entry))
+    pyproject_root = repo_path / "pyproject.toml"
+    if pyproject_root.is_file():
+        try:
+            with pyproject_root.open("rb") as f:
+                pdoc = tomllib.load(f)
+        except (tomllib.TOMLDecodeError, OSError):
+            pdoc = {}
+        uv_ws = (
+            (pdoc.get("tool") or {})
+            .get("uv", {})
+            .get("workspace", {})
+        )
+        uv_members = uv_ws.get("members")
+        if isinstance(uv_members, list):
+            for entry in uv_members:
+                if isinstance(entry, str):
+                    members.update(_expand_member_glob(repo_path, entry))
+    return sorted(members)
+
+
+def _expand_member_glob(root: Path, pattern: str) -> list[str]:
+    """Expand a Cargo/uv member entry into concrete repo-relative
+    directory paths. Plain entries pass through unchanged; glob
+    entries are expanded via ``Path.glob``.
+    """
+    pattern = pattern.strip()
+    if not pattern:
+        return []
+    if any(c in pattern for c in "*?["):
+        out: list[str] = []
+        for match in root.glob(pattern):
+            if match.is_dir():
+                try:
+                    out.append(match.relative_to(root).as_posix())
+                except ValueError:
+                    continue
+        return out
+    candidate = (root / pattern).resolve()
+    try:
+        rel = candidate.relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return []
+    return [rel] if candidate.is_dir() else []
 
 
 # ---------------------------------------------------------------------
@@ -383,17 +464,58 @@ def walk_repo_metadata(
     skipped_files: list[SkippedFile] = []
     notes: list[str] = []
 
-    # Each candidate file → its extractor function.
+    # Each candidate file → its extractor function. The first slot
+    # is the path RELATIVE to the walk root; for workspace members
+    # we substitute the member's relative path so the source_file
+    # field of the emitted claim points at the right config file.
     candidates = [
         ("pyproject.toml", "pyproject.toml", _extract_pyproject),
         ("Cargo.toml", "Cargo.toml", _extract_cargo_toml),
         ("package.json", "package.json", _extract_package_json),
     ]
-    for rel_name, display_name, fn in candidates:
+    # Workspace expansion: if a root config is a pure workspace
+    # declaration (no [package] / no [project]) it would yield zero
+    # claims today. Detect the workspace.members / tool.uv.workspace
+    # members list and walk each one as a discovered config file
+    # alongside the root config. The member's slug is derived from
+    # its directory basename so claim ids stay unique across
+    # workspace members.
+    workspace_members = _detect_workspace_members(repo_path)
+    workspace_candidates: list[tuple[str, str, callable]] = []
+    for member_rel in workspace_members:
+        member_dir = repo_path / member_rel
+        if not member_dir.is_dir():
+            continue
+        for rel_name, _, fn in candidates:
+            member_config = member_dir / rel_name
+            if member_config.is_file():
+                # display_name now includes the member dir so
+                # EXTRACTION.md surfaces "imspy_connector/Cargo.toml"
+                # rather than "Cargo.toml" twice.
+                workspace_candidates.append(
+                    (
+                        f"{member_rel}/{rel_name}",
+                        f"{member_rel}/{rel_name}",
+                        fn,
+                    )
+                )
+
+    for rel_name, display_name, fn in candidates + workspace_candidates:
         path = repo_path / rel_name
         if not path.is_file():
             continue
-        result = fn(path, repo_slug)
+        # Workspace members use a member-derived slug so per-member
+        # claim ids don't collide across the workspace.
+        if "/" in rel_name:
+            member_dir = rel_name.rsplit("/", 1)[0]
+            member_basename = member_dir.rsplit("/", 1)[-1]
+            file_slug = f"{repo_slug}-{_slug(member_basename)}"
+        else:
+            file_slug = repo_slug
+        # source_file_label is the repo-relative path so the emitted
+        # claim's source_file pinpoints the actual config file in the
+        # workspace tree.
+        result = fn(path, file_slug, source_file_label=rel_name)
         # Codex F-PR5b-CR2: parse-error returns are a tuple
         # (None, detail). list returns are claims (possibly empty).
         if isinstance(result, tuple) and result[0] is None:
@@ -425,10 +547,16 @@ def walk_repo_metadata(
             claims.extend(new_claims)
 
     if not claims and not skipped_files:
-        notes.append(
-            "no pyproject.toml / Cargo.toml / package.json found "
-            "at repo root"
-        )
+        if workspace_members:
+            notes.append(
+                "workspace declared but no recognized config files "
+                "found in members"
+            )
+        else:
+            notes.append(
+                "no pyproject.toml / Cargo.toml / package.json found "
+                "at repo root or in workspace members"
+            )
 
     return MetadataWalkResult(
         source_id=source_id,
