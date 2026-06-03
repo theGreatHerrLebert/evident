@@ -1665,3 +1665,384 @@ claims:
         "expected MetadataClaimCarriesEvidence, got {err:?}",
     );
 }
+
+// ----------------------------------------------------------------------
+// PR5f: behavioral_concordance translator + Manifest deserialization
+// ----------------------------------------------------------------------
+
+#[test]
+fn behavioral_concordance_numeric_band_translates_with_full_block() {
+    let yaml = r#"
+claims:
+  - id: rustims-fragpipe-fdr-10k-concords-meier
+    title: FragPipe FDR on rustims-simulated HLA-I 10k tracks Meier 2024
+    kind: behavioral_concordance
+    tier: research
+    claim: |
+      FragPipe v22's empirical true FDR on rustims-simulated HLA-I 10k
+      lies within 0.5 pp of Meier 2024's measured value.
+    concordance:
+      pattern:
+        pattern_kind: numeric_band
+        metric_path: fragpipe.hla_10k.fdr_pct
+        epsilon: 0.5
+        prior_value: 1.5
+      paper_locator: source/cited.md#rustims-fragpipe-fdr-10k
+      prior_binding:
+        prior_unit: percentage_points
+        prior_metric_definition: |
+          Empirical true FDR after target-decoy q<=0.01 filter.
+        locator: "Meier 2024 Table 3 row 'FragPipe v22 HLA-I 10k measured'"
+        prior_extraction_note: "Curator verified Table 3 print version 2026-XX"
+        source_id: "doi:10.1038/PLACEHOLDER"
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let ctx = ctx("any.yaml");
+    let attested = translate_claim(&ctx, mc, "claims[0]").unwrap();
+    assert_eq!(attested.value.kind, ClaimKind::BehavioralConcordance);
+    let cd = attested.value.concordance.as_ref().expect("concordance present");
+    match &cd.pattern {
+        typed_trust::ConcordancePattern::NumericBand {
+            metric_path,
+            epsilon,
+            prior_value,
+        } => {
+            assert_eq!(metric_path, "fragpipe.hla_10k.fdr_pct");
+            assert_eq!(*epsilon, 0.5);
+            assert_eq!(*prior_value, 1.5);
+        }
+        other => panic!("expected NumericBand, got {other:?}"),
+    }
+    assert_eq!(cd.paper_locator, "source/cited.md#rustims-fragpipe-fdr-10k");
+    assert_eq!(cd.prior_binding.prior_unit, "percentage_points");
+    assert_eq!(cd.prior_binding.source_id, "doi:10.1038/PLACEHOLDER");
+}
+
+#[test]
+fn behavioral_concordance_ordinal_match_keyset_alignment_enforced() {
+    // entity_to_path has key "FragPipe_v22" but prior_value has
+    // "FragPipe_v23" — keyset mismatch must be rejected.
+    let yaml = r#"
+claims:
+  - id: rustims-tools-fdr-ordering-concords-meier
+    title: Tool FDR ordering on rustims-simulated HLA-I 10k
+    kind: behavioral_concordance
+    tier: research
+    claim: |
+      Tool ordering by FDR on rustims-simulated data matches Meier 2024.
+    concordance:
+      pattern:
+        pattern_kind: ordinal_match
+        entity_to_path:
+          FragPipe_v22: fragpipe_v22.hla_10k.fdr_pct
+          PEAKS_XPro: peaks_xpro.hla_10k.fdr_pct
+        direction: lower_is_better
+        tie_policy: adjacent_swap_ok
+        prior_value:
+          FragPipe_v23: 1.5
+          PEAKS_XPro: 1.8
+      paper_locator: source/cited.md#rustims-fdr-ordering
+      prior_binding:
+        prior_unit: percentage_points
+        prior_metric_definition: "Empirical true FDR per Meier 2024 §Methods."
+        locator: "Meier 2024 Table 3 across two tool rows"
+        prior_extraction_note: "Curator verified ordering"
+        source_id: "doi:10.1038/PLACEHOLDER"
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let ctx = ctx("any.yaml");
+    let err = translate_claim(&ctx, mc, "claims[0]").unwrap_err();
+    assert!(
+        matches!(err, TranslateError::ConcordanceOrdinalKeyMismatch { .. }),
+        "expected ConcordanceOrdinalKeyMismatch, got {err:?}",
+    );
+}
+
+#[test]
+fn behavioral_concordance_same_order_rejects_non_positive_prior() {
+    let yaml = r#"
+claims:
+  - id: bad
+    title: bad
+    kind: behavioral_concordance
+    tier: research
+    claim: c
+    concordance:
+      pattern:
+        pattern_kind: same_order_of_magnitude
+        metric_path: foo.bar
+        prior_value: 0.0
+        zero_policy: not_assessed
+      paper_locator: src.md
+      prior_binding:
+        prior_unit: count
+        prior_metric_definition: "x"
+        locator: "x"
+        prior_extraction_note: "x"
+        source_id: "x"
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let ctx = ctx("any.yaml");
+    let err = translate_claim(&ctx, mc, "claims[0]").unwrap_err();
+    assert!(
+        matches!(err, TranslateError::ConcordanceSameOrderNonPositivePrior { .. }),
+        "expected ConcordanceSameOrderNonPositivePrior, got {err:?}",
+    );
+}
+
+#[test]
+fn behavioral_concordance_relative_band_rejects_ratio_at_or_below_one() {
+    let yaml = r#"
+claims:
+  - id: bad
+    title: bad
+    kind: behavioral_concordance
+    tier: research
+    claim: c
+    concordance:
+      pattern:
+        pattern_kind: relative_band
+        metric_path: foo.bar
+        ratio: 1.0
+        prior_value: 10.0
+      paper_locator: src.md
+      prior_binding:
+        prior_unit: ms
+        prior_metric_definition: "runtime"
+        locator: "x"
+        prior_extraction_note: "x"
+        source_id: "x"
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let ctx = ctx("any.yaml");
+    let err = translate_claim(&ctx, mc, "claims[0]").unwrap_err();
+    assert!(
+        matches!(err, TranslateError::ConcordanceRelativeBandRatioTooSmall { .. }),
+        "expected ConcordanceRelativeBandRatioTooSmall, got {err:?}",
+    );
+}
+
+#[test]
+fn behavioral_concordance_rejects_top_level_source() {
+    // Concordance claims must NOT carry the measurement-flavored
+    // `source` field (v4 design's schema-exception commitment).
+    let yaml = r#"
+claims:
+  - id: bad
+    title: bad
+    kind: behavioral_concordance
+    tier: research
+    source: src.md
+    claim: c
+    concordance:
+      pattern:
+        pattern_kind: numeric_band
+        metric_path: foo.bar
+        epsilon: 0.1
+        prior_value: 1.0
+      paper_locator: src.md
+      prior_binding:
+        prior_unit: x
+        prior_metric_definition: "x"
+        locator: "x"
+        prior_extraction_note: "x"
+        source_id: "x"
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let ctx = ctx("any.yaml");
+    let err = translate_claim(&ctx, mc, "claims[0]").unwrap_err();
+    assert!(
+        matches!(err, TranslateError::ConcordanceClaimCarriesSource { .. }),
+        "expected ConcordanceClaimCarriesSource, got {err:?}",
+    );
+}
+
+#[test]
+fn behavioral_concordance_rejects_oracle_in_evidence() {
+    let yaml = r#"
+claims:
+  - id: bad
+    title: bad
+    kind: behavioral_concordance
+    tier: research
+    claim: c
+    concordance:
+      pattern:
+        pattern_kind: numeric_band
+        metric_path: foo.bar
+        epsilon: 0.1
+        prior_value: 1.0
+      paper_locator: src.md
+      prior_binding:
+        prior_unit: x
+        prior_metric_definition: x
+        locator: x
+        prior_extraction_note: x
+        source_id: x
+    evidence:
+      oracle: [BALL]
+      command: "pytest"
+      artifact: results.json
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let ctx = ctx("any.yaml");
+    let err = translate_claim(&ctx, mc, "claims[0]").unwrap_err();
+    assert!(
+        matches!(err, TranslateError::ConcordanceClaimCarriesOracle { .. }),
+        "expected ConcordanceClaimCarriesOracle, got {err:?}",
+    );
+}
+
+#[test]
+fn behavioral_concordance_rejects_tolerances() {
+    let yaml = r#"
+claims:
+  - id: bad
+    title: bad
+    kind: behavioral_concordance
+    tier: research
+    claim: c
+    tolerances:
+      - metric: x
+        op: "<"
+        value: 1.0
+        prose: x
+    concordance:
+      pattern:
+        pattern_kind: numeric_band
+        metric_path: foo.bar
+        epsilon: 0.1
+        prior_value: 1.0
+      paper_locator: src.md
+      prior_binding:
+        prior_unit: x
+        prior_metric_definition: x
+        locator: x
+        prior_extraction_note: x
+        source_id: x
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let ctx = ctx("any.yaml");
+    let err = translate_claim(&ctx, mc, "claims[0]").unwrap_err();
+    assert!(
+        matches!(err, TranslateError::ConcordanceClaimCarriesTolerances { .. }),
+        "expected ConcordanceClaimCarriesTolerances, got {err:?}",
+    );
+}
+
+#[test]
+fn measurement_claim_rejects_concordance_block() {
+    let yaml = r#"
+claims:
+  - id: bad
+    title: bad
+    kind: measurement
+    tier: research
+    source: .
+    claim: c
+    tolerances:
+      - metric: x
+        op: "<"
+        value: 1.0
+        prose: x
+    evidence:
+      oracle: [Manual]
+      command: echo
+      artifact: out.txt
+    concordance:
+      pattern:
+        pattern_kind: numeric_band
+        metric_path: foo.bar
+        epsilon: 0.1
+        prior_value: 1.0
+      paper_locator: src.md
+      prior_binding:
+        prior_unit: x
+        prior_metric_definition: x
+        locator: x
+        prior_extraction_note: x
+        source_id: x
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let ctx = ctx("any.yaml");
+    let err = translate_claim(&ctx, mc, "claims[0]").unwrap_err();
+    assert!(
+        matches!(err, TranslateError::NonConcordanceClaimCarriesConcordance { .. }),
+        "expected NonConcordanceClaimCarriesConcordance, got {err:?}",
+    );
+}
+
+#[test]
+fn behavioral_concordance_missing_block_rejected() {
+    let yaml = r#"
+claims:
+  - id: bad
+    title: bad
+    kind: behavioral_concordance
+    tier: research
+    claim: c
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let ctx = ctx("any.yaml");
+    let err = translate_claim(&ctx, mc, "claims[0]").unwrap_err();
+    assert!(
+        matches!(err, TranslateError::ConcordanceClaimMissingBlock { .. }),
+        "expected ConcordanceClaimMissingBlock, got {err:?}",
+    );
+}
+
+#[test]
+fn behavioral_concordance_monotone_with_translates_with_null_prior_value() {
+    let yaml = r#"
+claims:
+  - id: rustims-fdr-monotone
+    title: FDR decreases monotonically with dataset complexity
+    kind: behavioral_concordance
+    tier: research
+    claim: |
+      FragPipe FDR on rustims-simulated data decreases monotonically
+      as dataset complexity (peptide count) increases, matching the
+      monotone trend Meier 2024 documents.
+    concordance:
+      pattern:
+        pattern_kind: monotone_with
+        metric_path: fragpipe.fdr_series
+        parameter_path: fragpipe.dataset_complexity
+        direction: decreasing
+      paper_locator: source/cited.md#rustims-fdr-monotone
+      prior_binding:
+        prior_unit: percentage_points
+        prior_metric_definition: |
+          FragPipe empirical true FDR series across dataset
+          complexity levels.
+        locator: "Meier 2024 Fig 2"
+        prior_extraction_note: "Curator confirmed direction"
+        source_id: "doi:10.1038/PLACEHOLDER"
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let ctx = ctx("any.yaml");
+    let attested = translate_claim(&ctx, mc, "claims[0]").unwrap();
+    let cd = attested.value.concordance.as_ref().expect("concordance present");
+    match &cd.pattern {
+        typed_trust::ConcordancePattern::MonotoneWith {
+            metric_path,
+            parameter_path,
+            direction,
+        } => {
+            assert_eq!(metric_path, "fragpipe.fdr_series");
+            assert_eq!(parameter_path, "fragpipe.dataset_complexity");
+            assert!(matches!(direction, typed_trust::MonotoneDirection::Decreasing));
+        }
+        other => panic!("expected MonotoneWith, got {other:?}"),
+    }
+}

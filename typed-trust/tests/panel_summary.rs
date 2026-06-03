@@ -106,6 +106,7 @@ fn render(report: &TrustReport, events: &[ReviewEvent]) -> serde_json::Value {
         backing_reports: &[],
         cycle_contested: &HashSet::new(),
         metadata: None,
+        concordance: None,
     })
 }
 

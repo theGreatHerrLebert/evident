@@ -755,6 +755,7 @@ fn synthesize_for(
         backing_reports: &backing_reports,
         cycle_contested: &HashSet::new(),
         metadata: typed_claim.metadata.as_ref(),
+            concordance: typed_claim.concordance.as_ref(),
     });
     let _ = supersede_projection; // reserved for future expansion
     Ok(augmented)

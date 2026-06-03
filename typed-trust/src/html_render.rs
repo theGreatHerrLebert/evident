@@ -155,6 +155,12 @@ pub fn render_html_fragment(augmented_json: &Value) -> String {
         render_metadata_declaration(&mut out, md);
     }
 
+    // PR5f: behavioral_concordance — pattern + paper_locator +
+    // prior_binding rendered as a <dl> block.
+    if let Some(cd) = augmented_json.get("concordance_declaration") {
+        render_concordance_declaration(&mut out, cd);
+    }
+
     // Challenges (filtered to kind == challenge).
     if let Some(events) = augmented_json
         .pointer("/_graph/review_events")
@@ -349,6 +355,45 @@ fn render_metadata_declaration(out: &mut String, md: &Value) {
         escape_html(source_file),
         escape_html(source_path)
     ));
+    out.push_str("  </dl>\n");
+}
+
+fn render_concordance_declaration(out: &mut String, cd: &Value) {
+    let pattern_kind = cd
+        .get("pattern")
+        .and_then(|p| p.get("pattern_kind"))
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    let paper_locator = cd
+        .get("paper_locator")
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+
+    out.push_str("  <h2>Concordance</h2>\n");
+    out.push_str("  <dl class=\"concordance-declaration\">\n");
+    out.push_str(&format!(
+        "    <dt>Pattern</dt><dd><code>{}</code></dd>\n",
+        escape_html(pattern_kind)
+    ));
+    out.push_str(&format!(
+        "    <dt>Paper locator</dt><dd><code>{}</code></dd>\n",
+        escape_html(paper_locator)
+    ));
+    if let Some(pb) = cd.get("prior_binding") {
+        for (label, key) in [
+            ("Prior unit", "prior_unit"),
+            ("Prior metric definition", "prior_metric_definition"),
+            ("Locator", "locator"),
+            ("Extraction note", "prior_extraction_note"),
+            ("Source id", "source_id"),
+        ] {
+            let v = pb.get(key).and_then(Value::as_str).unwrap_or("?");
+            out.push_str(&format!(
+                "    <dt>{label}</dt><dd><code>{}</code></dd>\n",
+                escape_html(v)
+            ));
+        }
+    }
     out.push_str("  </dl>\n");
 }
 

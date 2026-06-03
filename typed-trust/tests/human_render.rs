@@ -145,6 +145,7 @@ fn render_contested_sasa_report_as_markdown() {
         backing_reports: std::slice::from_ref(&backing_report),
         cycle_contested: &std::collections::HashSet::new(),
         metadata: None,
+        concordance: None,
     });
 
     let markdown = render_markdown(&augmented);
@@ -225,6 +226,7 @@ fn endorse_event_not_rendered_under_active_challenges() {
         backing_reports: &[],
         cycle_contested: &std::collections::HashSet::new(),
         metadata: None,
+        concordance: None,
     });
     let markdown = render_markdown(&augmented);
 

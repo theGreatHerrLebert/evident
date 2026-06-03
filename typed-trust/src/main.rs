@@ -261,6 +261,7 @@ fn main() -> ExitCode {
             backing_reports: &backing_reports,
             cycle_contested: &std::collections::HashSet::new(),
             metadata: typed_claim.metadata.as_ref(),
+            concordance: typed_claim.concordance.as_ref(),
         });
 
         // Decorate _graph.review_events entries with their structured

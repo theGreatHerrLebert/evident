@@ -382,6 +382,7 @@ fn criterion_result_targeted_event_is_consistent_across_synth_and_render() {
         backing_reports: &[],
         cycle_contested: &std::collections::HashSet::new(),
         metadata: None,
+        concordance: None,
     });
 
     // Report-level status is Current (synthesize doesn't match
@@ -498,6 +499,7 @@ fn render_augmented_adds_observed_value_and_criterion_status() {
         backing_reports: &[],
         cycle_contested: &std::collections::HashSet::new(),
         metadata: None,
+        concordance: None,
     });
 
     let crit0 = &json["criteria"][0];
@@ -560,6 +562,7 @@ fn render_augmented_contested_includes_graph_and_contested_by() {
         backing_reports: std::slice::from_ref(&backing_report),
         cycle_contested: &std::collections::HashSet::new(),
         metadata: None,
+        concordance: None,
     });
 
     // Report-level Contested.
@@ -902,6 +905,7 @@ fn render_criterion_status_agrees_with_synthesize_under_cycle_contestation() {
         backing_reports: &backing,
         cycle_contested: &cycled,
         metadata: None,
+        concordance: None,
     });
 
     // Report is Contested by synthesize.
@@ -1493,6 +1497,7 @@ fn render_augmented_inlines_metadata_declaration_block_pr5c() {
         backing_reports: &[],
         cycle_contested: &std::collections::HashSet::new(),
         metadata: Some(&md),
+        concordance: None,
     });
 
     let block = augmented
@@ -1513,6 +1518,7 @@ fn render_augmented_inlines_metadata_declaration_block_pr5c() {
         backing_reports: &[],
         cycle_contested: &std::collections::HashSet::new(),
         metadata: None,
+        concordance: None,
     });
     assert!(augmented_no_md.get("metadata_declaration").is_none());
 }
@@ -1545,6 +1551,7 @@ fn human_render_emits_metadata_declaration_section_pr5c() {
         backing_reports: &[],
         cycle_contested: &std::collections::HashSet::new(),
         metadata: Some(&md),
+        concordance: None,
     });
     let md_out = render_markdown(&augmented);
     assert!(md_out.contains("## Metadata declaration"));
@@ -1582,6 +1589,7 @@ fn html_render_emits_metadata_declaration_dl_pr5c() {
         backing_reports: &[],
         cycle_contested: &std::collections::HashSet::new(),
         metadata: Some(&md),
+        concordance: None,
     });
     let html = render_html_fragment(&augmented);
     assert!(html.contains("<h2>Metadata declaration</h2>"));
@@ -1625,6 +1633,7 @@ fn human_render_escapes_backticks_and_newlines_in_metadata_values_pr5c_cr3() {
         backing_reports: &[],
         cycle_contested: &std::collections::HashSet::new(),
         metadata: Some(&md),
+        concordance: None,
     });
     let out = render_markdown(&augmented);
     // The raw backtick character survives but inside a multi-backtick
@@ -1637,4 +1646,120 @@ fn human_render_escapes_backticks_and_newlines_in_metadata_values_pr5c_cr3() {
     // Confirm the bullet list ends with a blank line, not a broken
     // list item.
     assert!(out.contains("\n\n## ") || out.ends_with("\n"));
+}
+
+// ============================================================
+// PR5f: behavioral_concordance render augmentation
+// ============================================================
+
+#[test]
+fn render_augmented_inlines_concordance_declaration_for_numeric_band_pr5f() {
+    use std::collections::BTreeMap;
+    use typed_trust::{
+        claim::{
+            ConcordanceDeclaration, ConcordancePattern, PriorBindingContext,
+        },
+        report::{RenderStatus, TrustReport},
+        render::{render_augmented, RenderInput},
+        ClaimId,
+    };
+    let report = TrustReport {
+        claim: ClaimId::new("rustims-fragpipe-fdr-10k-concords-meier"),
+        status: RenderStatus::Current,
+        criteria: vec![],
+        challenges: vec![],
+        gaps: vec![],
+        aggregate: None,
+    };
+    let cd = ConcordanceDeclaration {
+        pattern: ConcordancePattern::NumericBand {
+            metric_path: "fragpipe.hla_10k.fdr_pct".into(),
+            epsilon: 0.5,
+            prior_value: 1.5,
+        },
+        paper_locator: "source/cited.md#rustims-fragpipe-fdr-10k".into(),
+        prior_binding: PriorBindingContext {
+            prior_unit: "percentage_points".into(),
+            prior_metric_definition: "Empirical true FDR per Meier 2024.".into(),
+            locator: "Meier 2024 Table 3".into(),
+            prior_extraction_note: "Curator verified 2026".into(),
+            source_id: "doi:10.1038/PLACEHOLDER".into(),
+        },
+    };
+    let _ = BTreeMap::<String, String>::new();
+    let augmented = render_augmented(&RenderInput {
+        report: &report,
+        evidence: &[],
+        related_events: &[],
+        backing_reports: &[],
+        cycle_contested: &std::collections::HashSet::new(),
+        metadata: None,
+        concordance: Some(&cd),
+    });
+    let block = augmented
+        .get("concordance_declaration")
+        .expect("concordance_declaration inlined at top level");
+    let pattern = &block["pattern"];
+    assert_eq!(pattern["pattern_kind"], "numeric_band");
+    assert_eq!(pattern["metric_path"], "fragpipe.hla_10k.fdr_pct");
+    assert_eq!(pattern["epsilon"], 0.5);
+    assert_eq!(pattern["prior_value"], 1.5);
+    assert_eq!(block["paper_locator"], "source/cited.md#rustims-fragpipe-fdr-10k");
+    assert_eq!(block["prior_binding"]["prior_unit"], "percentage_points");
+
+    // Sanity: None metadata + Some concordance still omits the
+    // metadata key, preserving the disjointness story.
+    assert!(augmented.get("metadata_declaration").is_none());
+}
+
+#[test]
+fn human_render_emits_concordance_section_pr5f() {
+    use typed_trust::{
+        claim::{
+            ConcordanceDeclaration, ConcordancePattern, PriorBindingContext,
+        },
+        human_render::render_markdown,
+        report::{RenderStatus, TrustReport},
+        render::{render_augmented, RenderInput},
+        ClaimId,
+    };
+    let report = TrustReport {
+        claim: ClaimId::new("rustims-fragpipe-fdr-10k-concords-meier"),
+        status: RenderStatus::Current,
+        criteria: vec![],
+        challenges: vec![],
+        gaps: vec![],
+        aggregate: None,
+    };
+    let cd = ConcordanceDeclaration {
+        pattern: ConcordancePattern::NumericBand {
+            metric_path: "fragpipe.hla_10k.fdr_pct".into(),
+            epsilon: 0.5,
+            prior_value: 1.5,
+        },
+        paper_locator: "source/cited.md#rustims-fragpipe-fdr-10k".into(),
+        prior_binding: PriorBindingContext {
+            prior_unit: "percentage_points".into(),
+            prior_metric_definition: "Empirical true FDR.".into(),
+            locator: "Meier 2024 Table 3".into(),
+            prior_extraction_note: "Curator verified".into(),
+            source_id: "doi:10.1038/PLACEHOLDER".into(),
+        },
+    };
+    let augmented = render_augmented(&RenderInput {
+        report: &report,
+        evidence: &[],
+        related_events: &[],
+        backing_reports: &[],
+        cycle_contested: &std::collections::HashSet::new(),
+        metadata: None,
+        concordance: Some(&cd),
+    });
+    let md = render_markdown(&augmented);
+    assert!(md.contains("## Concordance"));
+    assert!(md.contains("numeric_band"));
+    assert!(md.contains("fragpipe.hla_10k.fdr_pct"));
+    assert!(md.contains("paper_locator") || md.contains("Paper locator"));
+    assert!(md.contains("percentage_points"));
+    assert!(md.contains("Prior binding"));
 }
