@@ -509,6 +509,13 @@ pub enum TranslateError {
     /// without it the report would render Current with NotAssessed
     /// criteria — an unevidenced measurement looking accepted.
     MeasurementWithoutEvidence { id: String },
+    /// PR5j (codex review of PR5i): `kind: measurement` requires
+    /// a non-empty `evidence.oracle` list. PR5i made the field
+    /// `serde(default)` so observation manifests can omit it,
+    /// which inadvertently allowed measurement claims to ship
+    /// without declared oracles. This error re-imposes the
+    /// check for measurement only.
+    MeasurementWithoutOracle { id: String },
     /// Phase 5: the `evidence.replay_status` field was not one of
     /// `available | not_attempted | unavailable_artifacts`.
     InvalidReplayStatus { id: String, value: String },
@@ -654,6 +661,13 @@ impl std::fmt::Display for TranslateError {
                 f,
                 "claim {id}: kind=measurement requires an evidence block; \
                  add evidence or change to kind: policy / reference"
+            ),
+            TranslateError::MeasurementWithoutOracle { id } => write!(
+                f,
+                "claim {id}: kind=measurement requires a non-empty \
+                 `evidence.oracle` list (PR5j re-imposed this check \
+                 after PR5i's serde(default) relaxation made it possible \
+                 to ship measurement claims without declared oracles)"
             ),
             TranslateError::InvalidReplayStatus { id, value } => write!(
                 f,
@@ -1563,6 +1577,16 @@ pub fn translate_evidence(
         }
         return Ok(None);
     };
+    // PR5j (codex review of PR5i): measurement claims require a
+    // non-empty `evidence.oracle` list. PR5i made the field
+    // `serde(default)` so observation manifests can omit it
+    // (their pattern primitive IS the oracle), which inadvertently
+    // relaxed the measurement schema. Re-impose the check here.
+    if mc.kind == "measurement" && me.oracle.is_empty() {
+        return Err(TranslateError::MeasurementWithoutOracle {
+            id: mc.id.clone(),
+        });
+    }
     let provenance_kind = mc.provenance.as_ref().map(|p| p.effective_kind());
     let runner = unspecified_runner_identity(provenance_kind);
     let first_criterion = criteria.first().map(|c| c.id.clone());

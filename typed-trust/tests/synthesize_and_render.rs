@@ -2169,3 +2169,155 @@ fn human_render_emits_observation_section_pr5i() {
     assert!(!md.contains("prior_value"));
     assert!(!md.contains("Prior value"));
 }
+
+// ============================================================
+// PR5j: regression tests for codex review fixes
+// ============================================================
+
+#[test]
+fn render_augmented_passes_observation_result_through_pr5j_fix2() {
+    // Codex review of PR5i found that main.rs hardcoded
+    // observation_result: None instead of looking up
+    // concorded_overlay.get(&claim.id). This test asserts the
+    // render-augmented layer correctly inlines the
+    // observation_result when supplied — the wiring fix in
+    // main.rs has its own coverage via an integration smoke
+    // test below.
+    use typed_trust::{
+        claim::{
+            ComparisonStatus, ConcordancePattern, ConcordanceResult,
+            ObservationDeclaration,
+        },
+        report::{RenderStatus, TrustReport},
+        render::{render_augmented, RenderInput},
+        ClaimId,
+    };
+    let report = TrustReport {
+        claim: ClaimId::new("x"),
+        status: RenderStatus::Current,
+        criteria: vec![],
+        challenges: vec![],
+        gaps: vec![],
+        aggregate: None,
+    };
+    let od = ObservationDeclaration {
+        third_party_tool: "MaxQuant".into(),
+        metric_definition: "Peak matching error per Cox 2008.".into(),
+        pattern: ConcordancePattern::NumericBand {
+            metric_path: "maxquant.error".into(),
+            epsilon: 5.0,
+            prior_value: 30.0,
+        },
+        paper_locator: "src.md".into(),
+    };
+    let cr = ConcordanceResult {
+        comparison_status: ComparisonStatus::Pass,
+        observed_value: Some(31.5),
+        observed_unit: Some("percent".into()),
+        observed_ordering: None,
+        prior_ordering: None,
+        observed_series: None,
+        parameter_series: None,
+        image_digest: Some("sha256:abc".into()),
+        produced_at: Some("2026-06-04T10:00:00Z".into()),
+        diagnostics: serde_json::Map::new(),
+    };
+    let augmented = render_augmented(&RenderInput {
+        report: &report,
+        evidence: &[],
+        related_events: &[],
+        backing_reports: &[],
+        cycle_contested: &std::collections::HashSet::new(),
+        metadata: None,
+        concordance: None,
+        concordance_result: None,
+        observation: Some(&od),
+        observation_result: Some(&cr),
+    });
+    let block = augmented
+        .get("observation_result")
+        .expect("observation_result inlined when supplied");
+    assert_eq!(block["comparison_status"], "pass");
+    assert_eq!(block["observed_value"], 31.5);
+    // Human render should now show the result section too.
+    let md = typed_trust::human_render::render_markdown(&augmented);
+    assert!(md.contains("## Observation result"));
+    assert!(md.contains("Pass"));
+    assert!(md.contains("31.5"));
+}
+
+#[test]
+fn typed_trust_cli_renders_observation_result_from_concorded_sidecar_pr5j_fix2() {
+    // Codex review of PR5i: main.rs hardcoded observation_result
+    // to None even when last_concorded.json had a matching entry.
+    // PR5j wires it through. This integration test invokes the
+    // typed-trust binary with a third_party_observation manifest
+    // + a last_concorded.json sidecar and asserts the rendered
+    // output contains "## Observation result".
+    use std::process::Command;
+    let bin = env!("CARGO_BIN_EXE_typed-trust");
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = tmp.path().join("evident.yaml");
+    std::fs::write(
+        &manifest,
+        r#"version: 0.1
+project: pr5j-fix2-regression
+claims:
+  - id: rustims-maxquant-peak-matching
+    kind: third_party_observation
+    tier: research
+    title: MaxQuant peak matching error 30%
+    claim: MaxQuant peak matching error reached 30% on simulated data.
+    observation:
+      third_party_tool: MaxQuant
+      metric_definition: Peak matching error per Cox 2008 §Methods.
+      pattern:
+        pattern_kind: numeric_band
+        metric_path: maxquant.peak_matching_error.fraction_pct
+        epsilon: 5.0
+        observed_value: 30.0
+      paper_locator: source/cited.md#maxquant
+"#,
+    )
+    .unwrap();
+    let sidecar = tmp.path().join("last_concorded.json");
+    std::fs::write(
+        &sidecar,
+        r#"{
+          "rustims-maxquant-peak-matching": {
+            "comparison_status": "pass",
+            "observed_value": 31.5,
+            "observed_unit": "percent",
+            "image_digest": "sha256:abc",
+            "produced_at": "2026-06-04T10:00:00Z"
+          }
+        }"#,
+    )
+    .unwrap();
+    let output = Command::new(bin)
+        .args([
+            "--format",
+            "md",
+            "--last-concorded-sidecar",
+            sidecar.to_str().unwrap(),
+            manifest.to_str().unwrap(),
+        ])
+        .output()
+        .expect("typed-trust binary spawns");
+    assert!(
+        output.status.success(),
+        "typed-trust exited non-zero: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("## Observation result"),
+        "rendered output missing observation result section; stdout=\n{stdout}"
+    );
+    assert!(stdout.contains("Pass"), "expected Pass verdict");
+    assert!(stdout.contains("31.5"), "expected observed value 31.5");
+    assert!(
+        stdout.contains("sha256:abc"),
+        "expected image digest in render"
+    );
+}
