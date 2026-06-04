@@ -2046,3 +2046,336 @@ claims:
         other => panic!("expected MonotoneWith, got {other:?}"),
     }
 }
+
+// ----------------------------------------------------------------------
+// PR5i: third_party_observation translator
+// ----------------------------------------------------------------------
+
+#[test]
+fn third_party_observation_numeric_band_translates_pr5i() {
+    let yaml = r#"
+claims:
+  - id: rustims-maxquant-peak-matching-error-7p5min
+    title: MaxQuant peak matching error reaches up to 30% on 7.5min 150k-peptide
+    kind: third_party_observation
+    tier: research
+    claim: |
+      On rustims-simulated 7.5min, 150,000-peptide dda-PASEF data,
+      MaxQuant's peak matching error rate reached up to 30%.
+    observation:
+      third_party_tool: MaxQuant
+      metric_definition: |
+        Peak matching error rate per Cox 2008 §Methods.
+      pattern:
+        pattern_kind: numeric_band
+        metric_path: maxquant.peak_matching_error.fraction_pct
+        epsilon: 5.0
+        observed_value: 30.0
+      paper_locator: source/cited.md#rustims-maxquant-peak-matching
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let ctx = ctx("any.yaml");
+    let attested = translate_claim(&ctx, mc, "claims[0]").unwrap();
+    assert_eq!(attested.value.kind, ClaimKind::ThirdPartyObservation);
+    let od = attested.value.observation.as_ref().expect("observation block");
+    assert_eq!(od.third_party_tool, "MaxQuant");
+    assert_eq!(od.paper_locator, "source/cited.md#rustims-maxquant-peak-matching");
+    // The internal Rust ConcordancePattern::NumericBand has prior_value;
+    // the translator mapped observed_value (YAML) → prior_value (internal).
+    match &od.pattern {
+        typed_trust::ConcordancePattern::NumericBand {
+            metric_path,
+            epsilon,
+            prior_value,
+        } => {
+            assert_eq!(metric_path, "maxquant.peak_matching_error.fraction_pct");
+            assert_eq!(*epsilon, 5.0);
+            assert_eq!(*prior_value, 30.0);
+        }
+        other => panic!("expected NumericBand, got {other:?}"),
+    }
+}
+
+#[test]
+fn third_party_observation_missing_block_rejected_pr5i() {
+    let yaml = r#"
+claims:
+  - id: bad
+    title: bad
+    kind: third_party_observation
+    tier: research
+    claim: c
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let err = translate_claim(&ctx("any.yaml"), &manifest.claims[0], "claims[0]").unwrap_err();
+    assert!(
+        matches!(err, TranslateError::ObservationClaimMissingBlock { .. }),
+        "expected ObservationClaimMissingBlock, got {err:?}",
+    );
+}
+
+#[test]
+fn third_party_observation_rejects_source_field_pr5i() {
+    let yaml = r#"
+claims:
+  - id: bad
+    title: bad
+    kind: third_party_observation
+    tier: research
+    source: src.md
+    claim: c
+    observation:
+      third_party_tool: X
+      metric_definition: y
+      pattern:
+        pattern_kind: numeric_band
+        metric_path: x.y
+        epsilon: 1.0
+        observed_value: 10.0
+      paper_locator: src.md
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let err = translate_claim(&ctx("any.yaml"), &manifest.claims[0], "claims[0]").unwrap_err();
+    assert!(
+        matches!(err, TranslateError::ObservationClaimCarriesSource { .. }),
+        "expected ObservationClaimCarriesSource, got {err:?}",
+    );
+}
+
+#[test]
+fn third_party_observation_rejects_case_field_pr5i() {
+    let yaml = r#"
+claims:
+  - id: bad
+    title: bad
+    kind: third_party_observation
+    tier: research
+    case: case.md
+    claim: c
+    observation:
+      third_party_tool: X
+      metric_definition: y
+      pattern:
+        pattern_kind: numeric_band
+        metric_path: x.y
+        epsilon: 1.0
+        observed_value: 10.0
+      paper_locator: src.md
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let err = translate_claim(&ctx("any.yaml"), &manifest.claims[0], "claims[0]").unwrap_err();
+    assert!(
+        matches!(err, TranslateError::ObservationClaimCarriesCase { .. }),
+        "expected ObservationClaimCarriesCase, got {err:?}",
+    );
+}
+
+#[test]
+fn third_party_observation_rejects_last_verified_pr5i() {
+    let yaml = r#"
+claims:
+  - id: bad
+    title: bad
+    kind: third_party_observation
+    tier: research
+    claim: c
+    last_verified:
+      commit: abc
+      date: "2026-01-01"
+    observation:
+      third_party_tool: X
+      metric_definition: y
+      pattern:
+        pattern_kind: numeric_band
+        metric_path: x.y
+        epsilon: 1.0
+        observed_value: 10.0
+      paper_locator: src.md
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let err = translate_claim(&ctx("any.yaml"), &manifest.claims[0], "claims[0]").unwrap_err();
+    assert!(
+        matches!(err, TranslateError::ObservationClaimCarriesLastVerified { .. }),
+        "expected ObservationClaimCarriesLastVerified, got {err:?}",
+    );
+}
+
+#[test]
+fn third_party_observation_rejects_oracle_in_evidence_pr5i() {
+    let yaml = r#"
+claims:
+  - id: bad
+    title: bad
+    kind: third_party_observation
+    tier: research
+    claim: c
+    observation:
+      third_party_tool: X
+      metric_definition: y
+      pattern:
+        pattern_kind: numeric_band
+        metric_path: x.y
+        epsilon: 1.0
+        observed_value: 10.0
+      paper_locator: src.md
+    evidence:
+      oracle: [BALL]
+      command: pytest
+      artifact: out.json
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let err = translate_claim(&ctx("any.yaml"), &manifest.claims[0], "claims[0]").unwrap_err();
+    assert!(
+        matches!(err, TranslateError::ObservationClaimCarriesOracle { .. }),
+        "expected ObservationClaimCarriesOracle, got {err:?}",
+    );
+}
+
+#[test]
+fn third_party_observation_evidence_without_oracle_accepted_pr5i() {
+    // Codex v2 F-CR5: serde(default) on oracle should allow observation
+    // manifests to omit the field entirely.
+    let yaml = r#"
+claims:
+  - id: ok
+    title: ok
+    kind: third_party_observation
+    tier: research
+    claim: c
+    observation:
+      third_party_tool: X
+      metric_definition: y
+      pattern:
+        pattern_kind: numeric_band
+        metric_path: x.y
+        epsilon: 1.0
+        observed_value: 10.0
+      paper_locator: src.md
+    evidence:
+      command: pytest
+      artifact: out.json
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    // Should parse + translate without error.
+    let _ = translate_claim(&ctx("any.yaml"), &manifest.claims[0], "claims[0]").unwrap();
+}
+
+#[test]
+fn measurement_claim_rejects_observation_block_pr5i() {
+    let yaml = r#"
+claims:
+  - id: bad
+    title: bad
+    kind: measurement
+    tier: research
+    source: .
+    claim: c
+    tolerances:
+      - metric: x
+        op: "<"
+        value: 1.0
+        prose: x
+    evidence:
+      oracle: [Manual]
+      command: echo
+      artifact: out.txt
+    observation:
+      third_party_tool: X
+      metric_definition: y
+      pattern:
+        pattern_kind: numeric_band
+        metric_path: x.y
+        epsilon: 1.0
+        observed_value: 10.0
+      paper_locator: src.md
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let err = translate_claim(&ctx("any.yaml"), &manifest.claims[0], "claims[0]").unwrap_err();
+    assert!(
+        matches!(err, TranslateError::NonObservationClaimCarriesObservation { .. }),
+        "expected NonObservationClaimCarriesObservation, got {err:?}",
+    );
+}
+
+#[test]
+fn third_party_observation_rejects_non_finite_observed_value_pr5i() {
+    // Codex v2 F-CR-bug-4: NaN/Inf must be rejected.
+    let yaml = r#"
+claims:
+  - id: bad
+    title: bad
+    kind: third_party_observation
+    tier: research
+    claim: c
+    observation:
+      third_party_tool: X
+      metric_definition: y
+      pattern:
+        pattern_kind: numeric_band
+        metric_path: x.y
+        epsilon: 1.0
+        observed_value: .nan
+      paper_locator: src.md
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let err = translate_claim(&ctx("any.yaml"), &manifest.claims[0], "claims[0]").unwrap_err();
+    assert!(
+        matches!(err, TranslateError::ObservationNonFiniteValue { .. }),
+        "expected ObservationNonFiniteValue, got {err:?}",
+    );
+}
+
+#[test]
+fn third_party_observation_rejects_empty_third_party_tool_pr5i() {
+    let yaml = r#"
+claims:
+  - id: bad
+    title: bad
+    kind: third_party_observation
+    tier: research
+    claim: c
+    observation:
+      third_party_tool: " "
+      metric_definition: y
+      pattern:
+        pattern_kind: numeric_band
+        metric_path: x.y
+        epsilon: 1.0
+        observed_value: 10.0
+      paper_locator: src.md
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let err = translate_claim(&ctx("any.yaml"), &manifest.claims[0], "claims[0]").unwrap_err();
+    assert!(
+        matches!(err, TranslateError::ObservationMissingThirdPartyTool { .. }),
+        "expected ObservationMissingThirdPartyTool, got {err:?}",
+    );
+}
+
+#[test]
+fn third_party_observation_rejects_epsilon_zero_pr5i() {
+    let yaml = r#"
+claims:
+  - id: bad
+    title: bad
+    kind: third_party_observation
+    tier: research
+    claim: c
+    observation:
+      third_party_tool: X
+      metric_definition: y
+      pattern:
+        pattern_kind: numeric_band
+        metric_path: x.y
+        epsilon: 0.0
+        observed_value: 10.0
+      paper_locator: src.md
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let err = translate_claim(&ctx("any.yaml"), &manifest.claims[0], "claims[0]").unwrap_err();
+    assert!(
+        matches!(err, TranslateError::ObservationNumericBandEpsilonInvalid { .. }),
+        "expected ObservationNumericBandEpsilonInvalid, got {err:?}",
+    );
+}

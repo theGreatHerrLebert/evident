@@ -47,6 +47,7 @@ fn proteon_sasa_release_walkthrough() {
         requires_assumptions: vec![],
         metadata: None,
         concordance: None,
+        observation: None,
     };
 
     // §7 — Three Criteria from the YAML's three tolerances
@@ -255,6 +256,7 @@ fn synthetic_challenge_against_charmm_electrostatic_band() {
         requires_assumptions: vec![],
         metadata: None,
         concordance: None,
+        observation: None,
     };
 
     // The criterion id is stable across re-synthesis (per Criterion.id

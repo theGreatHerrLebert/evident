@@ -35,6 +35,18 @@ pub struct Claim {
     /// "paper_locator is a schema exception").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub concordance: Option<ConcordanceDeclaration>,
+    /// PR5i: third-party observation — paper observed a
+    /// third-party tool's behavior on the paper's own data, with
+    /// NO cited prior. Only `Some` when `kind ==
+    /// ThirdPartyObservation`. Like `concordance`, replaces the
+    /// `source` field with an embedded `paper_locator`.
+    /// `observation.pattern` reuses the same
+    /// `ConcordancePattern` enum the concordance claim uses; the
+    /// difference between concordance and observation is the
+    /// curator-facing layer (prior_binding vs. third_party_tool +
+    /// metric_definition), not the comparator primitive.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observation: Option<ObservationDeclaration>,
 }
 
 /// PR5f: typed lift of the manifest's `concordance:` block.
@@ -273,6 +285,49 @@ pub struct PriorBindingContext {
     pub source_id: String,
 }
 
+/// PR5i: typed lift of the manifest's `observation:` block.
+///
+/// An observation claim asserts: "we observed third-party tool
+/// `third_party_tool` produce a measurement that, under the
+/// declared `pattern`, satisfies the relationship — and you can
+/// replay our docker to see it for yourself."
+///
+/// Reuses `ConcordancePattern` verbatim for code reuse. The
+/// difference between observation and concordance is at the
+/// curator-facing layer: concordance carries a `prior_binding`
+/// citing an external paper; observation carries
+/// `third_party_tool` + `metric_definition` because the paper
+/// IS the source of the number.
+///
+/// Per v3 design: the YAML field name for the pattern's
+/// reference value is `observed_value` (not `prior_value` —
+/// codex v2 F-CR1 flagged that name as misleading for this
+/// kind). The internal Rust `ConcordancePattern::*::prior_value`
+/// field name is reused for code reuse; the translator maps the
+/// YAML `observed_value` into it. Parse errors, render output,
+/// and MCP results MUST surface the field as `observed_value`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ObservationDeclaration {
+    /// REQUIRED: name of the third-party tool being benchmarked.
+    /// Schema-level signal that the subject is NOT the paper's
+    /// own system. The presence of this field is what makes the
+    /// claim representable as `third_party_observation` rather
+    /// than `measurement`.
+    pub third_party_tool: String,
+    /// REQUIRED prose: pins down what the metric IS. "FDR" /
+    /// "peak matching error" / "identification rate" mean
+    /// different things in different toolchains.
+    pub metric_definition: String,
+    /// The framework-owned pattern primitive. Reused verbatim
+    /// from concordance: `numeric_band`, `relative_band`,
+    /// `same_order_of_magnitude`, `ordinal_match`,
+    /// `monotone_with`.
+    pub pattern: ConcordancePattern,
+    /// Where in *this* paper the observation is made (analog of
+    /// `concordance.paper_locator`).
+    pub paper_locator: String,
+}
+
 /// PR5c: typed lift of the manifest's `metadata:` block. The
 /// declaration IS the evidence — the source's
 /// `pyproject.toml`/`Cargo.toml`/`package.json` stated this value,
@@ -318,6 +373,18 @@ pub enum ClaimKind {
     /// flavored TrustReport whose status reflects the comparator's
     /// pass/fail/not-assessed verdict.
     BehavioralConcordance,
+    /// PR5i: third-party observation — paper observed a
+    /// third-party tool's behavior on the paper's own data, with
+    /// NO cited prior. The dominant claim shape in benchmark and
+    /// simulation papers ("MaxQuant's peak matching error
+    /// reached 30%"). Reuses the same `ConcordancePattern`
+    /// comparator machinery: the difference between observation
+    /// and concordance is at the curator-facing layer (paper IS
+    /// the source vs. paper CITES a source), not at the
+    /// comparator. See `EVIDENT_THIRD_PARTY_OBSERVATION_DRAFT.md`
+    /// for the boundary decision rule against measurement /
+    /// metadata_compatibility / behavioral_concordance.
+    ThirdPartyObservation,
     Other(String),
 }
 

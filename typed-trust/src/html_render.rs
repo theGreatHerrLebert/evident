@@ -166,6 +166,14 @@ pub fn render_html_fragment(augmented_json: &Value) -> String {
         render_concordance_result(&mut out, cr);
     }
 
+    // PR5i: observation declaration + verdict.
+    if let Some(od) = augmented_json.get("observation_declaration") {
+        render_observation_declaration(&mut out, od);
+    }
+    if let Some(or) = augmented_json.get("observation_result") {
+        render_observation_result(&mut out, or);
+    }
+
     // Challenges (filtered to kind == challenge).
     if let Some(events) = augmented_json
         .pointer("/_graph/review_events")
@@ -713,4 +721,83 @@ fn escape_html(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
+}
+
+fn render_observation_declaration(out: &mut String, od: &Value) {
+    let pattern_kind = od
+        .get("pattern")
+        .and_then(|p| p.get("pattern_kind"))
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    let third_party = od
+        .get("third_party_tool")
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    let metric_def = od
+        .get("metric_definition")
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    let paper_locator = od
+        .get("paper_locator")
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+
+    out.push_str("  <h2>Observation</h2>\n");
+    out.push_str("  <dl class=\"observation-declaration\">\n");
+    out.push_str(&format!(
+        "    <dt>Pattern</dt><dd><code>{}</code></dd>\n",
+        escape_html(pattern_kind)
+    ));
+    out.push_str(&format!(
+        "    <dt>Third-party tool</dt><dd><code>{}</code></dd>\n",
+        escape_html(third_party)
+    ));
+    out.push_str(&format!(
+        "    <dt>Metric definition</dt><dd><code>{}</code></dd>\n",
+        escape_html(metric_def)
+    ));
+    out.push_str(&format!(
+        "    <dt>Paper locator</dt><dd><code>{}</code></dd>\n",
+        escape_html(paper_locator)
+    ));
+    out.push_str("  </dl>\n");
+}
+
+fn render_observation_result(out: &mut String, or: &Value) {
+    let status = or
+        .get("comparison_status")
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    out.push_str("  <h2>Observation result</h2>\n");
+    out.push_str(&format!(
+        "  <p class=\"observation-status observation-status-{}\"><strong>Status:</strong> {}</p>\n",
+        escape_html(status),
+        escape_html(status),
+    ));
+    out.push_str("  <dl class=\"observation-result\">\n");
+    if let Some(observed) = or.get("observed_value").and_then(Value::as_f64) {
+        out.push_str(&format!(
+            "    <dt>Observed value</dt><dd><code>{}</code></dd>\n",
+            observed
+        ));
+    }
+    if let Some(unit) = or.get("observed_unit").and_then(Value::as_str) {
+        out.push_str(&format!(
+            "    <dt>Observed unit</dt><dd><code>{}</code></dd>\n",
+            escape_html(unit)
+        ));
+    }
+    if let Some(img) = or.get("image_digest").and_then(Value::as_str) {
+        out.push_str(&format!(
+            "    <dt>Image digest</dt><dd><code>{}</code></dd>\n",
+            escape_html(img)
+        ));
+    }
+    if let Some(at) = or.get("produced_at").and_then(Value::as_str) {
+        out.push_str(&format!(
+            "    <dt>Produced at</dt><dd><code>{}</code></dd>\n",
+            escape_html(at)
+        ));
+    }
+    out.push_str("  </dl>\n");
 }

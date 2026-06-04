@@ -108,6 +108,8 @@ fn render(report: &TrustReport, events: &[ReviewEvent]) -> serde_json::Value {
         metadata: None,
         concordance: None,
         concordance_result: None,
+        observation: None,
+        observation_result: None,
     })
 }
 

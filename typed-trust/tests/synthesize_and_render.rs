@@ -384,6 +384,8 @@ fn criterion_result_targeted_event_is_consistent_across_synth_and_render() {
         metadata: None,
         concordance: None,
         concordance_result: None,
+        observation: None,
+        observation_result: None,
     });
 
     // Report-level status is Current (synthesize doesn't match
@@ -502,6 +504,8 @@ fn render_augmented_adds_observed_value_and_criterion_status() {
         metadata: None,
         concordance: None,
         concordance_result: None,
+        observation: None,
+        observation_result: None,
     });
 
     let crit0 = &json["criteria"][0];
@@ -566,6 +570,8 @@ fn render_augmented_contested_includes_graph_and_contested_by() {
         metadata: None,
         concordance: None,
         concordance_result: None,
+        observation: None,
+        observation_result: None,
     });
 
     // Report-level Contested.
@@ -910,6 +916,8 @@ fn render_criterion_status_agrees_with_synthesize_under_cycle_contestation() {
         metadata: None,
         concordance: None,
         concordance_result: None,
+        observation: None,
+        observation_result: None,
     });
 
     // Report is Contested by synthesize.
@@ -1503,6 +1511,8 @@ fn render_augmented_inlines_metadata_declaration_block_pr5c() {
         metadata: Some(&md),
         concordance: None,
         concordance_result: None,
+        observation: None,
+        observation_result: None,
     });
 
     let block = augmented
@@ -1525,6 +1535,8 @@ fn render_augmented_inlines_metadata_declaration_block_pr5c() {
         metadata: None,
         concordance: None,
         concordance_result: None,
+        observation: None,
+        observation_result: None,
     });
     assert!(augmented_no_md.get("metadata_declaration").is_none());
 }
@@ -1559,6 +1571,8 @@ fn human_render_emits_metadata_declaration_section_pr5c() {
         metadata: Some(&md),
         concordance: None,
         concordance_result: None,
+        observation: None,
+        observation_result: None,
     });
     let md_out = render_markdown(&augmented);
     assert!(md_out.contains("## Metadata declaration"));
@@ -1598,6 +1612,8 @@ fn html_render_emits_metadata_declaration_dl_pr5c() {
         metadata: Some(&md),
         concordance: None,
         concordance_result: None,
+        observation: None,
+        observation_result: None,
     });
     let html = render_html_fragment(&augmented);
     assert!(html.contains("<h2>Metadata declaration</h2>"));
@@ -1643,6 +1659,8 @@ fn human_render_escapes_backticks_and_newlines_in_metadata_values_pr5c_cr3() {
         metadata: Some(&md),
         concordance: None,
         concordance_result: None,
+        observation: None,
+        observation_result: None,
     });
     let out = render_markdown(&augmented);
     // The raw backtick character survives but inside a multi-backtick
@@ -1705,6 +1723,8 @@ fn render_augmented_inlines_concordance_declaration_for_numeric_band_pr5f() {
         metadata: None,
         concordance: Some(&cd),
         concordance_result: None,
+        observation: None,
+        observation_result: None,
     });
     let block = augmented
         .get("concordance_declaration")
@@ -1765,6 +1785,8 @@ fn human_render_emits_concordance_section_pr5f() {
         metadata: None,
         concordance: Some(&cd),
         concordance_result: None,
+        observation: None,
+        observation_result: None,
     });
     let md = render_markdown(&augmented);
     assert!(md.contains("## Concordance"));
@@ -1837,6 +1859,8 @@ fn render_augmented_inlines_concordance_result_block_pr5h() {
         metadata: None,
         concordance: Some(&cd),
         concordance_result: Some(&cr),
+        observation: None,
+        observation_result: None,
     });
     let block = augmented
         .get("concordance_result")
@@ -1904,6 +1928,8 @@ fn human_render_emits_concordance_result_section_pr5h() {
         metadata: None,
         concordance: Some(&cd),
         concordance_result: Some(&cr),
+        observation: None,
+        observation_result: None,
     });
     let md = render_markdown(&augmented);
     assert!(md.contains("## Concordance result"));
@@ -1975,6 +2001,8 @@ fn human_render_emits_concordance_result_ordering_for_ordinal_match_pr5h() {
         metadata: None,
         concordance: Some(&cd),
         concordance_result: Some(&cr),
+        observation: None,
+        observation_result: None,
     });
     let md = render_markdown(&augmented);
     assert!(md.contains("## Concordance result"));
@@ -1983,4 +2011,161 @@ fn human_render_emits_concordance_result_ordering_for_ordinal_match_pr5h() {
     assert!(md.contains("PEAKS"));
     // Arrow separator used in human_render.
     assert!(md.contains("→"));
+}
+
+// ============================================================
+// PR5i: third_party_observation render augmentation
+// ============================================================
+
+#[test]
+fn render_augmented_inlines_observation_declaration_and_renames_prior_value_pr5i() {
+    use typed_trust::{
+        claim::{
+            ConcordancePattern, ObservationDeclaration,
+        },
+        report::{RenderStatus, TrustReport},
+        render::{render_augmented, RenderInput},
+        ClaimId,
+    };
+    let report = TrustReport {
+        claim: ClaimId::new("rustims-maxquant-peak-matching"),
+        status: RenderStatus::Current,
+        criteria: vec![],
+        challenges: vec![],
+        gaps: vec![],
+        aggregate: None,
+    };
+    let od = ObservationDeclaration {
+        third_party_tool: "MaxQuant".into(),
+        metric_definition: "Peak matching error rate per Cox 2008.".into(),
+        pattern: ConcordancePattern::NumericBand {
+            metric_path: "maxquant.peak_matching_error.fraction_pct".into(),
+            epsilon: 5.0,
+            prior_value: 30.0,
+        },
+        paper_locator: "source/cited.md#maxquant".into(),
+    };
+    let augmented = render_augmented(&RenderInput {
+        report: &report,
+        evidence: &[],
+        related_events: &[],
+        backing_reports: &[],
+        cycle_contested: &std::collections::HashSet::new(),
+        metadata: None,
+        concordance: None,
+        concordance_result: None,
+        observation: Some(&od),
+        observation_result: None,
+    });
+    let block = augmented
+        .get("observation_declaration")
+        .expect("observation_declaration inlined at top level");
+    assert_eq!(block["third_party_tool"], "MaxQuant");
+    assert_eq!(block["paper_locator"], "source/cited.md#maxquant");
+    // Codex v3 F-CR1: the pattern surfaces `observed_value`, NOT
+    // `prior_value`, even though the internal Rust enum uses the
+    // latter for code reuse.
+    let pattern = &block["pattern"];
+    assert_eq!(pattern["pattern_kind"], "numeric_band");
+    assert_eq!(pattern["observed_value"], 30.0);
+    assert!(
+        pattern.get("prior_value").is_none(),
+        "render must NOT leak prior_value externally; got {pattern:?}"
+    );
+}
+
+#[test]
+fn render_full_augmented_does_not_leak_prior_value_anywhere_pr5i() {
+    // Codex v3 F-CR1: the rename must apply across the whole
+    // augmented JSON. No path inside `observation_declaration`
+    // should contain `prior_value`.
+    use typed_trust::{
+        claim::{ConcordancePattern, ObservationDeclaration},
+        report::{RenderStatus, TrustReport},
+        render::{render_augmented, RenderInput},
+        ClaimId,
+    };
+    let report = TrustReport {
+        claim: ClaimId::new("x"),
+        status: RenderStatus::Current,
+        criteria: vec![],
+        challenges: vec![],
+        gaps: vec![],
+        aggregate: None,
+    };
+    let od = ObservationDeclaration {
+        third_party_tool: "X".into(),
+        metric_definition: "y".into(),
+        pattern: ConcordancePattern::NumericBand {
+            metric_path: "x.y".into(),
+            epsilon: 1.0,
+            prior_value: 10.0,
+        },
+        paper_locator: "src.md".into(),
+    };
+    let augmented = render_augmented(&RenderInput {
+        report: &report,
+        evidence: &[],
+        related_events: &[],
+        backing_reports: &[],
+        cycle_contested: &std::collections::HashSet::new(),
+        metadata: None,
+        concordance: None,
+        concordance_result: None,
+        observation: Some(&od),
+        observation_result: None,
+    });
+    let serialized = serde_json::to_string(&augmented).unwrap();
+    assert!(
+        !serialized.contains("prior_value"),
+        "augmented JSON must NOT leak prior_value (codex v3 F-CR1); got: {serialized}"
+    );
+}
+
+#[test]
+fn human_render_emits_observation_section_pr5i() {
+    use typed_trust::{
+        claim::{ConcordancePattern, ObservationDeclaration},
+        human_render::render_markdown,
+        report::{RenderStatus, TrustReport},
+        render::{render_augmented, RenderInput},
+        ClaimId,
+    };
+    let report = TrustReport {
+        claim: ClaimId::new("x"),
+        status: RenderStatus::Current,
+        criteria: vec![],
+        challenges: vec![],
+        gaps: vec![],
+        aggregate: None,
+    };
+    let od = ObservationDeclaration {
+        third_party_tool: "MaxQuant".into(),
+        metric_definition: "Peak matching error per Cox 2008.".into(),
+        pattern: ConcordancePattern::NumericBand {
+            metric_path: "maxquant.error".into(),
+            epsilon: 5.0,
+            prior_value: 30.0,
+        },
+        paper_locator: "src.md".into(),
+    };
+    let augmented = render_augmented(&RenderInput {
+        report: &report,
+        evidence: &[],
+        related_events: &[],
+        backing_reports: &[],
+        cycle_contested: &std::collections::HashSet::new(),
+        metadata: None,
+        concordance: None,
+        concordance_result: None,
+        observation: Some(&od),
+        observation_result: None,
+    });
+    let md = render_markdown(&augmented);
+    assert!(md.contains("## Observation"));
+    assert!(md.contains("MaxQuant"));
+    assert!(md.contains("numeric_band"));
+    assert!(md.contains("Observed value"));
+    assert!(!md.contains("prior_value"));
+    assert!(!md.contains("Prior value"));
 }
