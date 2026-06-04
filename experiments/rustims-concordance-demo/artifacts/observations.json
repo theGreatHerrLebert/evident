@@ -1,0 +1,39 @@
+{
+  "_comment": "Mock artifact emulating what the rustims-experiments docker image would produce. In a real replay, this file is built by `evident-replay <claim>` invocations inside the container. Values here are chosen as follows: 6 cells reproduce the paper's reported values exactly; 2 cells (FragPipe 100k FDR and PEAKS-XPro identification 100k) drift slightly outside epsilon to demonstrate the Fail verdict; the MaxQuant peak matching cell is intentionally absent to demonstrate the Not-assessed verdict.",
+  "artifact_schema_version": "1",
+  "artifact_provenance": {
+    "corpus_sha": "sha256:demo-corpus-placeholder",
+    "image_digest": "sha256:demo-image-placeholder",
+    "command": "evident-replay <claim_id>",
+    "produced_at": "2026-06-04T12:00:00Z"
+  },
+  "maxquant": {
+    "peak_matching_error": {
+      "_comment": "fraction_pct_7p5min_150k intentionally absent — demos the not_assessed verdict when metric_path is missing"
+    }
+  },
+  "fragpipe": {
+    "hla_10k": {
+      "real_fdr_pct": 0.95,
+      "_unit": "percentage_points",
+      "identification_rate_pct": 36.4,
+      "_unit_id": "percentage_points"
+    },
+    "hla_100k": {
+      "real_fdr_pct": 1.55,
+      "_comment_fdr": "intentional drift to 1.55 vs prior 1.16 ±0.3 → fail",
+      "identification_rate_pct": 30.7
+    }
+  },
+  "peaks_xpro": {
+    "hla_10k": {
+      "real_fdr_pct": 1.75,
+      "identification_rate_pct": 32.7
+    },
+    "hla_100k": {
+      "real_fdr_pct": 1.20,
+      "identification_rate_pct": 25.0,
+      "_comment_id_rate": "intentional drift to 25.0 vs prior 29.5 ±2 → fail"
+    }
+  }
+}
