@@ -2379,3 +2379,78 @@ claims:
         "expected ObservationNumericBandEpsilonInvalid, got {err:?}",
     );
 }
+
+// ----------------------------------------------------------------------
+// PR5j: codex review fixes for PR5i
+// ----------------------------------------------------------------------
+
+#[test]
+fn measurement_evidence_without_oracle_rejected_pr5j_fix1() {
+    // PR5i made ManifestEvidence.oracle serde(default). For
+    // measurement claims, the schema requires a non-empty oracle
+    // list. PR5j re-imposes the check at translate-evidence time.
+    let yaml = r#"
+claims:
+  - id: bad
+    title: bad
+    kind: measurement
+    tier: ci
+    source: .
+    claim: c
+    tolerances:
+      - metric: relative_error
+        op: "<"
+        value: 0.02
+        prose: under 2 percent
+    evidence:
+      command: pytest
+      artifact: out.json
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let ctx = ctx("any.yaml");
+    // translate_claim succeeds (kind validation), but
+    // translate_tolerances + translate_evidence run after.
+    translate_claim(&ctx, mc, "claims[0]").unwrap();
+    let criteria = translate_tolerances(mc).unwrap();
+    let err = translate_evidence(&ctx, mc, &criteria).unwrap_err();
+    assert!(
+        matches!(err, TranslateError::MeasurementWithoutOracle { .. }),
+        "expected MeasurementWithoutOracle, got {err:?}",
+    );
+}
+
+#[test]
+fn measurement_evidence_with_explicit_empty_oracle_rejected_pr5j_fix1() {
+    // Same as above but with explicit `oracle: []` — must also
+    // be rejected so existing manifests that ship the field but
+    // leave it empty don't slip through.
+    let yaml = r#"
+claims:
+  - id: bad
+    title: bad
+    kind: measurement
+    tier: ci
+    source: .
+    claim: c
+    tolerances:
+      - metric: relative_error
+        op: "<"
+        value: 0.02
+        prose: under 2 percent
+    evidence:
+      oracle: []
+      command: pytest
+      artifact: out.json
+"#;
+    let manifest = parse_manifest_file(yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let ctx = ctx("any.yaml");
+    translate_claim(&ctx, mc, "claims[0]").unwrap();
+    let criteria = translate_tolerances(mc).unwrap();
+    let err = translate_evidence(&ctx, mc, &criteria).unwrap_err();
+    assert!(
+        matches!(err, TranslateError::MeasurementWithoutOracle { .. }),
+        "expected MeasurementWithoutOracle, got {err:?}",
+    );
+}

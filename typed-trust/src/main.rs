@@ -307,7 +307,15 @@ fn main() -> ExitCode {
             concordance: typed_claim.concordance.as_ref(),
             concordance_result: concorded_overlay.get(&mc.id),
             observation: typed_claim.observation.as_ref(),
-            observation_result: None,
+            // PR5j (codex review of PR5i): wire the observation
+            // sidecar lookup. Both concordance and observation
+            // claims read from `last_concorded.json`; the duplicate-
+            // claim-id-across-sidecars detection already prevents
+            // overlap between concorded entries that belong to
+            // different kinds. The kind-keyed dispatch happens at
+            // the render layer (each render_input field is `None`
+            // for the wrong kind).
+            observation_result: concorded_overlay.get(&mc.id),
         });
 
         // Decorate _graph.review_events entries with their structured
