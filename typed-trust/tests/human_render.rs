@@ -147,6 +147,8 @@ fn render_contested_sasa_report_as_markdown() {
         metadata: None,
         concordance: None,
         concordance_result: None,
+        observation: None,
+        observation_result: None,
     });
 
     let markdown = render_markdown(&augmented);
@@ -229,6 +231,8 @@ fn endorse_event_not_rendered_under_active_challenges() {
         metadata: None,
         concordance: None,
         concordance_result: None,
+        observation: None,
+        observation_result: None,
     });
     let markdown = render_markdown(&augmented);
 

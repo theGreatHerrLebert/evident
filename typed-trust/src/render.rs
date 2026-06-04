@@ -21,7 +21,9 @@ use std::collections::HashSet;
 
 use serde_json::{json, Map, Value};
 
-use crate::claim::{ConcordanceDeclaration, ConcordanceResult, MetadataDeclaration};
+use crate::claim::{
+    ConcordanceDeclaration, ConcordanceResult, MetadataDeclaration, ObservationDeclaration,
+};
 use crate::derivation::{Derivation, Rerun};
 use crate::evidence::Evidence;
 use crate::ids::{ClaimId, CriterionId, EventId};
@@ -202,6 +204,16 @@ pub struct RenderInput<'a> {
     /// a concordance claim. Inlined into the augmented JSON as a
     /// top-level `concordance_result` block.
     pub concordance_result: Option<&'a ConcordanceResult>,
+    /// PR5i: same delivery channel as `concordance`, for the
+    /// `ThirdPartyObservation` kind. Inlined into the augmented
+    /// JSON as a top-level `observation_declaration` block;
+    /// consumed by `human_render` and `html_render`.
+    pub observation: Option<&'a ObservationDeclaration>,
+    /// PR5i: the comparator's verdict for this observation
+    /// claim, read from `last_concorded.json` (same sidecar as
+    /// concordance — the verdict shape is identical). None when
+    /// the comparator hasn't run yet.
+    pub observation_result: Option<&'a ConcordanceResult>,
 }
 
 /// Produce the augmented JSON. The normative report is serialized first;
@@ -249,9 +261,41 @@ pub fn render_augmented(input: &RenderInput) -> Value {
                 serde_json::to_value(cr).expect("serialize ConcordanceResult"),
             );
         }
+        // PR5i: observation declaration + its sidecar verdict.
+        // Internal Rust uses `ConcordancePattern::*::prior_value`
+        // for the pattern's reference value; the JSON shape MUST
+        // surface it as `observed_value` for observation claims
+        // (codex v2 F-CR1). The pattern is serialized once via
+        // serde_json::to_value then renamed in-place to satisfy
+        // the v3 "never leak prior_value externally" invariant.
+        if let Some(obs) = input.observation {
+            let mut value = serde_json::to_value(obs).expect("serialize ObservationDeclaration");
+            rename_prior_value_to_observed_value(&mut value);
+            obj.insert("observation_declaration".into(), value);
+        }
+        if let Some(or) = input.observation_result {
+            obj.insert(
+                "observation_result".into(),
+                serde_json::to_value(or).expect("serialize observation result"),
+            );
+        }
     }
 
     json
+}
+
+/// PR5i (codex v2 F-CR1): walk the JSON tree and rename any
+/// `prior_value` key inside `observation_declaration.pattern` to
+/// `observed_value`. The internal Rust `ConcordancePattern` enum
+/// keeps `prior_value` for code reuse with concordance; the
+/// observation-side external surface MUST use `observed_value`
+/// per v3 design.
+fn rename_prior_value_to_observed_value(value: &mut Value) {
+    if let Some(pattern) = value.get_mut("pattern").and_then(Value::as_object_mut) {
+        if let Some(v) = pattern.remove("prior_value") {
+            pattern.insert("observed_value".into(), v);
+        }
+    }
 }
 
 fn augment_criterion(crit_json: &mut Value, input: &RenderInput) {

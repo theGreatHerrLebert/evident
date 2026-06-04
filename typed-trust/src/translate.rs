@@ -87,6 +87,12 @@ pub struct ManifestClaim {
     /// the translator rejects mixing.
     #[serde(default)]
     pub concordance: Option<ManifestConcordanceBlock>,
+    /// PR5i: required when ``kind == "third_party_observation"``.
+    /// Carries the pattern (same enum as concordance) +
+    /// paper_locator + third_party_tool + metric_definition.
+    /// Absent for any other kind.
+    #[serde(default)]
+    pub observation: Option<ManifestObservationBlock>,
 }
 
 /// PR5b: structured block for ``kind: metadata_compatibility``
@@ -206,6 +212,73 @@ pub struct ManifestPriorBindingBlock {
     pub locator: String,
     pub prior_extraction_note: String,
     pub source_id: String,
+}
+
+/// PR5i: structured block for ``kind: third_party_observation``
+/// claims.
+///
+/// Mirrors `ManifestConcordanceBlock` structurally. Two
+/// substantive differences at the YAML/serde boundary:
+///
+/// 1. The pattern's reference value is named `observed_value`,
+///    NOT `prior_value` (v3 codex F-CR1: observation has no
+///    "prior" — the paper itself is the source). The translator
+///    maps `observed_value` → `prior_value` when lifting onto the
+///    shared `ConcordancePattern` enum.
+/// 2. The curator block carries `third_party_tool` +
+///    `metric_definition` (lighter than concordance's
+///    `prior_binding`) because there's no external paper to cite.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestObservationBlock {
+    /// REQUIRED non-empty. The translator rejects empty values.
+    pub third_party_tool: String,
+    /// REQUIRED non-empty prose. Pins down what the metric IS.
+    pub metric_definition: String,
+    pub pattern: ManifestObservationPattern,
+    /// REQUIRED non-empty. Where in this paper the observation
+    /// is made.
+    pub paper_locator: String,
+}
+
+/// PR5i: discriminator-dispatched observation pattern variants.
+///
+/// Identical to `ManifestConcordancePattern` except the
+/// reference-value field is named `observed_value` (codex v2
+/// F-CR1). `monotone_with` has no reference value at all (codex
+/// v2 F-CR3: the structured fields direction/metric_path/
+/// parameter_path carry the shape).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "pattern_kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ManifestObservationPattern {
+    NumericBand {
+        metric_path: String,
+        epsilon: f64,
+        observed_value: f64,
+    },
+    RelativeBand {
+        metric_path: String,
+        ratio: f64,
+        observed_value: f64,
+    },
+    SameOrderOfMagnitude {
+        metric_path: String,
+        #[serde(default = "default_zero_policy")]
+        zero_policy: String,
+        observed_value: f64,
+    },
+    OrdinalMatch {
+        entity_to_path: std::collections::BTreeMap<String, String>,
+        direction: String,
+        #[serde(default = "default_tie_policy")]
+        tie_policy: String,
+        observed_value: std::collections::BTreeMap<String, f64>,
+    },
+    MonotoneWith {
+        metric_path: String,
+        parameter_path: String,
+        direction: String,
+    },
 }
 
 /// Phase 5 PR2: the manifest's `provenance` field accepts either the
@@ -375,6 +448,14 @@ pub struct ManifestTolerance {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ManifestEvidence {
+    /// PR5i (codex v2 F-CR5): default-empty so
+    /// `third_party_observation` and `behavioral_concordance`
+    /// manifests can omit the field entirely (their pattern
+    /// primitive IS the oracle). For `measurement` claims, the
+    /// existing schema rule "evidence requires non-empty oracle"
+    /// is RE-IMPOSED by `translate_evidence`, so the default
+    /// here doesn't relax measurement.
+    #[serde(default)]
     pub oracle: Vec<String>,
     pub command: String,
     pub artifact: String,
@@ -484,6 +565,55 @@ pub enum TranslateError {
     /// PR5f: measurement / metadata_compatibility claims must NOT
     /// carry a concordance block. Keeps the kinds disjoint.
     NonConcordanceClaimCarriesConcordance { id: String },
+    /// PR5i: `kind: third_party_observation` claim missing the
+    /// required `observation` block.
+    ObservationClaimMissingBlock { id: String },
+    /// PR5i: observation claims must NOT carry tolerances; the
+    /// pattern primitive IS the bound (mirror of the concordance
+    /// rule).
+    ObservationClaimCarriesTolerances { id: String },
+    /// PR5i: observation claims must NOT carry top-level
+    /// `source`. Use `observation.paper_locator` instead.
+    ObservationClaimCarriesSource { id: String },
+    /// PR5i: observation claims must NOT carry the `case` field
+    /// (codex v2 F-CR4). Use `observation.paper_locator`.
+    ObservationClaimCarriesCase { id: String },
+    /// PR5i: observation claims must NOT carry the
+    /// `last_verified` block (codex v2 F-CR2). Observation uses
+    /// `last_concorded.json`.
+    ObservationClaimCarriesLastVerified { id: String },
+    /// PR5i: observation claims must NOT carry a `metadata` or
+    /// `concordance` block. Keeps the kinds disjoint.
+    ObservationClaimCarriesMetadataOrConcordance { id: String },
+    /// PR5i: observation evidence must NOT carry a non-empty
+    /// `oracle` list. The pattern primitive IS the oracle.
+    ObservationClaimCarriesOracle { id: String },
+    /// PR5i: `observation.third_party_tool` must be non-empty.
+    ObservationMissingThirdPartyTool { id: String },
+    /// PR5i: `observation.metric_definition` must be non-empty.
+    ObservationMissingMetricDefinition { id: String },
+    /// PR5i: `observation.paper_locator` must be non-empty
+    /// (codex v2 F-CR4).
+    ObservationMissingPaperLocator { id: String },
+    /// PR5i: `OrdinalMatch` observation requires
+    /// `observed_value`'s per-entity keyset to equal
+    /// `entity_to_path`'s keyset.
+    ObservationOrdinalKeyMismatch { id: String },
+    /// PR5i: `SameOrderOfMagnitude` observation requires
+    /// `observed_value > 0`.
+    ObservationSameOrderNonPositiveObserved { id: String },
+    /// PR5i: `RelativeBand` observation requires `ratio > 1.0`.
+    ObservationRelativeBandRatioTooSmall { id: String },
+    /// PR5i: numeric sanity (codex v2 F-CR-bug-4) — `epsilon` must
+    /// be finite and `> 0` for `NumericBand` observation.
+    ObservationNumericBandEpsilonInvalid { id: String },
+    /// PR5i: a non-finite f64 (NaN, Inf, -Inf) appeared in an
+    /// observation pattern field. Bug-class-4 from codex v2 review.
+    ObservationNonFiniteValue { id: String, field: &'static str },
+    /// PR5i: a measurement / metadata_compatibility /
+    /// behavioral_concordance claim accidentally carries an
+    /// `observation` block. Keeps the kinds disjoint.
+    NonObservationClaimCarriesObservation { id: String },
     /// PR5f: `concordance.pattern.{enum_field}` carried an unknown
     /// enum value (e.g. `direction: "sideways"`,
     /// `tie_policy: "everything_goes"`, `zero_policy: "ignore"`).
@@ -618,6 +748,90 @@ impl std::fmt::Display for TranslateError {
                  {value:?}; see EVIDENT_BEHAVIORAL_CONCORDANCE_DRAFT.md \
                  for the legal set"
             ),
+            TranslateError::ObservationClaimMissingBlock { id } => write!(
+                f,
+                "claim {id}: kind=third_party_observation requires an \
+                 `observation` block (pattern + third_party_tool + \
+                 metric_definition + paper_locator)"
+            ),
+            TranslateError::ObservationClaimCarriesTolerances { id } => write!(
+                f,
+                "claim {id}: kind=third_party_observation must NOT carry \
+                 `tolerances`; the pattern primitive is the bound"
+            ),
+            TranslateError::ObservationClaimCarriesSource { id } => write!(
+                f,
+                "claim {id}: kind=third_party_observation must NOT carry \
+                 the top-level `source` field; use \
+                 `observation.paper_locator` instead"
+            ),
+            TranslateError::ObservationClaimCarriesCase { id } => write!(
+                f,
+                "claim {id}: kind=third_party_observation must NOT carry \
+                 a `case` field; use `observation.paper_locator` instead"
+            ),
+            TranslateError::ObservationClaimCarriesLastVerified { id } => write!(
+                f,
+                "claim {id}: kind=third_party_observation must NOT carry \
+                 a `last_verified` block; observation results are read \
+                 from `last_concorded.json`"
+            ),
+            TranslateError::ObservationClaimCarriesMetadataOrConcordance { id } => write!(
+                f,
+                "claim {id}: kind=third_party_observation must NOT carry \
+                 a `metadata` or `concordance` block; the claim kinds \
+                 are disjoint"
+            ),
+            TranslateError::ObservationClaimCarriesOracle { id } => write!(
+                f,
+                "claim {id}: kind=third_party_observation evidence must \
+                 NOT carry a non-empty `oracle` list; the pattern \
+                 primitive (numeric_band, ordinal_match, etc.) IS the \
+                 oracle"
+            ),
+            TranslateError::ObservationMissingThirdPartyTool { id } => write!(
+                f,
+                "claim {id}: observation.third_party_tool must be non-empty"
+            ),
+            TranslateError::ObservationMissingMetricDefinition { id } => write!(
+                f,
+                "claim {id}: observation.metric_definition must be non-empty"
+            ),
+            TranslateError::ObservationMissingPaperLocator { id } => write!(
+                f,
+                "claim {id}: observation.paper_locator must be non-empty"
+            ),
+            TranslateError::ObservationOrdinalKeyMismatch { id } => write!(
+                f,
+                "claim {id}: ordinal_match observation requires \
+                 `observed_value`'s per-entity keyset to exactly equal \
+                 `entity_to_path`'s keyset"
+            ),
+            TranslateError::ObservationSameOrderNonPositiveObserved { id } => write!(
+                f,
+                "claim {id}: same_order_of_magnitude observation requires \
+                 a strictly positive `observed_value`"
+            ),
+            TranslateError::ObservationRelativeBandRatioTooSmall { id } => write!(
+                f,
+                "claim {id}: relative_band observation requires \
+                 `ratio > 1.0`"
+            ),
+            TranslateError::ObservationNumericBandEpsilonInvalid { id } => write!(
+                f,
+                "claim {id}: numeric_band observation requires \
+                 `epsilon > 0` and finite"
+            ),
+            TranslateError::ObservationNonFiniteValue { id, field } => write!(
+                f,
+                "claim {id}: observation field {field} must be a finite \
+                 number (no NaN, Inf, -Inf)"
+            ),
+            TranslateError::NonObservationClaimCarriesObservation { id } => write!(
+                f,
+                "claim {id}: only kind=third_party_observation may carry \
+                 an `observation` block"
+            ),
         }
     }
 }
@@ -649,6 +863,7 @@ pub fn translate_claim(
     if mc.kind != "measurement"
         && mc.kind != "metadata_compatibility"
         && mc.kind != "behavioral_concordance"
+        && mc.kind != "third_party_observation"
     {
         return Err(TranslateError::OutOfScope {
             id: mc.id.clone(),
@@ -764,9 +979,55 @@ pub fn translate_claim(
             }
         }
     } else if mc.concordance.is_some() {
-        // A measurement or metadata_compatibility claim that
-        // accidentally carries a concordance block is rejected.
+        // A measurement / metadata_compatibility / observation
+        // claim that accidentally carries a concordance block is
+        // rejected.
         return Err(TranslateError::NonConcordanceClaimCarriesConcordance {
+            id: mc.id.clone(),
+        });
+    }
+
+    // PR5i: third_party_observation invariants.
+    if mc.kind == "third_party_observation" {
+        if mc.observation.is_none() {
+            return Err(TranslateError::ObservationClaimMissingBlock {
+                id: mc.id.clone(),
+            });
+        }
+        if mc.tolerances.is_some() {
+            return Err(TranslateError::ObservationClaimCarriesTolerances {
+                id: mc.id.clone(),
+            });
+        }
+        if mc.source.is_some() {
+            return Err(TranslateError::ObservationClaimCarriesSource {
+                id: mc.id.clone(),
+            });
+        }
+        if mc.case.is_some() {
+            return Err(TranslateError::ObservationClaimCarriesCase {
+                id: mc.id.clone(),
+            });
+        }
+        if mc.last_verified.is_some() {
+            return Err(TranslateError::ObservationClaimCarriesLastVerified {
+                id: mc.id.clone(),
+            });
+        }
+        if mc.metadata.is_some() || mc.concordance.is_some() {
+            return Err(TranslateError::ObservationClaimCarriesMetadataOrConcordance {
+                id: mc.id.clone(),
+            });
+        }
+        if let Some(ev) = mc.evidence.as_ref() {
+            if !ev.oracle.is_empty() {
+                return Err(TranslateError::ObservationClaimCarriesOracle {
+                    id: mc.id.clone(),
+                });
+            }
+        }
+    } else if mc.observation.is_some() {
+        return Err(TranslateError::NonObservationClaimCarriesObservation {
             id: mc.id.clone(),
         });
     }
@@ -775,6 +1036,8 @@ pub fn translate_claim(
         ClaimKind::MetadataCompatibility
     } else if mc.kind == "behavioral_concordance" {
         ClaimKind::BehavioralConcordance
+    } else if mc.kind == "third_party_observation" {
+        ClaimKind::ThirdPartyObservation
     } else {
         infer_kind(mc)
     };
@@ -787,6 +1050,7 @@ pub fn translate_claim(
     });
 
     let concordance = mc.concordance.as_ref().map(translate_concordance_block).transpose()?;
+    let observation = mc.observation.as_ref().map(|ob| translate_observation_block(&mc.id, ob)).transpose()?;
 
     let claim = Claim {
         id: ClaimId::new(&mc.id),
@@ -804,6 +1068,7 @@ pub fn translate_claim(
         // `unspecified_human_from_manifest` form.
         requires_assumptions: vec![],
         metadata,
+        observation,
         concordance,
     };
 
@@ -969,6 +1234,203 @@ fn translate_concordance_block(
             prior_extraction_note: mb.prior_binding.prior_extraction_note.clone(),
             source_id: mb.prior_binding.source_id.clone(),
         },
+    })
+}
+
+/// PR5i: lift the manifest's `observation` block onto the typed
+/// `ObservationDeclaration`.
+///
+/// Reuses `ConcordancePattern` for the pattern: each variant's
+/// `observed_value` field on the manifest side maps onto the
+/// internal enum's `prior_value` field. The translator does the
+/// rename here so the comparator + render layers don't need to
+/// know the naming difference.
+///
+/// All numeric validations run here (codex v2 F-CR-bug-4): finite
+/// floats, `epsilon > 0`, `ratio > 1.0`, `prior_value > 0` for
+/// `same_order_of_magnitude`, keyset alignment for
+/// `ordinal_match`.
+fn translate_observation_block(
+    claim_id: &str,
+    ob: &ManifestObservationBlock,
+) -> Result<crate::claim::ObservationDeclaration, TranslateError> {
+    use crate::claim::{
+        ConcordancePattern, MonotoneDirection, ObservationDeclaration, RankingDirection,
+        TiePolicy, ZeroPolicy,
+    };
+
+    fn check_finite(v: f64, id: &str, field: &'static str) -> Result<(), TranslateError> {
+        if !v.is_finite() {
+            Err(TranslateError::ObservationNonFiniteValue {
+                id: id.into(),
+                field,
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    if ob.third_party_tool.trim().is_empty() {
+        return Err(TranslateError::ObservationMissingThirdPartyTool {
+            id: claim_id.into(),
+        });
+    }
+    if ob.metric_definition.trim().is_empty() {
+        return Err(TranslateError::ObservationMissingMetricDefinition {
+            id: claim_id.into(),
+        });
+    }
+    if ob.paper_locator.trim().is_empty() {
+        return Err(TranslateError::ObservationMissingPaperLocator {
+            id: claim_id.into(),
+        });
+    }
+
+    fn parse_zero_policy(s: &str, id: &str) -> Result<ZeroPolicy, TranslateError> {
+        match s {
+            "reject" => Ok(ZeroPolicy::Reject),
+            "not_assessed" => Ok(ZeroPolicy::NotAssessed),
+            _ => Err(TranslateError::ConcordanceInvalidEnumValue {
+                id: id.into(),
+                field: "pattern.zero_policy".into(),
+                value: s.into(),
+            }),
+        }
+    }
+    fn parse_ranking_direction(s: &str, id: &str) -> Result<RankingDirection, TranslateError> {
+        match s {
+            "lower_is_better" => Ok(RankingDirection::LowerIsBetter),
+            "higher_is_better" => Ok(RankingDirection::HigherIsBetter),
+            _ => Err(TranslateError::ConcordanceInvalidEnumValue {
+                id: id.into(),
+                field: "pattern.direction".into(),
+                value: s.into(),
+            }),
+        }
+    }
+    fn parse_tie_policy(s: &str, id: &str) -> Result<TiePolicy, TranslateError> {
+        match s {
+            "strict" => Ok(TiePolicy::Strict),
+            "adjacent_swap_ok" => Ok(TiePolicy::AdjacentSwapOk),
+            _ => Err(TranslateError::ConcordanceInvalidEnumValue {
+                id: id.into(),
+                field: "pattern.tie_policy".into(),
+                value: s.into(),
+            }),
+        }
+    }
+    fn parse_monotone_direction(s: &str, id: &str) -> Result<MonotoneDirection, TranslateError> {
+        match s {
+            "increasing" => Ok(MonotoneDirection::Increasing),
+            "decreasing" => Ok(MonotoneDirection::Decreasing),
+            _ => Err(TranslateError::ConcordanceInvalidEnumValue {
+                id: id.into(),
+                field: "pattern.direction".into(),
+                value: s.into(),
+            }),
+        }
+    }
+
+    let pattern = match &ob.pattern {
+        ManifestObservationPattern::NumericBand {
+            metric_path,
+            epsilon,
+            observed_value,
+        } => {
+            check_finite(*epsilon, claim_id, "pattern.epsilon")?;
+            check_finite(*observed_value, claim_id, "pattern.observed_value")?;
+            if *epsilon <= 0.0 {
+                return Err(TranslateError::ObservationNumericBandEpsilonInvalid {
+                    id: claim_id.into(),
+                });
+            }
+            ConcordancePattern::NumericBand {
+                metric_path: metric_path.clone(),
+                epsilon: *epsilon,
+                prior_value: *observed_value,
+            }
+        }
+        ManifestObservationPattern::RelativeBand {
+            metric_path,
+            ratio,
+            observed_value,
+        } => {
+            check_finite(*ratio, claim_id, "pattern.ratio")?;
+            check_finite(*observed_value, claim_id, "pattern.observed_value")?;
+            if *ratio <= 1.0 {
+                return Err(TranslateError::ObservationRelativeBandRatioTooSmall {
+                    id: claim_id.into(),
+                });
+            }
+            ConcordancePattern::RelativeBand {
+                metric_path: metric_path.clone(),
+                ratio: *ratio,
+                prior_value: *observed_value,
+            }
+        }
+        ManifestObservationPattern::SameOrderOfMagnitude {
+            metric_path,
+            zero_policy,
+            observed_value,
+        } => {
+            check_finite(*observed_value, claim_id, "pattern.observed_value")?;
+            if *observed_value <= 0.0 {
+                return Err(TranslateError::ObservationSameOrderNonPositiveObserved {
+                    id: claim_id.into(),
+                });
+            }
+            ConcordancePattern::SameOrderOfMagnitude {
+                metric_path: metric_path.clone(),
+                zero_policy: parse_zero_policy(zero_policy, claim_id)?,
+                prior_value: *observed_value,
+            }
+        }
+        ManifestObservationPattern::OrdinalMatch {
+            entity_to_path,
+            direction,
+            tie_policy,
+            observed_value,
+        } => {
+            let path_keys: std::collections::BTreeSet<&String> =
+                entity_to_path.keys().collect();
+            let observed_keys: std::collections::BTreeSet<&String> =
+                observed_value.keys().collect();
+            if path_keys != observed_keys {
+                return Err(TranslateError::ObservationOrdinalKeyMismatch {
+                    id: claim_id.into(),
+                });
+            }
+            for (k, v) in observed_value {
+                check_finite(*v, claim_id, "pattern.observed_value[*]")
+                    .map_err(|_| TranslateError::ObservationNonFiniteValue {
+                        id: claim_id.into(),
+                        field: "pattern.observed_value[entity]",
+                    })?;
+                let _ = k;
+            }
+            ConcordancePattern::OrdinalMatch {
+                entity_to_path: entity_to_path.clone(),
+                direction: parse_ranking_direction(direction, claim_id)?,
+                tie_policy: parse_tie_policy(tie_policy, claim_id)?,
+                prior_value: observed_value.clone(),
+            }
+        }
+        ManifestObservationPattern::MonotoneWith {
+            metric_path,
+            parameter_path,
+            direction,
+        } => ConcordancePattern::MonotoneWith {
+            metric_path: metric_path.clone(),
+            parameter_path: parameter_path.clone(),
+            direction: parse_monotone_direction(direction, claim_id)?,
+        },
+    };
+
+    Ok(ObservationDeclaration {
+        third_party_tool: ob.third_party_tool.clone(),
+        metric_definition: ob.metric_definition.clone(),
+        pattern,
+        paper_locator: ob.paper_locator.clone(),
     })
 }
 

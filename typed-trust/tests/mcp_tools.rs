@@ -201,7 +201,7 @@ fn initialize_handshake_advertises_protocol_version() {
 }
 
 #[test]
-fn tools_list_returns_ten_tools() {
+fn tools_list_returns_eleven_tools() {
     let tmp = tempfile::tempdir().unwrap();
     let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
     let resp = proc.tools_list();
@@ -210,7 +210,7 @@ fn tools_list_returns_ten_tools() {
         .iter()
         .map(|t| t["name"].as_str().unwrap_or(""))
         .collect();
-    assert_eq!(tools.len(), 10, "expected 10 tools, got names {names:?}");
+    assert_eq!(tools.len(), 11, "expected 11 tools, got names {names:?}");
     for expected in [
         "list_claims",
         "read_report",
@@ -222,6 +222,7 @@ fn tools_list_returns_ten_tools() {
         "render_report",
         "query_metadata",
         "query_concordance",
+        "query_observation",
     ] {
         assert!(names.contains(&expected), "missing tool: {expected}");
     }
@@ -1412,5 +1413,106 @@ fn query_concordance_empty_when_no_concordance_claims_pr5h() {
     );
     let payload = decode_result(&resp);
     assert!(payload["items"].as_array().unwrap().is_empty());
+    proc.shutdown();
+}
+
+// ============================================================
+// PR5i: query_observation MCP tool
+// ============================================================
+
+fn write_observation_manifest(dir: &Path) -> PathBuf {
+    let manifest = dir.join("evident.yaml");
+    std::fs::write(
+        &manifest,
+        r#"version: 0.1
+project: rustims-observation-demo
+claims:
+  - id: rustims-maxquant-peak-matching
+    kind: third_party_observation
+    tier: research
+    title: MaxQuant peak matching error 30%
+    claim: MaxQuant peak matching error reached 30% on simulated dda-PASEF data.
+    observation:
+      third_party_tool: MaxQuant
+      metric_definition: Peak matching error per Cox 2008 §Methods.
+      pattern:
+        pattern_kind: numeric_band
+        metric_path: maxquant.peak_matching_error.fraction_pct
+        epsilon: 5.0
+        observed_value: 30.0
+      paper_locator: source/cited.md#maxquant-peak-matching
+  - id: rustims-fragpipe-fdr-10k
+    kind: third_party_observation
+    tier: research
+    title: FragPipe FDR on HLA-I 10k
+    claim: FragPipe real FDR on HLA-I 10k was 0.91%.
+    observation:
+      third_party_tool: FragPipe
+      metric_definition: Empirical true FDR on HLA-I 10k simulated dataset.
+      pattern:
+        pattern_kind: numeric_band
+        metric_path: fragpipe.hla_10k.fdr_pct
+        epsilon: 0.5
+        observed_value: 0.91
+      paper_locator: source/cited.md#fragpipe-fdr-10k
+"#,
+    )
+    .unwrap();
+    manifest
+}
+
+#[test]
+fn query_observation_returns_all_observation_claims_pr5i() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = write_observation_manifest(tmp.path());
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let resp = proc.call_tool(
+        "query_observation",
+        json!({"manifest_path": manifest.to_str().unwrap()}),
+    );
+    let payload = decode_result(&resp);
+    let items = payload["items"].as_array().expect("items");
+    assert_eq!(items.len(), 2);
+    let tools: Vec<&str> = items.iter().map(|i| i["third_party_tool"].as_str().unwrap_or("")).collect();
+    assert!(tools.contains(&"MaxQuant"));
+    assert!(tools.contains(&"FragPipe"));
+    proc.shutdown();
+}
+
+#[test]
+fn query_observation_filters_by_third_party_tool_pr5i() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = write_observation_manifest(tmp.path());
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let resp = proc.call_tool(
+        "query_observation",
+        json!({"manifest_path": manifest.to_str().unwrap(), "third_party_tool": "MaxQuant"}),
+    );
+    let payload = decode_result(&resp);
+    let items = payload["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["claim_id"], "rustims-maxquant-peak-matching");
+    assert_eq!(items[0]["third_party_tool"], "MaxQuant");
+    proc.shutdown();
+}
+
+#[test]
+fn query_observation_does_not_leak_prior_value_codex_v3_f_cr1() {
+    // Codex v3 F-CR1: prior_value MUST NOT appear in any external
+    // MCP surface. Internal Rust uses prior_value; observation
+    // results must surface observed_value.
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = write_observation_manifest(tmp.path());
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let resp = proc.call_tool(
+        "query_observation",
+        json!({"manifest_path": manifest.to_str().unwrap()}),
+    );
+    let payload = decode_result(&resp);
+    let serialized = serde_json::to_string(&payload).unwrap();
+    assert!(
+        !serialized.contains("prior_value"),
+        "query_observation must NOT leak prior_value (codex v3 F-CR1); got: {serialized}"
+    );
     proc.shutdown();
 }

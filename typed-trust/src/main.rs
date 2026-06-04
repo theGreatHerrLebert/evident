@@ -306,6 +306,8 @@ fn main() -> ExitCode {
             metadata: typed_claim.metadata.as_ref(),
             concordance: typed_claim.concordance.as_ref(),
             concordance_result: concorded_overlay.get(&mc.id),
+            observation: typed_claim.observation.as_ref(),
+            observation_result: None,
         });
 
         // Decorate _graph.review_events entries with their structured

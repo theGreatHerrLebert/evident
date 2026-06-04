@@ -50,6 +50,17 @@ pub fn render_markdown(augmented_json: &Value) -> String {
         render_concordance_result(&mut out, cr);
     }
 
+    // PR5i: third_party_observation declaration + verdict.
+    // Same machinery as concordance but the headings say
+    // "Observation" so curators/auditors see the boundary
+    // (codex v2 F-CR5 second note).
+    if let Some(od) = augmented_json.get("observation_declaration") {
+        render_observation_declaration(&mut out, od);
+    }
+    if let Some(or) = augmented_json.get("observation_result") {
+        render_observation_result(&mut out, or);
+    }
+
     if let Some(events) = augmented_json
         .get("_graph")
         .and_then(|g| g.get("review_events"))
@@ -311,6 +322,182 @@ fn render_concordance_result(out: &mut String, cr: &Value) {
         out.push_str(&format!("- **Produced at:** {}\n", inline_code(at)));
     }
     out.push('\n');
+}
+
+/// PR5i: render a third_party_observation declaration block.
+/// Mirrors `render_concordance_declaration` but with observation
+/// headings + curator-facing field names ("third_party_tool",
+/// "metric_definition"). Render layer rewrites the internal
+/// `prior_value` field to `observed_value` per v3 codex F-CR1.
+fn render_observation_declaration(out: &mut String, od: &Value) {
+    out.push_str("## Observation\n\n");
+
+    let pattern_kind = od
+        .get("pattern")
+        .and_then(|p| p.get("pattern_kind"))
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    out.push_str(&format!(
+        "- **Pattern:** {}\n",
+        inline_code(pattern_kind)
+    ));
+
+    if let Some(tool) = od.get("third_party_tool").and_then(Value::as_str) {
+        out.push_str(&format!(
+            "- **Third-party tool:** {}\n",
+            inline_code(tool)
+        ));
+    }
+    if let Some(def) = od.get("metric_definition").and_then(Value::as_str) {
+        out.push_str(&format!(
+            "- **Metric definition:** {}\n",
+            inline_code(def)
+        ));
+    }
+    if let Some(paper_locator) = od.get("paper_locator").and_then(Value::as_str) {
+        out.push_str(&format!(
+            "- **Paper locator:** {}\n",
+            inline_code(paper_locator)
+        ));
+    }
+    if let Some(pattern) = od.get("pattern") {
+        // The pattern shape is identical to concordance except the
+        // reference-value key was rewritten to observed_value by
+        // the augment step. Reuse the same dispatch helper.
+        render_observation_pattern(out, pattern_kind, pattern);
+    }
+    out.push('\n');
+}
+
+/// PR5i: render the comparator's verdict for an observation
+/// claim. Same sidecar shape as concordance — different label.
+fn render_observation_result(out: &mut String, or: &Value) {
+    let status = or
+        .get("comparison_status")
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    let status_label = match status {
+        "pass" => "Pass ✓",
+        "fail" => "Fail ✗",
+        "not_assessed" => "Not assessed",
+        _ => "Unknown",
+    };
+    out.push_str("## Observation result\n\n");
+    out.push_str(&format!("- **Status:** {status_label}\n"));
+    if let Some(observed) = or.get("observed_value").and_then(Value::as_f64) {
+        let unit = or
+            .get("observed_unit")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        out.push_str(&format!(
+            "- **Observed value:** {}{}\n",
+            inline_code(&observed.to_string()),
+            if unit.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", inline_code(unit))
+            }
+        ));
+    }
+    if let Some(obs) = or.get("observed_ordering").and_then(Value::as_array) {
+        let parts: Vec<String> = obs
+            .iter()
+            .map(|v| inline_code(v.as_str().unwrap_or("?")))
+            .collect();
+        out.push_str(&format!("- **Observed ordering:** {}\n", parts.join(" → ")));
+    }
+    if let Some(img) = or.get("image_digest").and_then(Value::as_str) {
+        out.push_str(&format!("- **Image digest:** {}\n", inline_code(img)));
+    }
+    if let Some(at) = or.get("produced_at").and_then(Value::as_str) {
+        out.push_str(&format!("- **Produced at:** {}\n", inline_code(at)));
+    }
+    out.push('\n');
+}
+
+/// PR5i: render the pattern fields for an observation. Identical
+/// dispatch to `render_concordance_pattern` except the
+/// reference-value field is labeled "Observed value" instead of
+/// "Prior value" — at the render layer the JSON already uses
+/// `observed_value` (rewritten by augment), so this just dispatches.
+fn render_observation_pattern(out: &mut String, kind: &str, pattern: &Value) {
+    match kind {
+        "numeric_band" | "relative_band" => {
+            let metric_path = pattern
+                .get("metric_path")
+                .and_then(Value::as_str)
+                .unwrap_or("?");
+            out.push_str(&format!(
+                "- **Metric path:** {}\n",
+                inline_code(metric_path)
+            ));
+            if let Some(v) = pattern.get("observed_value") {
+                out.push_str(&format!(
+                    "- **Observed value:** {}\n",
+                    inline_code(&v.to_string())
+                ));
+            }
+            if kind == "numeric_band" {
+                if let Some(eps) = pattern.get("epsilon") {
+                    out.push_str(&format!(
+                        "- **Epsilon:** {}\n",
+                        inline_code(&eps.to_string())
+                    ));
+                }
+            } else if let Some(ratio) = pattern.get("ratio") {
+                out.push_str(&format!(
+                    "- **Ratio:** {}\n",
+                    inline_code(&ratio.to_string())
+                ));
+            }
+        }
+        "same_order_of_magnitude" => {
+            let metric_path = pattern
+                .get("metric_path")
+                .and_then(Value::as_str)
+                .unwrap_or("?");
+            out.push_str(&format!(
+                "- **Metric path:** {}\n",
+                inline_code(metric_path)
+            ));
+            if let Some(v) = pattern.get("observed_value") {
+                out.push_str(&format!(
+                    "- **Observed value:** {}\n",
+                    inline_code(&v.to_string())
+                ));
+            }
+            if let Some(zp) = pattern.get("zero_policy").and_then(Value::as_str) {
+                out.push_str(&format!("- **Zero policy:** {}\n", inline_code(zp)));
+            }
+        }
+        "ordinal_match" => {
+            if let Some(dir) = pattern.get("direction").and_then(Value::as_str) {
+                out.push_str(&format!("- **Direction:** {}\n", inline_code(dir)));
+            }
+            if let Some(map) = pattern.get("observed_value").and_then(Value::as_object) {
+                out.push_str("- **Per-entity observed values:**\n");
+                for (k, v) in map {
+                    out.push_str(&format!(
+                        "    - {}: {}\n",
+                        inline_code(k),
+                        inline_code(&v.to_string())
+                    ));
+                }
+            }
+        }
+        "monotone_with" => {
+            for (label, key) in [
+                ("Metric path", "metric_path"),
+                ("Parameter path", "parameter_path"),
+                ("Direction", "direction"),
+            ] {
+                if let Some(v) = pattern.get(key).and_then(Value::as_str) {
+                    out.push_str(&format!("- **{label}:** {}\n", inline_code(v)));
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 fn render_concordance_pattern(out: &mut String, kind: &str, pattern: &Value) {

@@ -111,6 +111,7 @@ pub fn dispatch_sync(
         "render_report" => render_report(state, arguments),
         "query_metadata" => query_metadata(state, arguments),
         "query_concordance" => query_concordance(state, arguments),
+        "query_observation" => query_observation(state, arguments),
         other => Err(ToolError::protocol(
             -32601,
             format!("Unknown tool: {other}"),
@@ -758,6 +759,8 @@ fn synthesize_for(
         metadata: typed_claim.metadata.as_ref(),
             concordance: typed_claim.concordance.as_ref(),
             concordance_result: None,
+            observation: typed_claim.observation.as_ref(),
+            observation_result: None,
     });
     let _ = supersede_projection; // reserved for future expansion
     Ok(augmented)
@@ -810,6 +813,83 @@ fn query_concordance(state: &ServerState, args: Value) -> Result<Value, ToolErro
                 "pattern_kind": pk,
                 "paper_locator": block.paper_locator,
                 "prior_source_id": block.prior_binding.source_id,
+            });
+            if let Some(prov) = c.claim.provenance.as_ref() {
+                item.as_object_mut().unwrap().insert(
+                    "provenance_kind".into(),
+                    json!(prov.effective_kind()),
+                );
+                if let Some(sid) = prov.source_id() {
+                    item.as_object_mut().unwrap().insert(
+                        "source_id".into(),
+                        json!(sid),
+                    );
+                }
+                if let Some(sc) = prov.source_context() {
+                    item.as_object_mut().unwrap().insert(
+                        "source_context".into(),
+                        json!(sc),
+                    );
+                }
+            }
+            Some(item)
+        })
+        .collect();
+    Ok(json!({"items": items}))
+}
+
+/// PR5i: structured query path for third_party_observation claims.
+///
+/// Mirrors `query_concordance`. Filters by exact `pattern_kind`
+/// AND exact `third_party_tool` (case-sensitive). Each result
+/// carries pattern_kind + third_party_tool + paper_locator +
+/// audit context (title, tier, provenance_kind, source_id,
+/// source_context).
+fn query_observation(state: &ServerState, args: Value) -> Result<Value, ToolError> {
+    let manifest_path = arg_str(&args, "manifest_path")?;
+    authorize_manifest(state, &manifest_path)?;
+    let pattern_kind_filter = arg_str_opt(&args, "pattern_kind");
+    let tool_filter = arg_str_opt(&args, "third_party_tool");
+
+    let claims = load_claims_with_policy(&manifest_path, &state.policy)?;
+    for c in claims.iter() {
+        if c.claim.kind == "third_party_observation" && c.claim.observation.is_none() {
+            return Err(ToolError::data(format!(
+                "claim {}: kind=third_party_observation requires an observation block",
+                c.claim.id
+            )));
+        }
+    }
+    let items: Vec<Value> = claims
+        .iter()
+        .filter(|c| c.claim.kind == "third_party_observation")
+        .filter(|c| c.claim.observation.is_some())
+        .filter_map(|c| {
+            let block = c.claim.observation.as_ref().unwrap();
+            let pk = match &block.pattern {
+                crate::translate::ManifestObservationPattern::NumericBand { .. } => "numeric_band",
+                crate::translate::ManifestObservationPattern::RelativeBand { .. } => "relative_band",
+                crate::translate::ManifestObservationPattern::SameOrderOfMagnitude { .. } => "same_order_of_magnitude",
+                crate::translate::ManifestObservationPattern::OrdinalMatch { .. } => "ordinal_match",
+                crate::translate::ManifestObservationPattern::MonotoneWith { .. } => "monotone_with",
+            };
+            if let Some(ref filt) = pattern_kind_filter {
+                if pk != filt.as_str() {
+                    return None;
+                }
+            }
+            if let Some(ref filt) = tool_filter {
+                if block.third_party_tool.as_str() != filt.as_str() {
+                    return None;
+                }
+            }
+            let mut item = json!({
+                "claim_id": c.claim.id,
+                "title": c.claim.title,
+                "tier": c.claim.tier,
+                "pattern_kind": pk,
+                "third_party_tool": block.third_party_tool,
+                "paper_locator": block.paper_locator,
             });
             if let Some(prov) = c.claim.provenance.as_ref() {
                 item.as_object_mut().unwrap().insert(

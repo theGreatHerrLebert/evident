@@ -143,6 +143,8 @@ fn render_contested_sasa_report_as_html_with_graph() {
         metadata: None,
         concordance: None,
         concordance_result: None,
+        observation: None,
+        observation_result: None,
     });
 
     // Render the Mermaid graph standalone.
@@ -195,6 +197,8 @@ fn mermaid_graph_sanitizes_dashed_claim_ids() {
         metadata: None,
         concordance: None,
         concordance_result: None,
+        observation: None,
+        observation_result: None,
     });
     let mermaid = render_mermaid_graph(&augmented);
 

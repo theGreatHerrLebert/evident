@@ -20,6 +20,7 @@ pub fn tool_definitions() -> Vec<Value> {
         render_report_tool(),
         query_metadata_tool(),
         query_concordance_tool(),
+        query_observation_tool(),
     ]
 }
 
@@ -193,6 +194,22 @@ fn query_concordance_tool() -> Value {
             "properties": {
                 "manifest_path": {"type": "string"},
                 "pattern_kind": {"type": "string", "description": "Filter by pattern primitive name (exact, case-sensitive)"}
+            },
+            "required": ["manifest_path"]
+        }
+    })
+}
+
+fn query_observation_tool() -> Value {
+    json!({
+        "name": "query_observation",
+        "description": "Query `third_party_observation` claims in a manifest. Use when the user asks about benchmark papers' observations of third-party tools (e.g. 'we observed MaxQuant's FDR was 30% on our data') — claims where the subject is a third-party tool, not the paper's own system, and no prior literature is cited.\n\nFilters compose conjunctively, all exact-match and case-sensitive: `pattern_kind` (one of the five primitives: numeric_band, relative_band, same_order_of_magnitude, ordinal_match, monotone_with) and `third_party_tool` (e.g. 'MaxQuant', 'FragPipe'). Each result item carries the pattern_kind, third_party_tool, paper_locator, plus the same audit context list_claims returns (title, tier, provenance_kind, source_id, source_context).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "manifest_path": {"type": "string"},
+                "pattern_kind": {"type": "string", "description": "Filter by pattern primitive name (exact, case-sensitive)"},
+                "third_party_tool": {"type": "string", "description": "Filter by tool name (exact, case-sensitive)"}
             },
             "required": ["manifest_path"]
         }
