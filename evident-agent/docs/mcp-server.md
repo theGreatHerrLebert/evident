@@ -87,26 +87,32 @@ procedure executed because the capability flag was off.
 
 ## Register in a client
 
+Use the installed `evident-agent-mcp` console script (after `pip install -e .`). If you
+must invoke the module directly, use your interpreter explicitly (`python3 -m
+evident_agent.mcp`) — many systems have no bare `python`.
+
 **Claude Code** — `.mcp.json` (or `--mcp-config`):
 ```json
 { "mcpServers": {
   "evident-exec": {
-    "command": "python",
-    "args": ["-m", "evident_agent.mcp", "--allow-root", "/path/to/corpus"]
+    "command": "evident-agent-mcp",
+    "args": ["--allow-root", "/path/to/corpus"]
   }
 }}
 ```
 
-**Codex** — invocation-local (recommended; no persistent global state):
+**Codex** — add the server via per-invocation `-c` overrides (scoped to one session, no
+global mutation):
 ```bash
-codex --ignore-user-config \
-  -c 'mcp_servers.evident_exec.command="python"' \
-  -c 'mcp_servers.evident_exec.args=["-m","evident_agent.mcp","--allow-root","/path/to/corpus"]'
+codex \
+  -c 'mcp_servers.evident_exec.command="evident-agent-mcp"' \
+  -c 'mcp_servers.evident_exec.args=["--allow-root","/path/to/corpus"]'
 ```
 Avoid `codex mcp add` if you want to keep the wiring scoped to one session — it mutates
-`~/.codex/config.toml`. (`evident-agent drive --model codex` uses the invocation-local
-form.)
+`~/.codex/config.toml`. (`evident-agent drive --model codex` uses the `-c` form above.)
+Note: interactive `codex` has no `--ignore-user-config`, so this adds the server on top
+of your existing config rather than replacing it.
 
-> **Note for headless use:** Codex routes every MCP tool call through an interactive
-> approval prompt, so `codex exec` (non-interactive) will cancel tool calls. Drive it
-> through the interactive TUI.
+> **Note for headless use:** Codex surfaces MCP tool calls through its approval flow;
+> non-interactive `codex exec` has no approver and cancels them (observed). Drive the
+> exec server through the interactive TUI.

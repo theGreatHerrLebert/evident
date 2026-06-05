@@ -157,12 +157,14 @@ def prepare_codex(
     prompt_text: str,
 ) -> List[str]:
     # AGENTS.md in the ephemeral session dir (read via `-C`), never the user's tree.
+    # NOTE: interactive `codex` has no `--ignore-user-config` (exec-only), so our
+    # servers are added ON TOP of the user's codex config via `-c` overrides. We never
+    # mutate global state (no `codex mcp add`); the user's config is read, not written.
     (session / "AGENTS.md").write_text(prompt_text, encoding="utf-8")
     return [
         "codex",
         "-C",
         str(session),
-        "--ignore-user-config",
         "-c",
         f"mcp_servers.typed_trust.command={json.dumps(tt_cmd)}",
         "-c",
@@ -187,7 +189,7 @@ def _feature_check(model: str) -> None:
         raise DriveError(f"could not run `{model} --help`: {exc}")
     required = {
         "claude": ["--mcp-config", "--strict-mcp-config", "--append-system-prompt-file"],
-        "codex": ["--ignore-user-config", "-c", "-C"],
+        "codex": ["-c", "-C"],
     }[model]
     missing = [f for f in required if f not in help_text]
     if missing:

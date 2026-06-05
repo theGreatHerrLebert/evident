@@ -55,8 +55,9 @@ def test_prepare_codex_writes_agents_and_invocation_local_argv(tmp_path: Path) -
         prompt_text="PROMPT",
     )
     assert argv[0] == "codex"
-    # invocation-local: no `codex mcp add`, ephemeral cwd, user config ignored
-    assert "--ignore-user-config" in argv
+    # invocation-local: ephemeral cwd, servers added via -c, NEVER `codex mcp add`
+    # (interactive codex has no --ignore-user-config; we must not emit it)
+    assert "--ignore-user-config" not in argv
     assert "-C" in argv and str(tmp_path) in argv
     assert "mcp add" not in " ".join(argv)
     # mcp servers configured via -c overrides, TOML-parseable values
