@@ -12,10 +12,12 @@ dependencies = [
   "pyyaml>=6.0",
   "click>=8.1",
   "anthropic>=0.40",
+  "mcp>=1.2,<2",
 ]
 
 [project.scripts]
 evident-agent = "evident_agent.cli:main"
+evident-agent-mcp = "evident_agent.mcp:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["evident_agent"]
