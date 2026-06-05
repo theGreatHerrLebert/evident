@@ -68,6 +68,9 @@ trust claims explicit and reviewable:
 - **Anti-patterns** → common ways evidence becomes misleading
 - **Rules** → actionable guidelines
 - **Concepts and checklists** → shared vocabulary for review
+- **Agent + driver** → an [`evident-agent`](evident-agent/README.md) CLI that runs cited
+  procedures, and `evident-agent drive --model claude|codex` — a terminal agent wired to
+  the EVIDENT tool belt that answers "why should I trust this claim?" from evidence
 
 ---
 
@@ -76,6 +79,9 @@ trust claims explicit and reviewable:
 ```text
 evident.yaml      example claim manifest
 workflow/         Docker and manifest validation blueprint
+evident-agent/    agent CLI + Claude/Codex driver (evident-agent/README.md)
+typed-trust/      typed-trust engine + read MCP server
+EVIDENT_DRIVER.md canonical driver-agent prompt
 cases/            real-world examples
 patterns/         reusable evidence structures
 anti-patterns/    misleading evidence patterns

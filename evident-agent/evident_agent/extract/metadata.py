@@ -633,3 +633,58 @@ def render_metadata_manifest(
         "project": project,
         "claims": claim_blocks,
     }
+
+
+def run_extract_metadata(
+    repo_path: Path,
+    output_dir: Path,
+    project: Optional[str] = None,
+) -> MetadataWalkResult:
+    """Walk a repo's metadata, render the draft manifest, and write
+    ``evident.yaml`` + ``EXTRACTION.md`` into ``output_dir``.
+
+    Shared by the ``extract-metadata`` CLI command and the
+    ``evident-agent-mcp`` ``extract_metadata`` tool so there is a single
+    writer of the output directory. Returns the walk result.
+    """
+    import yaml as _yaml
+
+    result = walk_repo_metadata(repo_path)
+    if project is None:
+        project = f"extracted/{repo_path.resolve().name}-metadata"
+    manifest = render_metadata_manifest(result, project=project)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "evident.yaml").write_text(
+        _yaml.safe_dump(manifest, sort_keys=False, default_flow_style=False),
+        encoding="utf-8",
+    )
+
+    # Brief EXTRACTION.md so the operator can see what was emitted.
+    lines = [
+        "# Metadata extraction summary\n",
+        f"Source: `{result.source_id}` (sha256: `{result.source_sha}`)\n",
+        f"\n## Emitted claims ({len(result.claims)})\n",
+    ]
+    for c in result.claims:
+        lines.append(
+            f"- **{c.id}** — {c.title}  \n"
+            f"  `{c.source_file}::{c.source_path}` = `{c.declared_value}`"
+        )
+    if result.skipped_files:
+        lines.append(f"\n## Skipped files ({len(result.skipped_files)})\n")
+        for s in result.skipped_files:
+            if s.reason == "parse_error":
+                detail = s.detail or "parse error"
+                lines.append(f"- `{s.path}` — **parse error**: {detail}")
+            else:
+                lines.append(f"- `{s.path}` (parsed but no recognised fields)")
+    if result.notes:
+        lines.append("\n## Notes\n")
+        for n in result.notes:
+            lines.append(f"- {n}")
+    (output_dir / "EXTRACTION.md").write_text(
+        "\n".join(lines) + "\n", encoding="utf-8",
+    )
+
+    return result

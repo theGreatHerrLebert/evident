@@ -27,9 +27,11 @@ import click
 from . import (
     curator as curator_mod,
     docker,
+    drive as drive_mod,
     evidence,
     manifest,
     prompt as prompt_mod,
+    replay as replay_mod,
     review as review_mod,
     review_sidecar,
     review_walkthrough,
@@ -43,6 +45,62 @@ from . import (
 @click.group()
 def main() -> None:
     """EVIDENT agent — populate typed-trust inputs by running cited procedures."""
+
+
+@main.command()
+@click.option(
+    "--model",
+    required=True,
+    type=click.Choice(["claude", "codex"]),
+    help="Agent runtime to drive.",
+)
+@click.option(
+    "--root",
+    default=None,
+    type=click.Path(file_okay=False, path_type=Path),
+    help="EVIDENT corpus root the MCP servers may access. Default: cwd.",
+)
+@click.option(
+    "--driver-prompt",
+    default=None,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Override the canonical EVIDENT_DRIVER.md.",
+)
+@click.option(
+    "--allow-docker",
+    is_flag=True,
+    help="Permit replay to actually run docker (default off → dry-run).",
+)
+@click.option(
+    "--allow-extract",
+    is_flag=True,
+    help="Permit extract_* to call the Anthropic API (default off → dry-run).",
+)
+def drive(
+    model: str,
+    root: Optional[Path],
+    driver_prompt: Optional[Path],
+    allow_docker: bool,
+    allow_extract: bool,
+) -> None:
+    """Launch an EVIDENT driver agent (claude or codex) wired to the read +
+    exec MCP tools and the canonical driver prompt. Invocation-local: no
+    persistent global state is written."""
+    import os
+
+    resolved_root = root or Path(os.getcwd())
+    try:
+        code = drive_mod.run_drive(
+            model=model,
+            root=resolved_root,
+            driver_prompt=driver_prompt,
+            allow_docker=allow_docker,
+            allow_extract=allow_extract,
+        )
+    except drive_mod.DriveError as exc:
+        click.echo(f"drive: {exc}", err=True)
+        sys.exit(2)
+    sys.exit(code)
 
 
 @main.command()
@@ -118,109 +176,41 @@ def replay(
     typed_trust_binary: Optional[str],
 ) -> None:
     """Replay one or more measurement claims and populate the sidecar."""
-    if sidecar_path is None:
-        sidecar_path = manifest_path.parent / "last_verified.json"
-
-    claims = list(manifest.load_claims(manifest_path))
-    selected = list(manifest.filter_claims(claims, claim_filter=claim_filter))
-    if not selected:
-        click.echo(f"no measurement claims matched (filter={claim_filter!r})", err=True)
-        sys.exit(2)
-
-    existing = sidecar.read(sidecar_path)
-    new_entries: dict[str, sidecar.LastVerifiedEntry] = {}
-
-    today = datetime.date.today().isoformat()
-
-    for i, claim in enumerate(selected, start=1):
-        click.echo(f"[{i}/{len(selected)}] {claim.id}")
-        # Per workflow/SCHEMA.md, claim.source resolves relative to the
-        # TOP manifest directory, not the include file's directory.
-        # ClaimRecord.source_dir() encapsulates that resolution.
-        resolved_source = source_dir or claim.source_dir()
-
-        # Stage 1: execute
-        if no_execute:
-            click.echo(f"  (--no-execute) skipping docker invocation")
-            exit_code = 0
-            duration_s = 0.0
-        else:
-            result = docker.run(
-                image=image,
-                claim_id=claim.id,
-                source_dir=resolved_source,
-                budget_seconds=budget,
-                dry_run=dry_run,
-            )
-            click.echo(f"  cmd:      docker run … {image} replay {claim.id}")
-            click.echo(f"  cwd:      {resolved_source}")
-            click.echo(f"  duration: {result.duration_s:.1f}s")
-            click.echo(f"  exit:     {result.exit_code}")
-            if result.exit_code != 0 and result.stderr_tail:
-                click.echo(f"  stderr:   {result.stderr_tail[-200:]}", err=True)
-            exit_code = result.exit_code
-            duration_s = result.duration_s
-
-        if dry_run:
-            continue
-
-        # Stage 2: extract observed value
-        observed = scoring.extract_primary_observation(claim.raw, resolved_source)
-        if observed is not None:
-            click.echo(f"  observed: {observed}")
-        else:
-            click.echo("  observed: (not extracted)")
-
-        # Stage 3: write sidecar entry
-        entry = sidecar.LastVerifiedEntry(
-            commit=_resolve_commit(resolved_source),
-            date=today,
-            value=observed if exit_code == 0 else None,
-            corpus_sha=claim.raw.get("inputs", {}).get("corpus_sha"),
-        )
-        new_entries[claim.id] = entry
-
-    if dry_run:
-        click.echo(f"(--dry-run) sidecar NOT written; {len(selected)} claims would be processed")
-    else:
-        merged = sidecar.merge(existing, new_entries)
-        sidecar.write(sidecar_path, merged)
-        click.echo(
-            f"sidecar written: {sidecar_path} ({len(new_entries)} new / {len(merged)} total)"
-        )
-
-    # Optional: render via typed-trust
-    if render is not None:
-        result = typed_trust.run(
-            manifest_path=manifest_path,
-            sidecar_path=sidecar_path,
-            format=render,
-            claim_filter=claim_filter,
-            binary=typed_trust_binary,
-        )
-        if result.exit_code != 0:
-            click.echo(result.stderr, err=True)
-            sys.exit(result.exit_code)
-        click.echo(result.stdout, nl=False)
-
-
-def _resolve_commit(source_dir: Path) -> Optional[str]:
-    """Return the source dir's git HEAD commit, or None."""
-    import subprocess
-
     try:
-        out = subprocess.run(
-            ["git", "-C", str(source_dir), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=5,
+        result = replay_mod.run_replay(
+            manifest_path=manifest_path,
+            claim_filter=claim_filter,
+            image=image,
+            source_dir=source_dir,
+            budget=budget,
+            sidecar_path=sidecar_path,
+            dry_run=dry_run,
+            no_execute=no_execute,
+            render=render,
+            typed_trust_binary=typed_trust_binary,
+            on_event=lambda msg, *, err=False, nl=True: click.echo(msg, err=err, nl=nl),
         )
-        if out.returncode == 0:
-            return out.stdout.strip()
-    except Exception:
-        pass
-    return None
+    except replay_mod.NoClaimsMatched as exc:
+        click.echo(
+            f"no measurement claims matched (filter={exc.claim_filter!r})", err=True
+        )
+        sys.exit(2)
+    except replay_mod.RenderFailed as exc:
+        click.echo(exc.stderr, err=True)
+        sys.exit(exc.exit_code)
+
+    # A docker infrastructure failure (missing binary, daemon down) must
+    # fail the command — run_replay records it rather than raising so the
+    # MCP layer can map it to a recoverable error, but the CLI restores the
+    # prior nonzero-exit semantics.
+    infra = [c for c in result.claims if c.outcome == "infrastructure_error"]
+    if infra:
+        click.echo(
+            f"docker infrastructure error on {len(infra)} claim(s): "
+            + ", ".join(c.claim_id for c in infra),
+            err=True,
+        )
+        sys.exit(1)
 
 
 @main.command()
@@ -1102,50 +1092,7 @@ def extract_metadata(
     """
     from evident_agent.extract import metadata as mdwalker
 
-    result = mdwalker.walk_repo_metadata(repo_path)
-    if project is None:
-        project = f"extracted/{repo_path.resolve().name}-metadata"
-    manifest = mdwalker.render_metadata_manifest(result, project=project)
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    import yaml as _yaml
-    (output_dir / "evident.yaml").write_text(
-        _yaml.safe_dump(manifest, sort_keys=False, default_flow_style=False),
-        encoding="utf-8",
-    )
-
-    # Brief EXTRACTION.md so the operator can see what was emitted.
-    lines = [
-        "# Metadata extraction summary\n",
-        f"Source: `{result.source_id}` (sha256: `{result.source_sha}`)\n",
-        f"\n## Emitted claims ({len(result.claims)})\n",
-    ]
-    for c in result.claims:
-        lines.append(
-            f"- **{c.id}** — {c.title}  \n"
-            f"  `{c.source_file}::{c.source_path}` = `{c.declared_value}`"
-        )
-    if result.skipped_files:
-        lines.append(
-            f"\n## Skipped files ({len(result.skipped_files)})\n"
-        )
-        for s in result.skipped_files:
-            if s.reason == "parse_error":
-                detail = s.detail or "parse error"
-                lines.append(
-                    f"- `{s.path}` — **parse error**: {detail}"
-                )
-            else:
-                lines.append(
-                    f"- `{s.path}` (parsed but no recognised fields)"
-                )
-    if result.notes:
-        lines.append("\n## Notes\n")
-        for n in result.notes:
-            lines.append(f"- {n}")
-    (output_dir / "EXTRACTION.md").write_text(
-        "\n".join(lines) + "\n", encoding="utf-8",
-    )
+    result = mdwalker.run_extract_metadata(repo_path, output_dir, project=project)
 
     click.echo(
         f"extracted {len(result.claims)} metadata claim(s) from {repo_path}\n"

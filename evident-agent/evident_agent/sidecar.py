@@ -63,11 +63,27 @@ def read(path: Path) -> Dict[str, LastVerifiedEntry]:
 
 
 def write(path: Path, entries: Dict[str, LastVerifiedEntry]) -> None:
-    """Write entries atomically (write to tempfile + rename)."""
+    """Write entries atomically. Uses a UNIQUE temp file in the target
+    directory + ``os.replace`` so two concurrent writers can never share
+    (and corrupt) the same temp inode."""
+    import os
+    import tempfile
+
     payload = {claim_id: entry.to_dict() for claim_id, entry in entries.items()}
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-    tmp.replace(path)
+    body = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    fd, tmpname = tempfile.mkstemp(
+        dir=str(path.parent), prefix=path.name + ".", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(body)
+        os.replace(tmpname, path)
+    except BaseException:
+        try:
+            os.unlink(tmpname)
+        except OSError:
+            pass
+        raise
 
 
 def merge(
