@@ -8,6 +8,9 @@ It starts from a simple question:
 
 > **How do we justify trust in computational results when we did not fully author or inspect the code that produced them?**
 
+> **New here?** Read the one-page [`OVERVIEW.md`](OVERVIEW.md), then run the worked
+> examples in [`evident-agent/EXAMPLES.md`](evident-agent/EXAMPLES.md).
+
 ---
 
 ## Core Workflow

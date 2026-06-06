@@ -58,6 +58,9 @@ Uninstall with `pip uninstall evident-agent`.
 
 ---
 
+> Prefer learning by doing? [`EXAMPLES.md`](EXAMPLES.md) has copy-pasteable, fixture-based
+> examples for every workflow below (render a report, replay, extract, review, drive).
+
 ## Quick start — drive an agent
 
 A **corpus** is any directory tree containing one or more `evident.yaml` manifests
