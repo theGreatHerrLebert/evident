@@ -50,6 +50,10 @@ claims:              # optional if include: provides them
   - { ... }
 ```
 
+Extraction outputs whose `project` starts with `extracted/` may contain
+an empty `claims: []` list. That records a negative extraction result
+without forcing a dummy claim into the corpus.
+
 ### Framework-provided vocabulary defaults
 
 The validator ships these and unions them with whatever the consumer
@@ -74,10 +78,10 @@ silently mis-match.
 |-------------------|----------|--------|-------------|
 | `id`              | yes      | string | Stable identifier; unique across the merged manifest |
 | `title`           | yes      | string | One-line human title |
-| `kind`            | no       | enum   | `measurement` (default), `policy`, `reference` |
+| `kind`            | no       | enum   | `measurement` (default), `policy`, `reference`, `implementation`, `pipeline`, `scientific`, `performance`, `release_gate`, `metadata_compatibility`, `behavioral_concordance`, `third_party_observation` |
 | `subsystem`       | yes¹     | string | From `vocabularies.subsystem` |
-| `case`            | yes      | path   | Markdown writeup; resolved from top manifest dir |
-| `source`          | yes      | path   | Code/artefact root the claim is *about* |
+| `case`            | yes²     | path/string | Markdown writeup or locator; resolved as a path for full workflow claims |
+| `source`          | yes²     | path/string | Code/artefact root or source locator; resolved as a path for full workflow claims |
 | `tier`            | yes      | enum   | `ci`, `release`, `research` |
 | `trust_strategy`  | yes      | list   | Subset of `validation`, `understanding`, `proof` |
 | `pattern`         | no       | path   | Optional pointer into `patterns/` |
@@ -87,15 +91,37 @@ silently mis-match.
 | `pinned_versions` | yes¹     | object | Source release/SHA + oracle/environment versions |
 | `claim`           | yes      | string | Prose statement of the claim |
 | `tolerances`      | yes¹     | list   | Structured tolerance entries (see below) |
-| `evidence`        | yes      | object | `{oracle, command, artifact}` (no `tolerance` field — it moved up) |
-| `provenance`      | no       | enum   | `automatic` (default), `human`, `peer-reviewed` — review level (see below) |
-| `reviewers`       | no²      | list   | Named reviewers backing a `peer-reviewed` claim |
+| `evidence`        | yes²     | object | `{oracle, command, artifact}` for measurement/workflow claims; `{command, artifact}` for concordance/observation claims |
+| `metadata`        | yes³     | object | Declaration block for `kind: metadata_compatibility` |
+| `concordance`     | yes⁴     | object | Prior-literature comparison block for `kind: behavioral_concordance` |
+| `observation`     | yes⁵     | object | Paper-self third-party tool observation block for `kind: third_party_observation` |
+| `provenance`      | no       | enum/object | `automatic` (default), `human`, `peer-reviewed`, extractor provenance, or structured provenance (see below) |
+| `reviewers`       | no⁶      | list   | Named reviewers backing a `peer-reviewed` claim |
 | `last_verified`   | no       | object | `{commit, date, value, corpus_sha}` — staleness signal |
 | `assumptions`     | yes      | list   | Prose strings |
 | `failure_modes`   | yes      | list   | Prose strings |
 
 ¹ Required only when `kind: measurement`. Policy and reference claims may
 omit `subsystem`, `inputs`, `pinned_versions`, and `tolerances`.
+
+² Required for full workflow claims (`measurement`, `policy`,
+`reference`, `implementation`, `pipeline`, `scientific`, `performance`,
+`release_gate`). `metadata_compatibility` may carry `source` and `case`
+as source locators, but they are not resolved as local paths.
+Research-tier claims with structured provenance
+`kind: extracted-from-paper` or `kind: extracted-from-repo` are draft
+extractions: they may omit `trust_strategy`, `assumptions`, and
+`failure_modes`, and may use source-local metric/oracle names before
+curation promotes them into project vocabularies.
+
+³ Required only when `kind: metadata_compatibility`; forbidden on other
+kinds.
+
+⁴ Required only when `kind: behavioral_concordance`; forbidden on other
+kinds.
+
+⁵ Required only when `kind: third_party_observation`; forbidden on other
+kinds.
 
 ### Pinning rule for measurement claims
 
@@ -121,6 +147,88 @@ could shift the result is pinned. The schema enforces this for
 A claim that fails any of these is structurally not a numerical claim —
 the validator will demand it be downgraded to `kind: reference` (a
 pointer to where the work happens) or `kind: policy` (a process rule).
+
+### Typed declaration kinds
+
+Three claim kinds are typed declarations rather than full measurement
+workflow claims. They are consumed by the `typed-trust` translator and
+keep their evidence model separate from measurement claims.
+
+#### `kind: metadata_compatibility`
+
+Use for declarative facts read directly from configuration files. The
+declaration is the evidence, so `evidence` and `tolerances` are
+forbidden.
+
+```yaml
+kind: metadata_compatibility
+metadata:
+  field: python_version_requirement
+  declared_value: ">=3.10"
+  source_file: pyproject.toml
+  source_path: project.requires-python
+```
+
+#### `kind: behavioral_concordance`
+
+Use when this artifact claims that its measured behavior tracks a value
+from prior literature. The `concordance` block is required; top-level
+`source`, `tolerances`, `metadata`, and `observation` are forbidden.
+For `tier: ci` and `tier: release`, `evidence` is required and must not
+carry `oracle`.
+
+```yaml
+kind: behavioral_concordance
+concordance:
+  paper_locator: source/cited.md#figure-3
+  pattern:
+    pattern_kind: numeric_band
+    metric_path: outputs.tool.error_rate_pct
+    epsilon: 5.0
+    prior_value: 30.0
+  prior_binding:
+    prior_unit: percent
+    prior_metric_definition: Peak matching error rate
+    locator: "Meier 2024 Figure 3"
+    prior_extraction_note: Value transcribed from plotted label.
+    source_id: doi:10.example/meier-2024
+```
+
+#### `kind: third_party_observation`
+
+Use when a paper observes a third-party tool's behavior on the paper's
+own data, with no prior-literature value being concorded. The
+`observation` block is required; top-level `source`, `case`,
+`last_verified`, `tolerances`, `metadata`, and `concordance` are
+forbidden. For `tier: ci` and `tier: release`, `evidence` is required
+and must not carry `oracle`.
+
+```yaml
+kind: third_party_observation
+observation:
+  third_party_tool: MaxQuant
+  metric_definition: Peak matching error rate against the paper's simulated truth set.
+  paper_locator: source/cited.md#maxquant-peak-matching
+  pattern:
+    pattern_kind: numeric_band
+    metric_path: maxquant.peak_matching_error.fraction_pct
+    epsilon: 5.0
+    observed_value: 30.0
+```
+
+`behavioral_concordance` and `third_party_observation` share five
+pattern primitives:
+
+- `numeric_band`: `metric_path`, `epsilon`, and `prior_value` or
+  `observed_value`
+- `relative_band`: `metric_path`, `ratio > 1.0`, and `prior_value` or
+  `observed_value`
+- `same_order_of_magnitude`: `metric_path` and positive `prior_value`
+  or `observed_value`
+- `ordinal_match`: `entity_to_path`, `direction`, and a per-entity
+  value map whose keys match `entity_to_path`
+- `monotone_with`: `metric_path`, `parameter_path`, and `direction`;
+  no scalar value field is allowed
 
 ### Tolerance entry
 
@@ -186,9 +294,11 @@ as floats.
 ### Provenance and reviewers
 
 ```yaml
-provenance: peer-reviewed     # automatic (default) | human | peer-reviewed
-reviewers:                    # required iff provenance == peer-reviewed
+provenance: peer-reviewed     # automatic (default) | human | peer-reviewed | ...
+review_status: peer-reviewed  # optional review badge, same reviewer gate
+reviewers:                    # required iff provenance/review_status is peer-reviewed
   - name: Jane Doe
+    source: external
     orcid: "0000-0000-0000-0000"   # optional
     affiliation: Example University # optional
     date: 2026-04-30                # ISO date the review was completed
@@ -208,9 +318,32 @@ underlying numbers are correct (that is what `tolerances` and
   ORCID or affiliation recorded. The manifest entry is the *record* of
   that review, not the review itself.
 
-²`reviewers` is required when `provenance == peer-reviewed` and forbidden
-otherwise. Each entry must have a non-empty `name`. `orcid`,
-`affiliation`, and `date` are optional strings; ISO dates are
+The validator also accepts provenance values used by extracted and
+ported claims: `author`, `maintainer`, `external`, `generated`,
+`ported`, `third-party`, `extracted-from-paper`, and
+`extracted-from-repo`.
+
+Extractor output may use a structured provenance block:
+
+```yaml
+provenance:
+  kind: extracted-from-repo
+  source_id: github:org/repo@47fe1ab
+  source_sha: sha256:...
+  source_context: repo_authored   # repo_authored | copied_external_text | unknown
+  extractor:
+    model: evident-agent.extract-metadata
+    model_version: "0.1.0"
+    extracted_at: "2026-06-03T13:53:27Z"
+  curator: null
+```
+
+⁶`reviewers` is required when `provenance == peer-reviewed` or
+`review_status == peer-reviewed` and forbidden otherwise. Each entry
+must have a non-empty `name`. `source` may be `author`, `maintainer`,
+`external`, or `venue`; `peer-reviewed` status requires at least one
+`external` or `venue` reviewer when reviewer sources are supplied.
+`orcid`, `affiliation`, and `date` are optional strings; ISO dates are
 recommended.
 
 `provenance` is a coarse, self-declared signal — it is more honest than
