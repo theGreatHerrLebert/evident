@@ -131,85 +131,23 @@ should not.
 
 ---
 
-## Hardening roadmap
+## What exists
 
-Five things to build, ranked. The first is the keystone; the rest
-are interesting but the rot problem swallows them all if claims are
-not actively gated.
+The roadmap this essay originally carried has largely been built:
 
-### 1. Replay loop (keystone)
+- **Replay loop** — `evident-agent replay` re-executes `evidence.command`
+  in Docker and writes `last_verified.json`; `typed-trust` turns the
+  observation into a Pass/Fail criterion.
+- **Claim-aware authoring** — `evident-agent extract-repo` /
+  `extract-paper` draft claims behind a source-span validator;
+  `evident-agent curate` gates promotion.
+- **Cross-project queries** — the `typed-trust` read MCP server's
+  `query_claims`.
 
-Today every claim has `evidence.command` but `last_verified` is
-`null` everywhere. Without active replay, claims rot silently —
-same problem as having tests without CI.
-
-The framework needs a runner that:
-
-- re-executes `evidence.command` periodically against the cited
-  artifact path,
-- writes back `last_verified.{date, commit, value, corpus_sha}`,
-- surfaces stale-by-N-days claims as a queryable filter.
-
-Once `last_verified` is live, claims stop being aspirational text
-and become a continuously-verified contract.
-
-### 2. Claim-aware authoring scaffold
-
-Today writing a claim is 30–90 minutes by hand. An LLM scaffold
-constrained by the schema gets that to ~5 minutes. The interface:
-
-```
-evident draft --from-test tests/oracle/test_x.py --tier ci
-# emits a claim YAML stub the author then refines
-```
-
-This is where the AI-assisted coding layer framing has the most
-leverage — turning "write a claim for this test" into a reliable
-LLM operation with the validator as the gate.
-
-### 3. Cross-project composition
-
-Manifest-to-manifest queries:
-
-```
-evident query \
-  --capability alignment-tmscore-parity \
-  --tolerance 'relative_error < 0.001' \
-  --tier release
-```
-
-Returns claims across all installed manifests that match. The
-schema is structured enough for this; the tooling is not there
-yet.
-
-This is where the framework becomes useful beyond a single
-project — when a downstream consumer can ask "which library
-satisfies my requirement profile" and get a structured answer.
-
-### 4. Richer trust strategies
-
-The current vocab is `[validation, understanding, proof]`. AI-era
-extensions: `ai-generated-property-tested`, `human-reviewed`,
-`fuzz-validated`, `formally-verified-fragment`. The schema
-already extends cleanly via the `vocabularies` block.
-
-The point is not to discriminate against AI-authored claims.
-It is to make the provenance of trust queryable so a reviewer
-can apply different scrutiny to different categories.
-
-### 5. Slim adoption story
-
-Right now adopting EVIDENT means cloning the framework repo,
-vendoring the CLI, and writing a manifest. Lowering this to:
-
-```
-pip install evident-cli
-evident init
-evident validate
-```
-
-is the difference between "interesting pattern" and "thing other
-projects pick up."
+Still open: a slim adoption story (`pip install`, `evident init`) and
+richer trust-strategy vocabulary — note that `trust_strategy` is a
+*closed* vocabulary per `workflow/GRAMMAR.md` and changes only with a
+spec bump, not via `vocabularies`.
 
 ---
 
@@ -236,10 +174,9 @@ verification framework has them.
 
 Worth debating as the framework matures:
 
-- Should `last_verified` be a sidecar (one JSON file keyed by claim
-  id, written by the runner) or live inside each claim YAML?
-  Sidecar keeps manifests clean; in-YAML makes a single claim
-  fully self-describing. The current schema allows both; pick.
+- `last_verified` is a sidecar (`last_verified.json`, written by the
+  runner); inline `last_verified` in the YAML remains accepted for
+  hand-authored fixtures. Decided.
 - Is `kind: reference` the right name for "documented gap"? Some
   reviewers read "reference" as "this is a reference / gold
   standard." A rename to `kind: gap` or `kind: deferred` would

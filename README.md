@@ -1,137 +1,113 @@
 # EVIDENT
 
-EVIDENT is a claim-based evidence workflow for AI-assisted scientific
-software. It does not ask whether code "looks right"; it asks what claim is
-being made, what evidence supports it, and what would falsify it.
+**Typed trust for scientific software you did not fully write or inspect.**
 
-It starts from a simple question:
+EVIDENT starts from one question:
 
-> **How do we justify trust in computational results when we did not fully author or inspect the code that produced them?**
+> How do we justify trust in a computational result when nobody has read all
+> of the code that produced it?
 
-> **New here?** Read the one-page [`OVERVIEW.md`](OVERVIEW.md), then run the worked
-> examples in [`evident-agent/EXAMPLES.md`](evident-agent/EXAMPLES.md).
+Its answer is not "look harder at the code." It is: state the **claim**, bind
+it to a **falsifiable check** (oracle + tolerance + replayable command), and
+record **how every assertion was established** — as a type, so a fact and an
+interpretation can never be confused.
+
+New here? Read the one-page [`OVERVIEW.md`](OVERVIEW.md), then run the worked
+examples in [`evident-agent/EXAMPLES.md`](evident-agent/EXAMPLES.md).
 
 ---
 
-## Core Workflow
+## The core
 
-EVIDENT shifts from:
+Three things, and everything else in this repository serves them.
 
-- “I trust this because I understand it”
+**1. A claim manifest** (`evident.yaml`, spec in [`workflow/SCHEMA.md`](workflow/SCHEMA.md)
+and [`workflow/GRAMMAR.md`](workflow/GRAMMAR.md)).
+Every claim carries a trust strategy, an oracle, a structured tolerance
+(`metric / op / value`), a reproducible command, an artifact, assumptions and
+failure modes. Above research tier, prose tolerances are rejected by the
+validator (`workflow/validate_manifest.py`).
 
-to:
+**2. A deterministic trust engine** — [`typed-trust/`](typed-trust)
+(spec in [`concepts/typed-trust.md`](concepts/typed-trust.md)).
+Every value is `Attested<T>` with a derivation of exactly one kind:
 
-- **“I trust this claim because it has sufficient evidence, understanding, or guarantees.”**
+- **Verified** — a named procedure ran and produced this observation.
+- **Judged** — a human or model interpretation; carries a rationale; never rendered as fact.
+- **Absent** — sought and not found; a first-class result, not a blank.
 
-The workflow is:
+Review is a graph of events (endorse / dissent / challenge / supersede) over
+claims, and a claim's status (`Current` / `Contested` / `Superseded`) is
+*computed* from that graph at synthesis time. **Synthesis calls no model.**
+
+**3. A replay-and-review agent** — [`evident-agent/`](evident-agent)
+(usage in [`evident-agent/README.md`](evident-agent/README.md)).
+Runs each claim's cited command in Docker and writes the observation back as a
+`last_verified.json` sidecar; drafts claims from repos and papers with a
+source-span validator that refuses claims the source does not state; records
+adversarial reviews; and exposes all of it over MCP so a Claude or Codex
+session (`evident-agent drive`, prompt in [`EVIDENT_DRIVER.md`](EVIDENT_DRIVER.md))
+can answer *"why should I trust claim X?"* from evidence, with every sentence
+tagged by how it was established.
 
 ```text
-claim
-  -> trust strategy
-  -> oracle/reference
-  -> tolerance or decision rule
-  -> reproducible command
-  -> artifact
-  -> assumptions and failure modes
-```
-
-Claims may be about different layers:
-
-- **Implementation claim** — a component behaves according to a specification.
-- **Pipeline claim** — a workflow transforms inputs into outputs reproducibly.
-- **Scientific claim** — outputs support an interpretation under stated assumptions.
-
-Evidence for one layer does not automatically validate the next.
-
----
-
-## Trust Strategies
-
-Trust in a computational component can be established through three complementary mechanisms:
-
-- **Understanding** — explaining why it should work  
-- **Validation** — showing that it behaves correctly  
-- **Proof** — guaranteeing properties under defined assumptions  
-
-In practice, most systems rely on a combination of these.
-
-> **The less we understand, the stronger the validation must be.**
-
----
-
-## What This Repository Provides
-
-This is not a fixed standard. It is a small framework for making computational
-trust claims explicit and reviewable:
-
-- **Manifest** → claim, evidence, command, artifact, assumptions, failure modes
-- **Workflow blueprint** → lightweight manifest checks plus case-specific replay
-- **Cases** → real examples of release-grade and research-grade evidence
-- **Patterns** → repeatable evidence structures
-- **Anti-patterns** → common ways evidence becomes misleading
-- **Rules** → actionable guidelines
-- **Concepts and checklists** → shared vocabulary for review
-- **Agent + driver** → an [`evident-agent`](evident-agent/README.md) CLI that runs cited
-  procedures, and `evident-agent drive --model claude|codex` — a terminal agent wired to
-  the EVIDENT tool belt that answers "why should I trust this claim?" from evidence
-
----
-
-## Structure
-
-```text
-evident.yaml      example claim manifest
-workflow/         Docker and manifest validation blueprint
-evident-agent/    agent CLI + Claude/Codex driver (evident-agent/README.md)
-typed-trust/      typed-trust engine + read MCP server
-EVIDENT_DRIVER.md canonical driver-agent prompt
-cases/            real-world examples
-patterns/         reusable evidence structures
-anti-patterns/    misleading evidence patterns
-rules/            actionable guidelines
-concepts/         definitions and mental models
-checklist/        practical review prompts
+  evident.yaml ──► evident-agent replay ──► last_verified.json ─┐
+       │           evident-agent review ──► review_events.json ─┤
+       │                                                        ▼
+       └──────────────────────────────────────────────► typed-trust ──► TrustReport
+                                                        (deterministic)
 ```
 
 ---
 
-## Design Principles
+## Layout
 
-- **Modular** — contributions don’t need to be complete
-- **Practical** — rules should be actionable
-- **Transparent** — assumptions and limitations are explicit
-- **Debatable** — disagreement is expected and encouraged
-
----
-
-## Why This Matters
-
-Scientific computing already has trust problems: legacy code, copied
-algorithms, opaque dependencies, numerical convention gaps, and tools used
-beyond the user's understanding. AI-assisted development makes those problems
-easier to encounter because complex systems can now be produced faster than
-they can be fully inspected.
-
-If we cannot justify how a computational system behaves, we cannot defend the
-conclusions drawn from it.
-
-This repository explores how to respond to that shift.
+```text
+OVERVIEW.md            one-page introduction
+EVIDENT_DRIVER.md      the agent's operating contract (status vocabulary, hard rules)
+evident.yaml           this repo's own (small) example manifest
+workflow/              manifest SCHEMA, GRAMMAR, and the validator
+typed-trust/           Rust engine + read-only MCP server
+evident-agent/         Python CLI (replay, extract, review, curate, drive) + exec MCP server
+concepts/              typed-trust spec, shared vocabulary, positioning essays
+patterns/ anti-patterns/ rules/ checklist/   short reference material for claim review
+cases/                 real consumer projects as submodules + interpreted summaries
+experiments/           the extraction-rate experiment (pre-registered; in progress)
+design-history/        drafts that shaped shipped code; not normative
+latex/                 the paper draft
+```
 
 ---
 
-## Contributing
+## Claim layers and trust strategies
 
-Start small:
+Claims live at one of three layers — **implementation** (a component matches a
+spec), **pipeline** (inputs transform to outputs reproducibly), **scientific**
+(outputs support an interpretation under assumptions) — and evidence at one
+layer never automatically validates the next.
 
-- Add a claim
-- Tighten an oracle or tolerance
-- Document a failure mode
-- Improve a replay command
+Trust in a component comes from **understanding** (why it should work),
+**validation** (showing it does), or **proof** (guaranteeing it), in
+combination. *The less we understand, the stronger the validation must be.*
 
-You don’t need to be complete — partial insights are valuable.
+---
+
+## What EVIDENT does not do
+
+It does not make weak evidence strong. It can record an oracle without knowing
+the oracle is right, require a tolerance without judging whether it is
+scientifically meaningful, and it deliberately refuses to emit an aggregate
+"trust score" — it makes the inputs to that judgment explicit and reviewable.
 
 ---
 
 ## Status
 
-Early stage. Expect rough edges, open questions, and evolving definitions.
+Early but real. The engine, the agent, the driver and the validator exist and
+are tested (`cargo test` in `typed-trust/`, `pytest` in `evident-agent/`).
+Open work, in order: run the pre-registered extraction-rate experiment to
+completion; close the remaining gaps between the typed-trust spec and its
+enforcement (listed in `concepts/typed-trust.md` §14); land the
+[`claim.statement` proposal](EVIDENT_PROPOSAL_claim-statement_DRAFT.md).
+
+License: MIT.

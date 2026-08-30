@@ -7,8 +7,7 @@
 //! trail keeps "this claim is supported" distinct from "this claim's
 //! lifecycle tier was promoted on this date by this reviewer."
 //!
-//! Five validator rules (per `EVIDENT_PHASE5_PAPER_EXTRACTION_DRAFT.md`
-//! v3 §"PromoteFromExtracted typed event"):
+//! Five validator rules (per the Phase 5 extraction design, v3 §"PromoteFromExtracted typed event"):
 //!
 //! 1. **Gate-on-tier.** An extracted claim at `tier: research`
 //!    requires no promotion event. The gate only fires when the

@@ -2220,7 +2220,7 @@ fn translate_promote_from_extracted_kind(
 
 // ----------------------------------------------------------------------
 // Phase 5 PR3: validate_promotion_rules — enforce the five
-// invariants from `EVIDENT_PHASE5_PAPER_EXTRACTION_DRAFT.md` v3.
+// invariants from the Phase 5 extraction design (see design-history/).
 // ----------------------------------------------------------------------
 
 /// Phase 5 PR3: structured errors for the promotion-gate validator.

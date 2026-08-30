@@ -175,5 +175,5 @@ schemas, allow-list, and error model, see [`docs/mcp-server.md`](docs/mcp-server
 ## Tests
 
 ```bash
-pip install -e . && python3 -m pytest
+pip install -e '.[dev]' && python3 -m pytest
 ```

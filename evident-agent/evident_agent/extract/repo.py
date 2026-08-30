@@ -11,7 +11,7 @@ to claim things FROM that paper. We enforce this by removing the
 citations from `assembled_text_for_model` rather than relying on
 the system prompt alone.
 
-See ``EVIDENT_PHASE5_PR5_DRAFT.md`` v3.
+See ``design-history/EVIDENT_PHASE5_PR5_DRAFT.md`` v3.
 
 PR6 note: citation redaction moved into ``extract/redaction.py``
 so the paper walker can share it. ``redact`` / ``Redaction`` and
