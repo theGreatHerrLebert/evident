@@ -1,4 +1,4 @@
-# Proposal: the exact claim is first-class (`claim.statement` + `claim.as_stated`)
+# Proposal: the exact claim is first-class (`claim.statement` + `claim.plain` + `claim.as_stated`)
 
 Status: DRAFT proposal. Not yet normative. Targets `workflow/SCHEMA.md` (manifest surface)
 and `workflow/GRAMMAR.md` (discipline), with a note on the `concepts/typed-trust.md` seam.
@@ -73,26 +73,42 @@ presuppose.
 Replace the single `claim:` prose field with a small structured block:
 
 ```yaml
+title: mcm5s2U counteracts the m6A decoding penalty     # existing field; the headline
 claim:
-  headline: mcm5s2U counteracts the m6A decoding penalty
   statement: >
     In human HEK293T cells, mcm5s2U at U34 alleviates the m6A-induced increase in
     ribosomal A-site occupancy specifically at the m6A-modified, mcm5s2U-dependent
     codons AAA, AGA, and GAA; loss of mcm5s2U biogenesis (ELP1-KO or CTU2-KO)
     intensifies the pausing, and the increase is reversed by STM2457.
+  plain: >
+    Ribosomes slow down at certain codons when the mRNA carries an m6A mark. This
+    claim says a particular tRNA modification (mcm5s2U) cancels that slowdown at
+    three specific codons in human cells — and that removing the modification
+    makes the slowdown worse, while a drug that blocks m6A removes it.
   as_stated:
     quote: "mcm5s2U in tRNA modulates the decoding of m6A-modified codons"
     locator: "Highlights; Fig 4C"
     verbatim: true          # maps to Claim.explicit
 ```
 
-- **`headline`** — the gloss. Free prose. Never the falsifiable object; renderers
-  may show it as the card title but must not treat it as the claim.
+- **`title`** (existing) — the headline. Already on every claim; this proposal
+  does not add a separate `headline` field. Never the falsifiable object;
+  renderers show it as the card title but must not treat it as the claim.
 - **`statement`** — the exact, fully-scoped proposition. The object that evidence
   supports and challenges target. Its scope qualifiers (system, perturbation,
   magnitude, negative control) MUST be reconstructable from the structured fields
   (`subsystem`, `inputs`, `outputs`, `tolerances`, `pinned_versions`), per GRAMMAR
   principle 1. `statement` projects to typed-trust `Claim.text`.
+- **`plain`** — the claim in plain words: one or two sentences a non-specialist
+  can read to learn *what is actually being tested and why it matters*. It is an
+  **explanation, not a restatement** — it may omit scope and precision, and it
+  is not required to be complete or to track the statement word-for-word. It is
+  never normative: evidence does not support it, challenges do not target it,
+  and the validator never reads its content. In typed-trust terms it is a
+  `Judged` gloss of `statement` (author or model, curator-approved), and
+  renderers MUST label it as such ("In plain words — not the claim") and show
+  it *next to* `statement`, never instead of it, so a reader can see the
+  simplification and spot drift. Optional at every tier.
 - **`as_stated`** — the source anchor. `quote` is verbatim source text (or `null`
   when the statement is inferred, not quoted); `locator` names where (figure,
   section, line); `verbatim` projects to `Claim.explicit`. This is what lets a
@@ -101,8 +117,9 @@ claim:
 
 ## Validator rules
 
-- `claim.statement` required at every tier. `claim.headline` optional (defaults to
-  a truncation of `statement` for display; the truncation is never authoritative).
+- `claim.statement` required at every tier. `claim.plain` optional at every
+  tier; when present it must be a non-empty string. The validator never checks
+  its content — fidelity of a simplification is a `Judged` comparison.
 - `as_stated.verbatim: true` requires a non-empty `quote`.
 - When `as_stated.quote` is present, the validator does NOT check it against the
   statement (that is a Judged comparison, out of scope for a structural validator)
@@ -118,6 +135,7 @@ claim:
 |----------------------------------------------|:--------:|:-------:|:-------:|
 | `claim.statement` present                    | required | required| required|
 | `claim.statement` scope reconstructable from structure | recommended | required | required |
+| `claim.plain` present                        | optional | optional| optional|
 | `claim.as_stated.locator` present            | optional | required| required|
 | `claim.as_stated.quote` (verbatim) present   | optional | optional| required for `explicit` claims |
 
@@ -132,11 +150,27 @@ being scoped). It may not be promoted without moving that scope into structure.
   `statement` with its scope, and anchor it with `as_stated`. The tell: the
   headline would still "pass" if the experiment had been done in a different
   system or with a weaker perturbation.
+- **Plain-words overreach.** A `claim.plain` that asserts something the
+  `statement` does not (a broader system, a causal reading of a correlation, a
+  general law from a scoped result). `plain` may *omit* scope; it must never
+  *contradict* it. Fix: rewrite `plain` so that every sentence is implied by
+  `statement`. The tell: a reader who only saw `plain` would be surprised by a
+  qualifier in `statement`.
+
+## `plain` and the agent
+
+Because `plain` is a `Judged` gloss, it is the natural field for
+`evident-agent extract-*` to draft (model-written, from `statement` plus the
+structured fields) and for `evident-agent curate` to approve or rewrite. A
+model-drafted `plain` that was never curator-approved should render with its
+provenance visible, like any other Judged value. The driver (`EVIDENT_DRIVER.md`)
+may quote `plain` when explaining a claim to a user, but must tag it Judged and
+must answer "what is tested?" from `statement` and the tolerances.
 
 ## Migration
 
 - `0.2` → `0.3`: `claim` becomes a block. A legacy string `claim: "..."` is read
-  as `claim.statement` with `headline` absent and `as_stated` absent; the
+  as `claim.statement` with `plain` absent and `as_stated` absent; the
   validator warns that the source anchor is missing. No existing claim is
   invalidated; they degrade to "statement-only, unanchored," which research tier
   already permits.
@@ -153,5 +187,7 @@ being scoped). It may not be promoted without moving that scope into structure.
 ## Changing this document
 
 This is a proposal. If accepted it implies a `0.3` schema bump, a `workflow/GRAMMAR.md`
-principle-1 amendment (the headline/statement split is the concrete mechanism for
-"prose is the docstring"), one new anti-pattern file, and the migration note above.
+principle-1 amendment (the title/statement/plain split is the concrete mechanism for
+"prose is the docstring": `statement` is the docstring that must be redundant with
+structure; `plain` is the comment that need not be), two new anti-pattern entries,
+and the migration note above.
