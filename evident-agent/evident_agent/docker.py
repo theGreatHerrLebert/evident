@@ -5,10 +5,9 @@ Delegates to proteon's existing Docker image (built from
 entrypoint that runs the manifest's ``evidence.command`` with all
 oracle binaries available.
 
-The agent never reimplements the subprocess management — that's what
-the framework's ``workflow/evident.py::_run_command`` does inside the
-container. We just orchestrate ``docker run`` calls and capture exit
-codes.
+The agent never reimplements the subprocess management — the image's
+``replay`` entrypoint runs the command inside the container. We just
+orchestrate ``docker run`` calls and capture exit codes.
 """
 
 from __future__ import annotations

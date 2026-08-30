@@ -37,9 +37,6 @@ framework filtered down; in the supplement case the model
 produced zero structured output.
 
 Calling this a "failure" would be wrong — it's exactly the
-discipline EVIDENT was designed to enforce.
-
-Calling this a "failure" would be wrong — it's exactly the
 discipline EVIDENT was designed to enforce. The question is whether
 the rejections are *load-bearing* (the validator is correctly
 guarding against claim invention) or *over-strict* (the validator

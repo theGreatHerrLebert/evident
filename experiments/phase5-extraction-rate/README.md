@@ -14,7 +14,7 @@ average paper/repo?
 The answer determines whether Phase 5-iii (cross-paper / cross-repo
 claim graphs) is worth building.
 
-## Stop/go discriminator (from EVIDENT_PHASE5_PAPER_EXTRACTION_DRAFT.md v3)
+## Stop/go discriminator (from the Phase 5 extraction design, v3)
 
 Per the v3 plan codex review:
 

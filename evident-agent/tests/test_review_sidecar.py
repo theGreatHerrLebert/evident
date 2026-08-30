@@ -108,7 +108,8 @@ def _worker_append(args):
     """Helper for the concurrent-write test. Module-level so it pickles
     cleanly for multiprocessing.Pool."""
     import sys
-    sys.path.insert(0, "/scratch/TMAlign/evident/evident-agent")
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from evident_agent.review_sidecar import (
         ReviewAuthor,
         ReviewEventEntry,

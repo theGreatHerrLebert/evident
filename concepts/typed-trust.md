@@ -1,8 +1,18 @@
 # Typed Trust
 
 The verification core for EVIDENT, expressed as a small typed model.
-Complements `EVIDENT_DESIGN.md` (the framing essay) and the shipping
-manifest schema (`workflow/SCHEMA.md`, the project-facing surface).
+Implemented in `typed-trust/` (Rust). Complements the shipping manifest
+schema (`workflow/SCHEMA.md`, the project-facing surface) and the agent's
+operating contract (`EVIDENT_DRIVER.md`).
+
+**Status vocabulary vs. derivation.** The driver speaks six statuses
+(Verified, Verified-failure, Judged, Absent, Unknown, Inconclusive). Only
+the first three-and-Absent are derivations in this model. *Verified-failure*
+is `Verified` whose bound criterion resolved to `Fail`; *Unknown* is "no
+attestation exists yet" (nothing to type); *Inconclusive* is a procedure
+that did not run to a verdict and therefore produced no `Verified`
+attestation. The driver vocabulary is how an agent reports; this document
+is what the engine stores.
 
 **The contract in one sentence.** Every assertion EVIDENT carries records
 *how it was established* as part of its type: `Verified` (reproducible
@@ -486,7 +496,7 @@ constructors, so a tool can round-trip without manual judgment.
 ## 12. Iteration trail
 
 This design is the result of three review rounds against the v0.2
-framing essay in `EVIDENT_DESIGN.md`, plus three worked fit-tests —
+framing essay (`EVIDENT_DESIGN.md`, git history only), plus three worked fit-tests —
 one template-based, one end-to-end walkthrough of a proteon
 release-tier claim plus four structural variations, and one synthetic
 challenge constructed against the proteon CHARMM19+BALL electrostatic
@@ -505,29 +515,49 @@ Five small deltas landed from those fit-tests:
   challenging a specific result in a specific report; the former is
   stable across re-synthesis, the latter is snapshot-bound.
 
-Working artifacts preserved alongside this document (uncommitted):
-
-- `EVIDENT_DESIGN.md` — the v0.2 framing essay (origin, motivation, prose).
-- `EVIDENT_DESIGN_v0.3_DRAFT.md` and forward — the typed iteration.
-- `EVIDENT_DESIGN_v0.3.codex-review.md`, `v0.5`, `v0.6` — independent
-  reviews by OpenAI Codex that drove the structural moves (the
-  Claim/ReviewEvent split, the `Target` enum, the `Tolerance` type, the
-  compactness pass).
-- `EVIDENT_DESIGN_v0.4_FIT_TEST.md` — template-based fit-test.
-- `concepts/typed-trust-proteon-fit.md` — worked end-to-end
-  walkthrough of one proteon release-tier claim plus structural
-  findings from four other claim shapes.
-
-These are not normative. The contract is what's in this document.
+The working artifacts (the framing essay, the v0.3–v0.6 typed drafts,
+the Codex reviews that drove the Claim/ReviewEvent split, the `Target`
+enum and the compactness pass, and the fit-tests) are in git history only.
+They are not normative. The contract is what's in this document.
 
 ---
 
 ## 13. Next
 
-1. Scaffold the types as Rust in a sibling crate or directory. The
-   first awkward write — the first type that resists construction
-   against a real claim — is the next thing to revisit.
+1. ~~Scaffold the types as Rust.~~ Done: `typed-trust/`.
 2. Build the normative manifest-to-Typed-Trust binding spec referenced
-   in §11. Without it, the seam between layers is informal.
+   in §11. Today the binding is what `typed-trust/src/translate.rs`
+   does; the seam is code, not spec.
 3. Test the contract against a second real claim (peer-reviewed, with
    active challenges) once active challenges exist in the corpus.
+
+---
+
+## 14. Spec vs. enforcement (known gaps)
+
+Where the implementation in `typed-trust/` is behind this document.
+Listed so the spec does not overstate what the code guarantees.
+
+- **Invariant 9 (`Automated` cannot judge)** — stated, not enforced by
+  the translator. An `automated` author on an Endorse/Dissent/Challenge
+  event is accepted.
+- **Invariant 10 (protocol required at release tier)** — stated, not
+  enforced. `protocol` is passed through unchecked.
+- **`reviewed_extraction_sha`** on a `PromoteFromExtracted` event is not
+  compared to the claim's `source_sha`; the documented rejection of
+  cross-run promotions does not happen.
+- **Multi-tolerance claims** — only the first criterion of a claim is
+  bound to `last_verified.value`; further criteria are permanently
+  `NotAssessed`.
+- **`Target::Criterion` / `Target::CriterionResult`** cannot be produced
+  from manifest input; only `claim` and `review_event` targets translate.
+- **Backed challenges** — recursive synthesis of a challenge's backing
+  claim (and cycle contestation, §8) is implemented and tested but both
+  binaries synthesize backing claims one level deep.
+- **`ProvenanceRecord`, `Gap`, `Aggregate`, `Claim.decomposes_into`,
+  `requires_assumptions`** — typed, never constructed.
+- **MCP `read_report` / `render_report`** advertise a
+  `last_verified_sidecar` argument and ignore it; observed values reach
+  MCP reports only when `last_verified` is inline in the manifest.
+- Timestamps are compared as strings; only normalised `…Z` UTC orders
+  correctly.

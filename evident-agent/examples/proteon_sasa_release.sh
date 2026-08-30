@@ -2,11 +2,11 @@
 # Demonstration: replay the proteon SASA release-tier claim end-to-end.
 #
 # Prerequisites:
-#  1. proteon's source checked out at /scratch/TMAlign/proteon
+#  1. proteon's source: the cases/proteon submodule (git submodule update
+#     --init), or set PROTEON=/path/to/proteon
 #  2. proteon's docker image built locally:
-#       docker build -f /scratch/TMAlign/proteon/evident/Dockerfile \
-#                    -t proteon-evident:latest \
-#                    /scratch/TMAlign/proteon
+#       docker build -f "$PROTEON/evident/Dockerfile" \
+#                    -t proteon-evident:latest "$PROTEON"
 #  3. typed-trust binary built (cargo build in typed-trust/)
 #  4. evident-agent installed (pip install -e .)
 #
@@ -16,16 +16,16 @@
 #    which runs the claim's evidence.command inside the container.
 #  - On success, the agent runs proteon's claim_scoring.py locally on
 #    the artifact to extract the primary observed value.
-#  - Writes a sidecar entry in workflow/evident.py's last_verified.json
-#    convention.
+#  - Writes a sidecar entry to last_verified.json.
 #  - Re-invokes typed-trust with --last-verified-sidecar to render an
 #    HTML report with the populated observation.
 
 set -euo pipefail
 
-MANIFEST="/scratch/TMAlign/proteon/evident/claims/sasa.yaml"
+PROTEON="${PROTEON:-$(cd "$(dirname "$0")/../../cases/proteon" && pwd)}"
+MANIFEST="$PROTEON/evident/claims/sasa.yaml"
 CLAIM="proteon-sasa-vs-biopython-ci"   # CI tier, ~12s, deterministic
-SIDECAR="/scratch/TMAlign/proteon/evident/last_verified.json"
+SIDECAR="$PROTEON/evident/last_verified.json"
 REPORT="${OUTPUT_DIR:-/tmp}/sasa-ci-report.html"
 
 evident-agent replay \

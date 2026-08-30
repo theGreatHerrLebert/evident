@@ -1,6 +1,6 @@
 """Sidecar ``last_verified.json`` read/write.
 
-Format matches ``workflow/evident.py``'s convention:
+Format (shared with typed-trust's ``--last-verified-sidecar``):
 
 .. code-block:: json
 

@@ -1,10 +1,10 @@
 //! Manifest → Typed Trust translator tests.
 //!
 //! Inputs are abridged but otherwise verbatim from real proteon claim
-//! files. The full files are at:
-//!   /scratch/TMAlign/proteon/evident/claims/sasa.yaml
-//!   /scratch/TMAlign/proteon/evident/claims/release_gate.yaml
-//!   /scratch/TMAlign/proteon/evident/claims/dssp.yaml
+//! files. The full files are in the `cases/proteon` submodule:
+//!   cases/proteon/evident/claims/sasa.yaml
+//!   cases/proteon/evident/claims/release_gate.yaml
+//!   cases/proteon/evident/claims/dssp.yaml
 
 use typed_trust::translate::{
     parse_manifest_file, translate_claim, translate_evidence, translate_tolerances,

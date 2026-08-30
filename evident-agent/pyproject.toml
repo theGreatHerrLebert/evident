@@ -15,6 +15,9 @@ dependencies = [
   "mcp>=1.2,<2",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
 [project.scripts]
 evident-agent = "evident_agent.cli:main"
 evident-agent-mcp = "evident_agent.mcp:main"

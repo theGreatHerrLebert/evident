@@ -1,7 +1,7 @@
 # Proposal: the exact claim is first-class (`claim.statement` + `claim.as_stated`)
 
-Status: DRAFT proposal. Not yet normative. Targets `SCHEMA.md` (manifest surface)
-and `GRAMMAR.md` (discipline), with a note on the `concepts/typed-trust.md` seam.
+Status: DRAFT proposal. Not yet normative. Targets `workflow/SCHEMA.md` (manifest surface)
+and `workflow/GRAMMAR.md` (discipline), with a note on the `concepts/typed-trust.md` seam.
 
 ## The hole
 
@@ -12,7 +12,7 @@ claim: >
   A mid-flight GPU proteomics pipeline should be evaluated in layers ...
 ```
 
-`GRAMMAR.md` principle 1 already says this prose "must be redundant with the
+`workflow/GRAMMAR.md` principle 1 already says this prose "must be redundant with the
 structured fields, never the source of truth." But in practice the single `claim:`
 field collapses two different objects and anchors neither:
 
@@ -152,6 +152,6 @@ being scoped). It may not be promoted without moving that scope into structure.
 
 ## Changing this document
 
-This is a proposal. If accepted it implies a `0.3` schema bump, a `GRAMMAR.md`
+This is a proposal. If accepted it implies a `0.3` schema bump, a `workflow/GRAMMAR.md`
 principle-1 amendment (the headline/statement split is the concrete mechanism for
 "prose is the docstring"), one new anti-pattern file, and the migration note above.

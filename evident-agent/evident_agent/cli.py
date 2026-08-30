@@ -1,6 +1,7 @@
 """``evident-agent`` CLI entry point.
 
-Single subcommand for Phase 1: ``replay``. Workflow per claim:
+Subcommands: ``replay``, ``review``, ``extract-*``, ``curate``,
+``drive`` and friends. The ``replay`` workflow per claim:
 
 1. Read manifest, filter by ``--claim`` if given (default: all
    measurement claims).

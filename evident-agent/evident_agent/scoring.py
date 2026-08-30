@@ -25,12 +25,8 @@ def _try_proteon_scoring(claim: dict, source_dir: Path) -> Optional[float]:
     is unavailable or returns no observation.
     """
     # Search for proteon's tools directory.
-    candidates = [
-        source_dir / "evident" / "tools",
-        Path("/scratch/TMAlign/proteon/evident/tools"),
-    ]
-    tools_dir = next((c for c in candidates if c.is_dir()), None)
-    if tools_dir is None:
+    tools_dir = source_dir / "evident" / "tools"
+    if not tools_dir.is_dir():
         return None
     sys.path.insert(0, str(tools_dir))
     try:

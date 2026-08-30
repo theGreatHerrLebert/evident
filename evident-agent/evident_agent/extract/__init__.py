@@ -5,7 +5,8 @@ This package is the input-side counterpart to evident-agent's existing
 manifest in the schema typed-trust already understands, suitable for
 human curator review before promotion to ``ci`` / ``release`` tiers.
 
-See ``EVIDENT_PHASE5_PAPER_EXTRACTION_DRAFT.md`` for the full design.
+Design history: ``design-history/`` (PR5/PR6 drafts; the original
+Phase 5 extraction draft is in git history only).
 
 Module layout:
 

@@ -9,7 +9,7 @@ A model can write a YAML tolerance that LOOKS rigorous; the validator
 is what prevents it from smuggling in a bound the source never
 claimed for the claimed subject.
 
-See EVIDENT_PHASE5_PAPER_EXTRACTION_DRAFT.md v3, section
+See the Phase 5 extraction design (git history), section
 "Default-deny framing (v3: source-span enforcement)".
 """
 

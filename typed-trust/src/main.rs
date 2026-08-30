@@ -462,7 +462,7 @@ fn usage() {
     eprintln!("  --last-verified-sidecar <path>");
     eprintln!("    overlay sidecar JSON entries onto each claim's last_verified field");
     eprintln!("    before translation. Sidecar shape: {{claim_id: {{commit, date, value,");
-    eprintln!("    corpus_sha}}}}. Matches workflow/evident.py's existing convention.");
+    eprintln!("    corpus_sha}}}}. Written by `evident-agent replay`.");
     eprintln!();
     eprintln!("  --review-events-sidecar <path>");
     eprintln!("    inject ReviewEvents from an append-only sidecar. Shape:");
@@ -675,7 +675,7 @@ fn html_escape(s: &str) -> String {
 }
 
 /// Load a sidecar JSON file mapping claim-id → ManifestLastVerified.
-/// The shape matches `workflow/evident.py`'s `last_verified.json`
+/// The shape matches `evident-agent replay`'s `last_verified.json`
 /// convention: each entry has `commit`, `date`, `value`, `corpus_sha`
 /// fields, all optional / nullable.
 fn load_sidecar(path: &str) -> Result<HashMap<String, ManifestLastVerified>, String> {

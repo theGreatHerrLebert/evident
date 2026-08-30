@@ -33,7 +33,7 @@ from typing import Iterable
 
 
 # ---------------------------------------------------------------------
-# Comparator coverage (from EVIDENT_PHASE5 v3 §"Default-deny framing
+# Comparator coverage (from the Phase 5 design, §"Default-deny framing
 # with source-span enforcement"). Each entry is a token or phrase
 # that's an acceptable surface form of `<` / `<=` / `>` / `>=`.
 # ---------------------------------------------------------------------
