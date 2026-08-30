@@ -110,6 +110,7 @@ are tested (`cargo test` in `typed-trust/`, `pytest` in `evident-agent/`).
 Open work, in order: run the pre-registered extraction-rate experiment to
 completion; close the remaining gaps between the typed-trust spec and its
 enforcement (listed in `docs/concepts/typed-trust.md` §14); land the
-[`claim.statement` proposal](docs/proposals/claim-statement.md).
+[`claim.statement`](docs/proposals/claim-statement.md) and
+[`understanding-level`](docs/proposals/understanding-level.md) proposals.
 
 License: MIT.

@@ -203,3 +203,33 @@ The deeper one-line summary, for the framework as a whole:
 by default; believe based on verifiable evidence — and that
 foundation is what makes the pattern durable across the AI
 transition rather than dependent on it.**
+
+---
+
+## External framing (2026)
+
+Andrew Ng's *AI Engineering Skills Map* series in The Batch (Aug 14 and
+Aug 28, 2026) and his *AI Rewards Generalists* letter (Jul 17, 2026)
+describe the same shift this essay argues for, from the mainstream side:
+developers move from writing and reading code to specifying it and
+verifying it. Three of his lines map directly onto EVIDENT:
+
+- "help the agent autonomously close loops by providing verifiers or
+  evals" — the claim → oracle → tolerance → command → artifact spine *is*
+  the verifier, made reviewable. What Ng's generic advice leaves open is
+  what a verifier is when there is no unit test to pass: an independent
+  oracle, a defended tolerance and a record of both. That is the part
+  scientific software cannot skip.
+- "steering coding agents using the precise language of software
+  engineering" — for scientific code the precise language is the claim
+  card: parity, corpus, cutoff convention, known failure modes.
+- "developers who deeply understand how software works vastly outperform
+  those who vibe code without understanding", next to his own admission
+  that he has stopped reading generated code — i.e. the understanding
+  owed is of tradeoffs and invariants, not lines. That is the case for
+  recording *how much* is understood, see
+  [`../proposals/understanding-level.md`](../proposals/understanding-level.md).
+
+Sources: [The AI Engineering Skills Map](https://www.deeplearning.ai/the-batch/the-ai-engineering-skills-map),
+[Software Engineering Fundamentals](https://www.deeplearning.ai/the-batch/the-ai-engineering-skills-map-in-detail-software-engineering-fundamentals),
+[AI Rewards Generalists Who Can Build New Skills](https://www.deeplearning.ai/the-batch/ai-rewards-generalists-who-can-build-new-skills).
