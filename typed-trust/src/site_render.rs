@@ -485,7 +485,16 @@ const SITE_JS: &str = r##"
   const qbtn = (topic, label) => `<button class="q" type="button" data-help="${topic}" aria-haspopup="dialog" aria-expanded="false" aria-label="What is ${esc(label || topic)}?" title="What is ${esc(label || topic)}?">?</button>`;
   const pop = document.getElementById('pop');
   let popTrigger = null;
-  function closePop() { if (pop.hidden) return; pop.hidden = true; pop.innerHTML = ''; if (popTrigger) { popTrigger.setAttribute('aria-expanded', 'false'); popTrigger.focus(); } popTrigger = null; }
+  function closePop() {
+    if (pop.hidden) return;
+    // Only hand focus back to the trigger when focus is still inside the popover
+    // (Esc, its ✕). If the user clicked something else — a row that opened the
+    // drawer, say — that element owns focus now and must keep it.
+    const restore = popTrigger && (pop.contains(document.activeElement) || document.activeElement === document.body);
+    pop.hidden = true; pop.innerHTML = '';
+    if (popTrigger) { popTrigger.setAttribute('aria-expanded', 'false'); if (restore) popTrigger.focus(); }
+    popTrigger = null;
+  }
   function openPop(btn) {
     const spec = HELP[btn.dataset.help]; if (!spec) return;
     const h = spec();
@@ -790,7 +799,7 @@ const SITE_JS: &str = r##"
       bar.querySelector('.expand').addEventListener('click', () => openBig(svg));
     });
   }
-  let bigOpener = null;
+  let bigOpener = null, bigResize = null;
   function openBig(svg) {
     bigOpener = document.activeElement;
     big.innerHTML = `<div class="tools"><strong>Attestation graph</strong><span class="sp">Drag to pan · scroll to zoom · Esc to close</span><button type="button" class="fit">Fit</button><button type="button" class="zin">+</button><button type="button" class="zout">−</button><button type="button" class="close">Close ✕</button></div><div class="stage"></div>`;
@@ -814,10 +823,16 @@ const SITE_JS: &str = r##"
     big.querySelector('.zin').addEventListener('click', () => zoomAt(1.25, stage.clientWidth / 2, stage.clientHeight / 2));
     big.querySelector('.zout').addEventListener('click', () => zoomAt(1 / 1.25, stage.clientWidth / 2, stage.clientHeight / 2));
     big.querySelector('.close').addEventListener('click', closeBig);
-    window.addEventListener('resize', fit);
+    if (bigResize) window.removeEventListener('resize', bigResize);
+    bigResize = fit; window.addEventListener('resize', bigResize);
     big.querySelector('.close').focus();
   }
-  function closeBig() { if (big.hidden) return; big.hidden = true; big.innerHTML = ''; if (bigOpener && document.contains(bigOpener)) bigOpener.focus(); bigOpener = null; }
+  function closeBig() {
+    if (big.hidden) return;
+    if (bigResize) { window.removeEventListener('resize', bigResize); bigResize = null; }
+    big.hidden = true; big.innerHTML = '';
+    if (bigOpener && document.contains(bigOpener)) bigOpener.focus(); bigOpener = null;
+  }
   document.addEventListener('keydown', e => { if (e.key === 'Escape' && !big.hidden) { e.stopImmediatePropagation(); closeBig(); } }, true);
 
   function closeDetail() {
