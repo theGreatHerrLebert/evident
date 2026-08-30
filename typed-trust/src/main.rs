@@ -354,7 +354,7 @@ fn main() -> ExitCode {
         Format::Markdown => emit_markdown(path, &reports, &skipped),
         Format::Html => emit_html(path, &reports, &skipped),
         Format::Mermaid => emit_mermaid(&reports),
-        Format::Site => emit_site(path, &now, &reports, &skipped),
+        Format::Site => emit_site(path, &now, &reports, &skipped, filter.as_deref(), &claims),
     };
 
     // Translation failures override a successful render. CI gates
@@ -661,7 +661,25 @@ fn emit_site(
     now: &str,
     reports: &[serde_json::Value],
     skipped: &[SkipReason],
+    only: Option<&str>,
+    claims: &[ClaimWithSource],
 ) -> ExitCode {
+    // The CLI has already overlaid --last-verified-sidecar onto each
+    // claim; hand the page the same values the reports were built from.
+    let overlay: HashMap<String, serde_json::Value> = claims
+        .iter()
+        .filter_map(|cw| {
+            cw.claim.last_verified.as_ref().map(|lv| {
+                (
+                    cw.claim.id.clone(),
+                    serde_json::json!({
+                        "commit": lv.commit, "date": lv.date,
+                        "value": lv.value, "corpus_sha": lv.corpus_sha,
+                    }),
+                )
+            })
+        })
+        .collect();
     let (project, raw_claims) = match typed_trust::site_render::read_raw_claims(path) {
         Ok(v) => v,
         Err(e) => {
@@ -675,7 +693,7 @@ fn emit_site(
         .collect();
     println!(
         "{}",
-        typed_trust::render_site(path, &project, now, &raw_claims, reports, &skipped_json)
+        typed_trust::render_site(path, &project, now, &raw_claims, reports, &skipped_json, only, &overlay)
     );
     ExitCode::SUCCESS
 }
