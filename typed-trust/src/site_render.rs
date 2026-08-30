@@ -292,6 +292,31 @@ body { max-width: none; margin: 0; padding: 0; background: var(--ground); color:
 #site .tags { display: flex; flex-wrap: wrap; gap: 0.2rem; }
 #site .tags span { background: var(--surface-2); border: 1px solid var(--line); border-radius: 3px; padding: 0 0.35rem; font-size: 0.74rem; color: var(--ink); white-space: nowrap; }
 #site .empty { color: var(--muted); padding: 2rem; text-align: center; }
+/* ? help buttons + popover */
+#site button.q { display: inline-grid; place-items: center; width: 1.1rem; height: 1.1rem; margin-left: 0.3rem; padding: 0; border-radius: 50%; border: 1px solid var(--muted); background: var(--surface); color: var(--muted); font: inherit; font-size: 0.7rem; font-weight: 700; line-height: 1; cursor: pointer; vertical-align: 1px; }
+#site button.q:hover, #site button.q[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); }
+#site { position: relative; }
+#site #pop { position: absolute; z-index: 30; max-width: 26rem; background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 8px 28px rgba(0,0,0,0.18); padding: 0.75rem 0.9rem; font-size: 0.85rem; line-height: 1.45; }
+#site #pop h4 { margin: 0 0 0.3rem; font-size: 0.92rem; }
+#site #pop p { margin: 0 0 0.5rem; }
+#site #pop dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.3rem 0.7rem; margin: 0.4rem 0 0; }
+#site #pop dt { font-weight: 600; white-space: nowrap; } #site #pop dd { margin: 0; }
+#site #pop dt .pill { font-size: 0.72rem; }
+#site #pop .pop-x { position: absolute; top: 0.3rem; right: 0.4rem; border: none; background: none; color: var(--muted); font: inherit; cursor: pointer; }
+#site #pop a { color: var(--accent); }
+#site #drawer button.q { border-color: #6c757d; color: #6c757d; background: #fff; }
+#site #drawer #pop { color: #2c3e50; }
+#site .summary .tile .lbl button.q { vertical-align: 0; }
+/* full-screen attestation graph */
+#site #drawer .graph-tools { display: flex; gap: 0.5rem; align-items: center; margin: 0.4rem 0 -0.4rem; }
+#site #drawer .graph-tools button, #site #big .tools button { font: inherit; font-size: 0.82rem; border: 1px solid #cfd6dd; background: #ffffff; color: #2c3e50; border-radius: 4px; padding: 0.25rem 0.6rem; cursor: pointer; }
+#site #drawer .graph-tools .hintt { color: #6c757d; font-size: 0.8rem; }
+#site #big { position: fixed; inset: 0; z-index: 40; background: #ffffff; display: flex; flex-direction: column; }
+#site #big .tools { display: flex; gap: 0.5rem; align-items: center; padding: 0.5rem 1rem; border-bottom: 1px solid #dde3e8; background: #f8f9fa; color: #2c3e50; font-size: 0.9rem; }
+#site #big .tools .sp { flex: 1; color: #6c757d; font-size: 0.82rem; }
+#site #big .stage { flex: 1; overflow: hidden; position: relative; cursor: grab; }
+#site #big .stage.dragging { cursor: grabbing; }
+#site #big .stage svg { position: absolute; left: 0; top: 0; transform-origin: 0 0; max-width: none !important; height: auto !important; }
 /* about */
 #site .about { max-width: 48rem; font-size: 0.95rem; line-height: 1.55; }
 #site .about .lead { font-size: 1.05rem; }
@@ -331,7 +356,7 @@ body { max-width: none; margin: 0; padding: 0; background: var(--ground); color:
 #site #drawer .bar-top { display: flex; align-items: center; gap: 0.75rem; padding: 0.6rem 1rem; border-bottom: 1px solid #dde3e8; background: #f8f9fa; }
 #site #drawer .bar-top code { background: #eef1f4; color: #2c3e50; }
 #site #drawer .bar-top button { margin-left: auto; font: inherit; border: 1px solid #cfd6dd; background: #ffffff; color: #2c3e50; border-radius: 4px; padding: 0.25rem 0.6rem; cursor: pointer; }
-#site #drawer .body { overflow-y: auto; padding: 0 1.25rem 2rem; font-size: 0.92rem; background: #ffffff; }
+#site #drawer .body { overflow-y: auto; padding: 0 1.25rem 2rem; font-size: 0.92rem; background: #ffffff; position: relative; }
 #site #drawer .body h1 { font-size: 1.15rem; margin: 1rem 0 0.4rem; border-bottom: 2px solid #2c3e50; padding-bottom: 0.3rem; color: #2c3e50; }
 #site #drawer .body h2 { margin-top: 1.6rem; border-bottom: 1px solid #ccc; color: #2c3e50; }
 #site #drawer .body .pill.kind { background: #f1f3f5; color: #495057; }
@@ -375,6 +400,8 @@ const SITE_BODY: &str = r##"
       </section>
     </main>
   </div>
+  <div id="pop" role="dialog" aria-modal="false" hidden></div>
+  <div id="big" role="dialog" aria-modal="true" aria-label="Attestation graph, full screen" hidden></div>
   <div id="backdrop"></div>
   <div id="drawer" aria-hidden="true">
     <div class="bar-top"><code id="drawer-title"></code><button id="drawer-close">Close ✕</button></div>
@@ -438,21 +465,70 @@ const SITE_JS: &str = r##"
     provenance: 'Who or what authored the claim (a person, an automated extraction from a paper or repo) and whether it has been reviewed.',
   };
 
+  // ---------- "?" help: one popover, many triggers ----------
+  const STATUS_LABEL = { current: 'Current', contested: 'Contested', superseded: 'Superseded', error: 'Error', not_synthesized: 'Not synthesized' };
+  const present = getter => [...new Set(CLAIMS.flatMap(getter))];
+  const HELP = {
+    claim:      () => ({ title: 'What is a claim?', body: G.claim, more: 'about' }),
+    kind:       () => ({ title: 'Kind', body: G.kind._, items: present(c => [c.kind]).map(k => [k, G.kind[k], 'pill kind']) }),
+    tier:       () => ({ title: 'Tier', body: G.tier._, items: TIERS.map(t => [t, G.tier[t], 'pill tier-' + t]) }),
+    status:     () => ({ title: 'Status', body: G.status._, items: ['current', 'contested', 'superseded', 'not_synthesized', 'error'].map(k => [STATUS_LABEL[k], G.status[k], 'pill status-' + k]) }),
+    strategy:   () => ({ title: 'Trust strategy', body: G.strategy._, items: ['understanding', 'validation', 'proof'].map(k => [k, G.strategy[k]]) }),
+    subsystem:  () => ({ title: 'Subsystem', body: G.subsystem }),
+    oracle:     () => ({ title: 'Oracle', body: G.oracle }),
+    capability: () => ({ title: 'Capability', body: G.capability }),
+    criteria:   () => ({ title: 'Checks (criteria)', body: G.criteria, items: [['✓ passed', 'The observed value met its tolerance.'], ['✗ failed', 'The observed value was outside its tolerance.'], ['? not assessed', 'The check is defined, but no observed value was available when this page was built.']] }),
+    verified:   () => ({ title: 'Last verified', body: G.verified }),
+    provenance: () => ({ title: 'Provenance', body: G.provenance }),
+    graph:      () => ({ title: 'Reading the graph', body: 'Circles are claims, coloured by status, with a thick border at release tier. Diamonds are oracles; small rectangles are capabilities (dashed links) and subsystems (dotted links). Red arrows are challenges backed by another claim.', items: [['claim', G.claim], ['oracle', G.oracle], ['capability', G.capability], ['subsystem', G.subsystem]] }),
+  };
+  const qbtn = (topic, label) => `<button class="q" type="button" data-help="${topic}" aria-haspopup="dialog" aria-expanded="false" aria-label="What is ${esc(label || topic)}?" title="What is ${esc(label || topic)}?">?</button>`;
+  const pop = document.getElementById('pop');
+  let popTrigger = null;
+  function closePop() { if (pop.hidden) return; pop.hidden = true; pop.innerHTML = ''; if (popTrigger) { popTrigger.setAttribute('aria-expanded', 'false'); popTrigger.focus(); } popTrigger = null; }
+  function openPop(btn) {
+    const spec = HELP[btn.dataset.help]; if (!spec) return;
+    const h = spec();
+    if (popTrigger === btn) { closePop(); return; }
+    closePop();
+    pop.innerHTML = `<button class="pop-x" type="button" aria-label="Close">✕</button><h4>${esc(h.title)}</h4><p>${esc(h.body)}</p>` +
+      (h.items ? `<dl>${h.items.map(([k, v, cls]) => `<dt>${cls ? `<span class="${cls}">${esc(k)}</span>` : esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>` : '') +
+      (h.more ? `<p style="margin-top:0.5rem"><a href="#" data-go="${h.more}">Read the full introduction →</a></p>` : '');
+    // Mount inside the drawer when the trigger lives there, so it scrolls and stacks with it.
+    const site = document.getElementById('site');
+    const host = btn.closest('#drawer .body') || site;
+    if (pop.parentElement !== host) host.appendChild(pop);
+    pop.hidden = false; popTrigger = btn; btn.setAttribute('aria-expanded', 'true');
+    const r = btn.getBoundingClientRect(); const hostR = host === site ? { left: 0, top: 0 } : host.getBoundingClientRect();
+    const scrollX = host === site ? window.scrollX : host.scrollLeft, scrollY = host === site ? window.scrollY : host.scrollTop;
+    const w = pop.offsetWidth, vw = host === site ? window.innerWidth : host.clientWidth;
+    let left = r.left - hostR.left + scrollX; if (left + w > scrollX + vw - 12) left = Math.max(8, scrollX + vw - w - 12);
+    pop.style.left = left + 'px'; pop.style.top = (r.bottom - hostR.top + scrollY + 6) + 'px';
+    pop.querySelector('.pop-x').addEventListener('click', closePop);
+    const go = pop.querySelector('a[data-go]'); if (go) go.addEventListener('click', e => { e.preventDefault(); closePop(); closeDetail(); setView(go.dataset.go); update(); });
+    pop.querySelector('.pop-x').focus();
+  }
+  document.addEventListener('click', e => {
+    const b = e.target.closest('button.q');
+    if (b) { e.stopPropagation(); openPop(b); return; }
+    if (!pop.hidden && !e.target.closest('#pop')) closePop();
+  });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !pop.hidden) { e.stopImmediatePropagation(); closePop(); } }, true);
+
   document.title = DATA.project ? `EVIDENT — ${DATA.project}` : 'EVIDENT claims';
   $('#site-title').textContent = DATA.project ? `EVIDENT · ${DATA.project}` : 'EVIDENT';
   $('#manifest-path').textContent = DATA.manifest_path;
 
   // ---------- state ----------
   const FACETS = [
-    { key: 'kind', label: 'Kind', help: G.kind._, get: c => [c.kind], tip: v => G.kind[v] },
-    { key: 'tier', label: 'Tier', help: G.tier._, get: c => [c.tier], order: TIERS, tip: v => G.tier[v] },
-    { key: 'status', label: 'Status', help: G.status._, get: c => [c.status], order: ['current', 'contested', 'superseded', 'error', 'not_synthesized'], fmt: v => STATUS_LABEL[v] || v, tip: v => G.status[v] },
-    { key: 'trust_strategy', label: 'Trust strategy', help: G.strategy._, get: c => c.trust_strategy || [], tip: v => G.strategy[v] },
-    { key: 'subsystem', label: 'Subsystem', help: G.subsystem, get: c => c.subsystem ? [c.subsystem] : [] },
-    { key: 'oracles', label: 'Oracle', help: G.oracle, get: c => c.oracles || [] },
-    { key: 'capabilities', label: 'Capability', help: G.capability, get: c => c.capabilities || [] },
+    { key: 'kind', label: 'Kind', topic: 'kind', help: G.kind._, get: c => [c.kind], tip: v => G.kind[v] },
+    { key: 'tier', label: 'Tier', topic: 'tier', help: G.tier._, get: c => [c.tier], order: TIERS, tip: v => G.tier[v] },
+    { key: 'status', label: 'Status', topic: 'status', help: G.status._, get: c => [c.status], order: ['current', 'contested', 'superseded', 'error', 'not_synthesized'], fmt: v => STATUS_LABEL[v] || v, tip: v => G.status[v] },
+    { key: 'trust_strategy', label: 'Trust strategy', topic: 'strategy', help: G.strategy._, get: c => c.trust_strategy || [], tip: v => G.strategy[v] },
+    { key: 'subsystem', label: 'Subsystem', topic: 'subsystem', help: G.subsystem, get: c => c.subsystem ? [c.subsystem] : [] },
+    { key: 'oracles', label: 'Oracle', topic: 'oracle', help: G.oracle, get: c => c.oracles || [] },
+    { key: 'capabilities', label: 'Capability', topic: 'capability', help: G.capability, get: c => c.capabilities || [] },
   ];
-  const STATUS_LABEL = { current: 'Current', contested: 'Contested', superseded: 'Superseded', error: 'Error', not_synthesized: 'Not synthesized' };
   const state = { q: '', sel: Object.fromEntries(FACETS.map(f => [f.key, new Set()])), sort: { key: 'tier', asc: true }, view: 'table', terse: false, seen: false, hintDismissed: false };
   try {
     const saved = JSON.parse(localStorage.getItem('evident-site-state') || 'null');
@@ -479,7 +555,7 @@ const SITE_JS: &str = r##"
       let keys = [...counts.keys()];
       keys.sort((a, b) => f.order ? (f.order.indexOf(a) - f.order.indexOf(b)) : String(a).localeCompare(String(b)));
       if (!keys.length) continue;
-      html += `<h3>${f.label}</h3><p class="help">${esc(f.help)}</p>`;
+      html += `<h3>${f.label}${qbtn(f.topic, f.label)}</h3><p class="help">${esc(f.help)}</p>`;
       for (const k of keys) {
         const on = state.sel[f.key].has(k); const tip = f.tip ? f.tip(k) : '';
         html += `<label ${tip ? `title="${esc(tip)}"` : ''}><input type="checkbox" data-facet="${esc(f.key)}" data-val="${esc(k)}" ${on ? 'checked' : ''}> <span>${esc(f.fmt ? f.fmt(k) : k)}</span><span class="n">${counts.get(k)}</span></label>`;
@@ -507,16 +583,16 @@ const SITE_JS: &str = r##"
     const crit = vis.reduce((a, c) => { a.pass += c.criteria.pass; a.fail += c.criteria.fail; a.na += c.criteria.not_assessed; a.total += c.criteria.total; return a; }, { pass: 0, fail: 0, na: 0, total: 0 });
     const scope = n === all ? `in ${PROJECT}` : `matching the current filter (of ${all})`;
     const tiles = [
-      { v: n, l: n === 1 ? 'claim' : 'claims', s: `checkable statements ${scope}`, t: G.claim },
-      { v: st('current'), l: 'current', s: 'no open objection', t: G.status.current, cls: 'good' },
-      { v: st('contested'), l: 'contested', s: 'challenged, unresolved', t: G.status.contested, cls: st('contested') ? 'warn' : '' },
-      { v: st('superseded'), l: 'superseded', s: 'replaced by a newer claim', t: G.status.superseded },
-      { v: `${crit.pass} / ${crit.total}`, l: 'checks passed', s: 'observed value met its tolerance', t: G.criteria, cls: crit.pass ? 'good' : '' },
-      { v: crit.fail, l: 'checks failed', s: 'observed value outside tolerance', t: G.criteria, cls: crit.fail ? 'bad' : '' },
-      { v: crit.na, l: 'not assessed', s: 'check exists, no observation in this render', t: G.criteria, cls: 'na' },
-      { v: vis.filter(c => c.tier === 'release').length, l: 'release-tier', s: 'heavy, pinned, replayable evidence', t: G.tier.release },
+      { v: n, l: n === 1 ? 'claim' : 'claims', s: `checkable statements ${scope}`, q: 'claim' },
+      { v: st('current'), l: 'current', s: 'no open objection', q: 'status', cls: 'good' },
+      { v: st('contested'), l: 'contested', s: 'challenged, unresolved', q: 'status', cls: st('contested') ? 'warn' : '' },
+      { v: st('superseded'), l: 'superseded', s: 'replaced by a newer claim', q: 'status' },
+      { v: `${crit.pass} / ${crit.total}`, l: 'checks passed', s: 'observed value met its tolerance', q: 'criteria', cls: crit.pass ? 'good' : '' },
+      { v: crit.fail, l: 'checks failed', s: 'observed value outside tolerance', q: 'criteria', cls: crit.fail ? 'bad' : '' },
+      { v: crit.na, l: 'not assessed', s: 'check exists, no observation in this render', q: 'criteria', cls: 'na' },
+      { v: vis.filter(c => c.tier === 'release').length, l: 'release-tier', s: 'heavy, pinned, replayable evidence', q: 'tier' },
     ];
-    $('#summary').innerHTML = tiles.map(t => `<div class="tile ${t.cls || ''}" title="${esc(t.t)}"><div class="num">${t.v}</div><div class="lbl">${t.l}</div><div class="sub">${esc(t.s)}</div></div>`).join('');
+    $('#summary').innerHTML = tiles.map(t => `<div class="tile ${t.cls || ''}"><div class="num">${t.v}</div><div class="lbl">${t.l}${qbtn(t.q, t.l)}</div><div class="sub">${esc(t.s)}</div></div>`).join('');
   }
 
   // ---------- about ----------
@@ -557,16 +633,16 @@ const SITE_JS: &str = r##"
 
   // ---------- table ----------
   const COLS = [
-    { key: 'title', label: 'Claim', tip: G.claim, cell: c => `<td class="title">${esc(c.title)}<span class="id">${esc(c.id)}</span></td>`, val: c => c.title },
-    { key: 'kind', label: 'Kind', tip: G.kind._, cell: c => `<td><span class="pill kind" title="${esc(G.kind[c.kind] || '')}">${esc(c.kind)}</span></td>`, val: c => c.kind },
-    { key: 'tier', label: 'Tier', tip: G.tier._, cell: c => `<td><span class="pill tier-${esc(c.tier)}" title="${esc(G.tier[c.tier] || '')}">${esc(c.tier)}</span></td>`, val: c => TIERS.indexOf(c.tier) },
-    { key: 'status', label: 'Status', tip: G.status._, cell: c => `<td><span class="pill status-${esc(c.status)}" title="${esc(G.status[c.status] || '')}">${esc(STATUS_LABEL[c.status] || c.status)}</span></td>`, val: c => c.status },
-    { key: 'criteria', label: 'Checks', tip: G.criteria, cell: c => `<td title="${esc(G.criteria)}">${critCell(c)}</td>`, val: c => c.criteria.total ? c.criteria.pass / c.criteria.total : -1 },
-    { key: 'subsystem', label: 'Subsystem', tip: G.subsystem, cell: c => `<td>${esc(c.subsystem || '')}</td>`, val: c => c.subsystem || '' },
-    { key: 'strategy', label: 'Strategy', tip: G.strategy._, cell: c => `<td>${tags(c.trust_strategy, v => G.strategy[v])}</td>`, val: c => (c.trust_strategy || []).join() },
-    { key: 'oracles', label: 'Oracle', tip: G.oracle, cell: c => `<td>${tags(c.oracles)}</td>`, val: c => (c.oracles || []).join() },
-    { key: 'capabilities', label: 'Capability', tip: G.capability, cell: c => `<td>${tags(c.capabilities)}</td>`, val: c => (c.capabilities || []).join() },
-    { key: 'verified', label: 'Last verified', tip: G.verified, cell: c => `<td>${esc((c.last_verified && c.last_verified.date) || '—')}</td>`, val: c => (c.last_verified && c.last_verified.date) || '' },
+    { key: 'title', label: 'Claim', q: 'claim', tip: G.claim, cell: c => `<td class="title">${esc(c.title)}<span class="id">${esc(c.id)}</span></td>`, val: c => c.title },
+    { key: 'kind', label: 'Kind', q: 'kind', tip: G.kind._, cell: c => `<td><span class="pill kind" title="${esc(G.kind[c.kind] || '')}">${esc(c.kind)}</span></td>`, val: c => c.kind },
+    { key: 'tier', label: 'Tier', q: 'tier', tip: G.tier._, cell: c => `<td><span class="pill tier-${esc(c.tier)}" title="${esc(G.tier[c.tier] || '')}">${esc(c.tier)}</span></td>`, val: c => TIERS.indexOf(c.tier) },
+    { key: 'status', label: 'Status', q: 'status', tip: G.status._, cell: c => `<td><span class="pill status-${esc(c.status)}" title="${esc(G.status[c.status] || '')}">${esc(STATUS_LABEL[c.status] || c.status)}</span></td>`, val: c => c.status },
+    { key: 'criteria', label: 'Checks', q: 'criteria', tip: G.criteria, cell: c => `<td title="${esc(G.criteria)}">${critCell(c)}</td>`, val: c => c.criteria.total ? c.criteria.pass / c.criteria.total : -1 },
+    { key: 'subsystem', label: 'Subsystem', q: 'subsystem', tip: G.subsystem, cell: c => `<td>${esc(c.subsystem || '')}</td>`, val: c => c.subsystem || '' },
+    { key: 'strategy', label: 'Strategy', q: 'strategy', tip: G.strategy._, cell: c => `<td>${tags(c.trust_strategy, v => G.strategy[v])}</td>`, val: c => (c.trust_strategy || []).join() },
+    { key: 'oracles', label: 'Oracle', q: 'oracle', tip: G.oracle, cell: c => `<td>${tags(c.oracles)}</td>`, val: c => (c.oracles || []).join() },
+    { key: 'capabilities', label: 'Capability', q: 'capability', tip: G.capability, cell: c => `<td>${tags(c.capabilities)}</td>`, val: c => (c.capabilities || []).join() },
+    { key: 'verified', label: 'Last verified', q: 'verified', tip: G.verified, cell: c => `<td>${esc((c.last_verified && c.last_verified.date) || '—')}</td>`, val: c => (c.last_verified && c.last_verified.date) || '' },
   ];
   function tags(a, tip) { return a && a.length ? `<div class="tags">${a.map(x => `<span ${tip && tip(x) ? `title="${esc(tip(x))}"` : ''}>${esc(x)}</span>`).join('')}</div>` : ''; }
   function critCell(c) {
@@ -578,8 +654,8 @@ const SITE_JS: &str = r##"
     const s = state.sort;
     const rows = [...vis].sort((a, b) => { const col = COLS.find(c => c.key === s.key); const va = col.val(a), vb = col.val(b); const r = va < vb ? -1 : va > vb ? 1 : a.id.localeCompare(b.id); return s.asc ? r : -r; });
     if (!rows.length) { $('#view-table').innerHTML = '<div class="empty">No claims match the current filters.</div>'; return; }
-    $('#view-table').innerHTML = `<div style="overflow-x:auto"><table class="claims"><thead><tr>${COLS.map(c => `<th data-key="${c.key}" title="${esc(c.tip)}" class="${s.key === c.key ? 'sorted' + (s.asc ? ' asc' : '') : ''}">${c.label}</th>`).join('')}</tr></thead><tbody>${rows.map(c => `<tr class="row" tabindex="0" data-id="${esc(c.id)}">${COLS.map(col => col.cell(c)).join('')}</tr>`).join('')}</tbody></table></div>`;
-    $('#view-table').querySelectorAll('th').forEach(th => th.addEventListener('click', () => { const k = th.dataset.key; if (state.sort.key === k) state.sort.asc = !state.sort.asc; else state.sort = { key: k, asc: true }; update(); }));
+    $('#view-table').innerHTML = `<div style="overflow-x:auto"><table class="claims"><thead><tr>${COLS.map(c => `<th data-key="${c.key}" title="Sort by ${esc(c.label)}" class="${s.key === c.key ? 'sorted' + (s.asc ? ' asc' : '') : ''}">${c.label}${qbtn(c.q, c.label)}</th>`).join('')}</tr></thead><tbody>${rows.map(c => `<tr class="row" tabindex="0" data-id="${esc(c.id)}">${COLS.map(col => col.cell(c)).join('')}</tr>`).join('')}</tbody></table></div>`;
+    $('#view-table').querySelectorAll('th').forEach(th => th.addEventListener('click', e => { if (e.target.closest('button.q')) return; const k = th.dataset.key; if (state.sort.key === k) state.sort.asc = !state.sort.asc; else state.sort = { key: k, asc: true }; update(); }));
     $('#view-table').querySelectorAll('tr.row').forEach(tr => { tr.addEventListener('click', () => openDetail(tr.dataset.id)); tr.addEventListener('keydown', e => { if (e.key === 'Enter') openDetail(tr.dataset.id); }); });
   }
 
@@ -590,7 +666,7 @@ const SITE_JS: &str = r##"
     const cell = (sub, tier) => vis.filter(c => rowsKey(c) === sub && c.tier === tier);
     const summ = cs => { if (!cs.length) return ''; const p = cs.reduce((a, c) => a + c.criteria.pass, 0), t = cs.reduce((a, c) => a + c.criteria.total, 0); const ct = cs.filter(c => c.status === 'contested').length; return `<small>${t ? `${p}/${t} checks ✓` : ''}${ct ? ` · ${ct} contested` : ''}</small>`; };
     let html = `<p class="note">Each cell counts the claims about one <strong>subsystem</strong> (${esc(G.subsystem)}) at one <strong>tier</strong> (${esc(G.tier._)}). Click a cell to see those claims. An empty <em>release</em> cell means that subsystem has no release-grade evidence yet.</p>`;
-    html += `<table class="matrix"><thead><tr><th class="rowh">Subsystem</th>${TIERS.map(t => `<th title="${esc(G.tier[t])}">${t}</th>`).join('')}<th>total</th></tr></thead><tbody>`;
+    html += `<table class="matrix"><thead><tr><th class="rowh">Subsystem${qbtn('subsystem', 'a subsystem')}</th>${TIERS.map(t => `<th title="${esc(G.tier[t])}">${t}${qbtn('tier', 'a tier')}</th>`).join('')}<th>total</th></tr></thead><tbody>`;
     for (const s of subs) {
       html += `<tr><th class="rowh">${esc(s)}</th>`;
       for (const t of TIERS) { const cs = cell(s, t); html += `<td class="cell ${cs.length ? '' : 'c0'}" tabindex="0" data-sub="${esc(s)}" data-tier="${t}">${cs.length || '·'}${summ(cs)}</td>`; }
@@ -607,6 +683,7 @@ const SITE_JS: &str = r##"
   function renderLegend() {
     $('#graph-note').innerHTML = `Every <strong>claim</strong> (circle) is linked to the <strong>oracles</strong> it is checked against and the <strong>capabilities</strong> it backs. Drag to pan, scroll to zoom, click a claim for its report, click an oracle or capability to list the claims that depend on it. Colour is the claim's status; a thick border marks release tier.`;
     $('#legend').innerHTML = `
+      ${qbtn('graph', 'this graph')}
       <span title="${esc(G.status.current)}"><i style="background:#28a745"></i>current</span>
       <span title="${esc(G.status.contested)}"><i style="background:#e0b33a"></i>contested</span>
       <span title="${esc(G.status.superseded + ' ' + G.status.not_synthesized)}"><i style="background:#9aa6b2"></i>superseded / not synthesized</span>
@@ -672,10 +749,11 @@ const SITE_JS: &str = r##"
     const c = byId[id]; if (!c) return;
     if (!$('#drawer').classList.contains('open')) opener = document.activeElement;
     $('#drawer-title').textContent = c.id;
-    const rel = (label, vals, facet, tip) => vals && vals.length ? `<dt title="${esc(tip || '')}">${label}</dt><dd class="rel">${vals.map(v => `<a href="#" data-facet="${facet}" data-val="${esc(v)}" title="Show all claims with this ${label.toLowerCase()}">${esc(v)}</a>`).join(', ')}</dd>` : '';
+    const QT = { 'Trust strategy': 'strategy', 'Subsystem': 'subsystem', 'Oracles': 'oracle', 'Capabilities': 'capability' };
+    const rel = (label, vals, facet, tip) => vals && vals.length ? `<dt title="${esc(tip || '')}">${label}${qbtn(QT[label], label)}</dt><dd class="rel">${vals.map(v => `<a href="#" data-facet="${facet}" data-val="${esc(v)}" title="Show all claims with this ${label.toLowerCase()}">${esc(v)}</a>`).join(', ')}</dd>` : '';
     const lv = c.last_verified || {};
     let html = `<h1>${esc(c.title)}</h1>
-      <p><span class="pill kind" title="${esc(G.kind[c.kind] || '')}">${esc(c.kind)}</span> <span class="pill tier-${esc(c.tier)}" title="${esc(G.tier[c.tier] || '')}">${esc(c.tier)} tier</span> <span class="pill status-${esc(c.status)}" title="${esc(G.status[c.status] || '')}">${esc(STATUS_LABEL[c.status] || c.status)}</span></p>
+      <p><span class="pill kind" title="${esc(G.kind[c.kind] || '')}">${esc(c.kind)}</span>${qbtn('kind', 'kind')} <span class="pill tier-${esc(c.tier)}" title="${esc(G.tier[c.tier] || '')}">${esc(c.tier)} tier</span>${qbtn('tier', 'tier')} <span class="pill status-${esc(c.status)}" title="${esc(G.status[c.status] || '')}">${esc(STATUS_LABEL[c.status] || c.status)}</span>${qbtn('status', 'status')}</p>
       <p class="lead-in">What is claimed</p>
       <div class="claimtext">${esc(c.claim || '')}</div>
       <p class="lead-in">How it is checked, and by whom</p>
@@ -684,11 +762,11 @@ const SITE_JS: &str = r##"
         ${c.subsystem ? rel('Subsystem', [c.subsystem], 'subsystem', G.subsystem) : ''}
         ${rel('Oracles', c.oracles, 'oracles', G.oracle)}
         ${rel('Capabilities', c.capabilities, 'capabilities', G.capability)}
-        ${c.provenance ? `<dt title="${esc(G.provenance)}">Provenance</dt><dd>${esc(c.provenance)}${c.review_status ? ` · ${esc(c.review_status)}` : ''}</dd>` : ''}
+        ${c.provenance ? `<dt title="${esc(G.provenance)}">Provenance${qbtn('provenance', 'provenance')}</dt><dd>${esc(c.provenance)}${c.review_status ? ` · ${esc(c.review_status)}` : ''}</dd>` : ''}
         ${c.command ? `<dt>Command</dt><dd><code>${esc(c.command)}</code></dd>` : ''}
         ${c.case ? `<dt>Case notes</dt><dd><code>${esc(c.case)}</code></dd>` : ''}
         ${c.pattern ? `<dt>Pattern</dt><dd><code>${esc(c.pattern)}</code></dd>` : ''}
-        <dt title="${esc(G.verified)}">Last verified</dt><dd>${lv.date ? `${esc(lv.date)}${lv.commit ? ` @ <code>${esc(lv.commit)}</code>` : ''}${lv.value != null ? ` · observed ${esc(lv.value)}` : ''}` : '<em>no observation recorded in the manifest</em>'}</dd>
+        <dt title="${esc(G.verified)}">Last verified${qbtn('verified', 'last verified')}</dt><dd>${lv.date ? `${esc(lv.date)}${lv.commit ? ` @ <code>${esc(lv.commit)}</code>` : ''}${lv.value != null ? ` · observed ${esc(lv.value)}` : ''}` : '<em>no observation recorded in the manifest</em>'}</dd>
         <dt>Assumptions / failure modes</dt><dd>${c.n_assumptions} / ${c.n_failure_modes} recorded in the manifest</dd>
         <dt>Source</dt><dd><code>${esc(c.source_path)}</code></dd>
       </dl>`;
@@ -698,11 +776,54 @@ const SITE_JS: &str = r##"
     body.querySelectorAll('.rel a').forEach(a => a.addEventListener('click', e => { e.preventDefault(); state.sel[a.dataset.facet] = new Set([a.dataset.val]); closeDetail(); setView('table'); update(); }));
     $('#drawer').classList.add('open'); $('#drawer').setAttribute('aria-hidden', 'false'); $('#backdrop').classList.add('open');
     $('#drawer-close').focus();
-    if (window.__mermaid) { const nodes = body.querySelectorAll('.mermaid'); if (nodes.length) window.__mermaid.run({ nodes }).catch(() => {}); }
+    if (window.__mermaid) { const nodes = body.querySelectorAll('.mermaid'); if (nodes.length) window.__mermaid.run({ nodes }).then(() => addGraphTools(body)).catch(() => {}); }
     history.replaceState(null, '', '#' + encodeURIComponent(c.id));
   }
+  // ---------- full-screen attestation graph ----------
+  const big = document.getElementById('big');
+  function addGraphTools(body) {
+    body.querySelectorAll('.mermaid').forEach(pre => {
+      const svg = pre.querySelector('svg'); if (!svg || pre.previousElementSibling && pre.previousElementSibling.classList.contains('graph-tools')) return;
+      const bar = document.createElement('div'); bar.className = 'graph-tools';
+      bar.innerHTML = `<button type="button" class="expand">⤢ Expand to full screen</button><span class="hintt">The graph links the claim, its evidence, each criterion and any review events. Full screen lets you pan and zoom.</span>`;
+      pre.parentNode.insertBefore(bar, pre);
+      bar.querySelector('.expand').addEventListener('click', () => openBig(svg));
+    });
+  }
+  let bigOpener = null;
+  function openBig(svg) {
+    bigOpener = document.activeElement;
+    big.innerHTML = `<div class="tools"><strong>Attestation graph</strong><span class="sp">Drag to pan · scroll to zoom · Esc to close</span><button type="button" class="fit">Fit</button><button type="button" class="zin">+</button><button type="button" class="zout">−</button><button type="button" class="close">Close ✕</button></div><div class="stage"></div>`;
+    const stage = big.querySelector('.stage'); const clone = svg.cloneNode(true); clone.removeAttribute('width'); clone.removeAttribute('height'); clone.style.width = ''; stage.appendChild(clone);
+    big.hidden = false;
+    let sc = 1, tx = 0, ty = 0;
+    const vb = (clone.viewBox && clone.viewBox.baseVal && clone.viewBox.baseVal.width) ? clone.viewBox.baseVal : null;
+    const natural = vb ? { w: vb.width, h: vb.height } : { w: clone.getBoundingClientRect().width || 800, h: clone.getBoundingClientRect().height || 400 };
+    clone.setAttribute('width', natural.w); clone.setAttribute('height', natural.h);
+    const apply = () => { clone.style.transform = `translate(${tx}px, ${ty}px) scale(${sc})`; };
+    const fit = () => { const W = stage.clientWidth, H = stage.clientHeight; sc = Math.min(W / natural.w, H / natural.h) * 0.95; tx = (W - natural.w * sc) / 2; ty = (H - natural.h * sc) / 2; apply(); };
+    const zoomAt = (f, cx, cy) => { const ns = Math.min(8, Math.max(0.1, sc * f)); tx = cx - (cx - tx) * (ns / sc); ty = cy - (cy - ty) * (ns / sc); sc = ns; apply(); };
+    fit();
+    stage.addEventListener('wheel', e => { e.preventDefault(); const r = stage.getBoundingClientRect(); zoomAt(e.deltaY < 0 ? 1.15 : 1 / 1.15, e.clientX - r.left, e.clientY - r.top); }, { passive: false });
+    let drag = null;
+    stage.addEventListener('pointerdown', e => { drag = { x: e.clientX - tx, y: e.clientY - ty }; stage.classList.add('dragging'); stage.setPointerCapture(e.pointerId); });
+    stage.addEventListener('pointermove', e => { if (!drag) return; tx = e.clientX - drag.x; ty = e.clientY - drag.y; apply(); });
+    const endDrag = () => { drag = null; stage.classList.remove('dragging'); };
+    stage.addEventListener('pointerup', endDrag); stage.addEventListener('pointercancel', endDrag);
+    big.querySelector('.fit').addEventListener('click', fit);
+    big.querySelector('.zin').addEventListener('click', () => zoomAt(1.25, stage.clientWidth / 2, stage.clientHeight / 2));
+    big.querySelector('.zout').addEventListener('click', () => zoomAt(1 / 1.25, stage.clientWidth / 2, stage.clientHeight / 2));
+    big.querySelector('.close').addEventListener('click', closeBig);
+    window.addEventListener('resize', fit);
+    big.querySelector('.close').focus();
+  }
+  function closeBig() { if (big.hidden) return; big.hidden = true; big.innerHTML = ''; if (bigOpener && document.contains(bigOpener)) bigOpener.focus(); bigOpener = null; }
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !big.hidden) { e.stopImmediatePropagation(); closeBig(); } }, true);
+
   function closeDetail() {
     if (!$('#drawer').classList.contains('open')) return;
+    closeBig();
+    closePop(); if (pop.parentElement !== document.getElementById('site')) document.getElementById('site').appendChild(pop);
     $('#drawer').classList.remove('open'); $('#drawer').setAttribute('aria-hidden', 'true'); $('#backdrop').classList.remove('open');
     history.replaceState(null, '', location.pathname + location.search);
     if (opener && document.contains(opener) && typeof opener.focus === 'function') opener.focus(); else $('nav.tabs button[aria-selected="true"]').focus();
@@ -717,7 +838,7 @@ const SITE_JS: &str = r##"
   document.querySelectorAll('nav.tabs button').forEach(b => b.addEventListener('click', () => { setView(b.dataset.view); update(); }));
 
   function update() {
-    persist();
+    persist(); closePop();
     const vis = filtered();
     const active = document.activeElement && document.activeElement.id === 'q';
     const pos = active ? document.activeElement.selectionStart : null;
