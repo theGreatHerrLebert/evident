@@ -318,7 +318,8 @@ body { max-width: none; margin: 0; padding: 0; background: var(--ground); color:
 #site #big .stage.dragging { cursor: grabbing; }
 #site #big .stage svg { position: absolute; left: 0; top: 0; transform-origin: 0 0; max-width: none !important; height: auto !important; }
 /* about */
-#site .about { max-width: 48rem; font-size: 0.95rem; line-height: 1.55; }
+#site .about { max-width: 56rem; margin: 0.5rem auto 3rem; font-size: 0.97rem; line-height: 1.6; }
+#site .layout.no-rail { grid-template-columns: minmax(0, 1fr); }
 #site .about .lead { font-size: 1.05rem; }
 #site .about h2 { font-size: 1.05rem; margin: 1.6rem 0 0.4rem; padding-bottom: 0.2rem; border-bottom: 1px solid var(--line); }
 #site .about ol.journey { counter-reset: step; list-style: none; padding: 0; display: grid; gap: 0.6rem; }
@@ -849,7 +850,7 @@ const SITE_JS: &str = r##"
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDetail(); });
 
   // ---------- views ----------
-  function setView(v) { state.view = v; document.querySelectorAll('nav.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.view === v))); for (const k of ['about', 'table', 'matrix', 'graph']) $('#view-' + k).hidden = k !== v; $('#summary').hidden = v === 'about'; }
+  function setView(v) { state.view = v; document.querySelectorAll('nav.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.view === v))); for (const k of ['about', 'table', 'matrix', 'graph']) $('#view-' + k).hidden = k !== v; $('#summary').hidden = v === 'about'; $('#facets').hidden = v === 'about'; $('.layout').classList.toggle('no-rail', v === 'about'); }
   document.querySelectorAll('nav.tabs button').forEach(b => b.addEventListener('click', () => { setView(b.dataset.view); update(); }));
 
   function update() {
