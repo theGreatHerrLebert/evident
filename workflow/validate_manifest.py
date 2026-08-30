@@ -44,6 +44,8 @@ BASE_VOCABULARIES: dict[str, set[str]] = {
     "capability": set(),
 }
 
+PLACEHOLDER_PREFIXES = ("PENDING-", "TODO", "TBD")
+
 VALID_TIERS = {"ci", "release", "research"}
 VALID_TRUST_STRATEGIES = {"understanding", "validation", "proof"}
 VALID_KINDS = {
@@ -100,6 +102,18 @@ REQUIRED_FIELDS_MEASUREMENT = {
     "pinned_versions",
     "tolerances",
 }
+
+
+def is_placeholder_string(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    stripped = value.strip().upper()
+    return any(stripped.startswith(prefix) for prefix in PLACEHOLDER_PREFIXES)
+
+
+def require_not_placeholder(value: Any, field: str, claim_id: str) -> None:
+    if is_placeholder_string(value):
+        fail(f"claim {claim_id}: {field} must not be a placeholder")
 
 
 def fail(message: str) -> None:
@@ -261,7 +275,12 @@ def validate_tolerances(
 
 
 def validate_inputs(
-    value: Any, claim_id: str, vocabularies: dict[str, set[str]], tier: str
+    value: Any,
+    claim_id: str,
+    vocabularies: dict[str, set[str]],
+    tier: str,
+    *,
+    strict_release_pins: bool = False,
 ) -> None:
     if not isinstance(value, dict):
         fail(f"claim {claim_id}: inputs must be a mapping")
@@ -288,10 +307,20 @@ def validate_inputs(
             f"claim {claim_id}: inputs.corpus_sha is required for "
             f"tier=release with n>1"
         )
+    if strict_release_pins and tier == "release":
+        require_not_placeholder(
+            value.get("corpus_sha"), "inputs.corpus_sha", claim_id
+        )
 
 
 def validate_pinned_versions(
-    value: Any, oracle_names: list[str], project: str, claim_id: str
+    value: Any,
+    oracle_names: list[str],
+    project: str,
+    claim_id: str,
+    *,
+    tier: str | None = None,
+    strict_release_pins: bool = False,
 ) -> None:
     if not isinstance(value, dict) or not value:
         fail(f"claim {claim_id}: pinned_versions must be a non-empty mapping")
@@ -303,6 +332,8 @@ def validate_pinned_versions(
                 f"claim {claim_id}: pinned_versions[{k!r}] must be a non-empty "
                 f"string (quote numeric versions like \"1.83\")"
             )
+        if strict_release_pins and tier == "release":
+            require_not_placeholder(v, f"pinned_versions[{k!r}]", claim_id)
     if project not in value:
         fail(
             f"claim {claim_id}: pinned_versions must include the project under "
@@ -461,7 +492,13 @@ def provenance_kind(claim: dict) -> str:
     return "automatic"
 
 
-def validate_last_verified(value: Any, claim_id: str) -> None:
+def validate_last_verified(
+    value: Any,
+    claim_id: str,
+    *,
+    tier: str | None = None,
+    strict_release_pins: bool = False,
+) -> None:
     if not isinstance(value, dict):
         fail(f"claim {claim_id}: last_verified must be a mapping")
     for key in ("commit", "date", "value", "corpus_sha"):
@@ -474,6 +511,11 @@ def validate_last_verified(value: Any, claim_id: str) -> None:
                 fail(f"claim {claim_id}: last_verified.value must be numeric or null")
         elif not isinstance(value[key], str):
             fail(f"claim {claim_id}: last_verified.{key} must be a string or null")
+    if strict_release_pins and tier == "release":
+        for key in ("commit", "corpus_sha"):
+            if key not in value or value[key] is None:
+                fail(f"claim {claim_id}: last_verified.{key} is required")
+            require_not_placeholder(value[key], f"last_verified.{key}", claim_id)
 
 
 def validate_metadata_block(value: Any, claim_id: str) -> None:
@@ -739,7 +781,7 @@ def _collect_claims(top_path: pathlib.Path) -> list[Any]:
     return claims
 
 
-def validate_manifest(path: pathlib.Path) -> None:
+def validate_manifest(path: pathlib.Path, *, strict_release_pins: bool = False) -> None:
     root = path.parent
     project, vocabularies, claims = _collect(path)
 
@@ -839,7 +881,13 @@ def validate_manifest(path: pathlib.Path) -> None:
                 claim["subsystem"], "subsystem", vocabularies, "subsystem", claim_id
             )
         if "inputs" in claim:
-            validate_inputs(claim["inputs"], claim_id, vocabularies, claim["tier"])
+            validate_inputs(
+                claim["inputs"],
+                claim_id,
+                vocabularies,
+                claim["tier"],
+                strict_release_pins=strict_release_pins,
+            )
         if "outputs" in claim:
             validate_outputs(claim["outputs"], claim_id)
         if "pinned_versions" in claim:
@@ -853,7 +901,12 @@ def validate_manifest(path: pathlib.Path) -> None:
                 allow_unknown_vocab=is_extracted_research_draft,
             )
         if "last_verified" in claim:
-            validate_last_verified(claim["last_verified"], claim_id)
+            validate_last_verified(
+                claim["last_verified"],
+                claim_id,
+                tier=claim["tier"],
+                strict_release_pins=strict_release_pins,
+            )
         validate_provenance_and_reviewers(claim, claim_id)
 
         if kind == "measurement":
@@ -868,7 +921,12 @@ def validate_manifest(path: pathlib.Path) -> None:
                 )
             if "pinned_versions" in claim:
                 validate_pinned_versions(
-                    claim["pinned_versions"], oracles, project, claim_id
+                    claim["pinned_versions"],
+                    oracles,
+                    project,
+                    claim_id,
+                    tier=claim["tier"],
+                    strict_release_pins=strict_release_pins,
                 )
             for disallowed in ("metadata", "concordance", "observation"):
                 if disallowed in claim:
@@ -958,10 +1016,21 @@ def validate_manifest(path: pathlib.Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("manifest", nargs="?", default="evident.yaml")
+    parser.add_argument(
+        "--strict-release-pins",
+        action="store_true",
+        help=(
+            "reject placeholder corpus hashes, pinned versions, and "
+            "last_verified release pins (release prep)"
+        ),
+    )
     args = parser.parse_args()
 
     try:
-        validate_manifest(pathlib.Path(args.manifest))
+        validate_manifest(
+            pathlib.Path(args.manifest),
+            strict_release_pins=args.strict_release_pins,
+        )
     except Exception as exc:
         print(f"manifest invalid: {exc}", file=sys.stderr)
         return 1
