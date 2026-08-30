@@ -223,7 +223,7 @@ fn escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
-const SITE_CSS: &str = r#"
+const SITE_CSS: &str = r##"
 /* ---- tokens: light on bare :root, dark via prefers-color-scheme (unless data-theme=light) and data-theme=dark ---- */
 :root { --ground:#f2f5f8; --surface:#ffffff; --surface-2:#f7f9fb; --line:#d9e0e7; --ink:#1f2a33; --muted:#6a7885; --accent:#0b4f9c; --accent-ink:#ffffff; --hover:#eef3f8;
         --pass:#2e8b57; --warn:#c99700; --warn-ink:#7a5a00; --fail:#c8323e; --na:#9aa6b2; --backdrop:rgba(20,30,40,0.45);
@@ -346,9 +346,9 @@ body { max-width: none; margin: 0; padding: 0; background: var(--ground); color:
 #site #backdrop { position: fixed; inset: 0; background: var(--backdrop); z-index: 15; display: none; }
 #site #backdrop.open { display: block; }
 @media (max-width: 900px) { #site .layout { grid-template-columns: 1fr; } #site aside { position: static; max-height: none; border-right: none; border-bottom: 1px solid var(--line); } }
-"#;
+"##;
 
-const SITE_BODY: &str = r#"
+const SITE_BODY: &str = r##"
 <div id="site">
   <header>
     <h1 id="site-title">EVIDENT</h1>
@@ -381,9 +381,9 @@ const SITE_BODY: &str = r#"
     <div class="body" id="drawer-body"></div>
   </div>
 </div>
-"#;
+"##;
 
-const SITE_JS: &str = r#"
+const SITE_JS: &str = r##"
 (function () {
   const DATA = JSON.parse(document.getElementById('evident-data').textContent);
   const CLAIMS = DATA.claims;
@@ -733,4 +733,4 @@ const SITE_JS: &str = r#"
   setView(state.seen || deepLink ? 'table' : 'about'); state.seen = true; update();
   if (deepLink && byId[deepLink]) openDetail(deepLink);
 })();
-"#;
+"##;
