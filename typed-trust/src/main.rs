@@ -50,6 +50,7 @@ enum Format {
     Markdown,
     Html,
     Mermaid,
+    Site,
 }
 
 fn main() -> ExitCode {
@@ -353,6 +354,7 @@ fn main() -> ExitCode {
         Format::Markdown => emit_markdown(path, &reports, &skipped),
         Format::Html => emit_html(path, &reports, &skipped),
         Format::Mermaid => emit_mermaid(&reports),
+        Format::Site => emit_site(path, &now, &reports, &skipped),
     };
 
     // Translation failures override a successful render. CI gates
@@ -391,7 +393,7 @@ fn parse_args(args: &[String]) -> Option<ParsedArgs> {
             format = parse_format_value(value)?;
         } else if arg == "--format" {
             let Some(value) = iter.next() else {
-                eprintln!("error: --format requires a value (json|md|html|mermaid)");
+                eprintln!("error: --format requires a value (json|md|html|mermaid|site)");
                 return None;
             };
             format = parse_format_value(value)?;
@@ -438,9 +440,10 @@ fn parse_format_value(v: &str) -> Option<Format> {
         "md" | "markdown" => Some(Format::Markdown),
         "html" => Some(Format::Html),
         "mermaid" => Some(Format::Mermaid),
+        "site" => Some(Format::Site),
         other => {
             eprintln!(
-                "error: unknown --format {other:?} (expected json, md, html, or mermaid)"
+                "error: unknown --format {other:?} (expected json, md, html, mermaid, or site)"
             );
             None
         }
@@ -449,7 +452,7 @@ fn parse_format_value(v: &str) -> Option<Format> {
 
 fn usage() {
     eprintln!(
-        "usage: typed-trust [--format json|md|html|mermaid] \\\n               [--last-verified-sidecar <path>] \\\n               [--review-events-sidecar <path>] <manifest.yaml> [claim_id]"
+        "usage: typed-trust [--format json|md|html|mermaid|site] \\\n               [--last-verified-sidecar <path>] \\\n               [--review-events-sidecar <path>] <manifest.yaml> [claim_id]"
     );
     eprintln!();
     eprintln!("Translates each measurement-class claim, synthesizes a TrustReport,");
@@ -458,6 +461,9 @@ fn usage() {
     eprintln!("  --format md             — markdown rollup for humans");
     eprintln!("  --format html           — self-contained HTML with Mermaid graph");
     eprintln!("  --format mermaid        — just the Mermaid attestation-graph source");
+    eprintln!("  --format site           — one self-contained HTML page over the whole manifest:");
+    eprintln!("                            filterable claims table, subsystem×tier coverage,");
+    eprintln!("                            claim–oracle–capability graph, per-claim drill-down");
     eprintln!();
     eprintln!("  --last-verified-sidecar <path>");
     eprintln!("    overlay sidecar JSON entries onto each claim's last_verified field");
@@ -647,6 +653,30 @@ fn emit_html(
     }
 
     println!("</body></html>");
+    ExitCode::SUCCESS
+}
+
+fn emit_site(
+    path: &str,
+    now: &str,
+    reports: &[serde_json::Value],
+    skipped: &[SkipReason],
+) -> ExitCode {
+    let (project, raw_claims) = match typed_trust::site_render::read_raw_claims(path) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let skipped_json: Vec<serde_json::Value> = skipped
+        .iter()
+        .map(|s| serde_json::json!({"id": s.id, "reason": s.reason, "fatal": s.fatal}))
+        .collect();
+    println!(
+        "{}",
+        typed_trust::render_site(path, &project, now, &raw_claims, reports, &skipped_json)
+    );
     ExitCode::SUCCESS
 }
 

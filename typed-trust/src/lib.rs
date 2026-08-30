@@ -37,6 +37,7 @@ pub mod render;
 pub mod human_render;
 pub mod graph;
 pub mod html_render;
+pub mod site_render;
 pub mod loader;
 pub mod mcp;
 
@@ -56,3 +57,4 @@ pub use render::{render_augmented, RenderInput};
 pub use human_render::render_markdown;
 pub use graph::render_mermaid_graph;
 pub use html_render::{render_html, render_html_fragment};
+pub use site_render::render_site;
