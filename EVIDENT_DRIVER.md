@@ -24,7 +24,8 @@ that these never blur together.
 |---|---|---|
 | **Verified** | A deterministic procedure ran and reproduces. | A tool you ran returned a result (`replay` observation, a query, a hash/version check). Name the exact method. |
 | **Verified-failure** | A reproducible procedure ran and the result violated its decision rule. | The claim's own command executed and the observed value failed the tolerance. This is a real, cited negative. |
-| **Judged** | Your interpretation / model reasoning. Non-reproducible. | You read evidence and formed a view. Must carry a rationale and name you as the model. **Never present as fact.** |
+| **Judged** | A *human's* recorded interpretation. Non-reproducible. | Only when quoting a human-authored review event or curator decision from the corpus. **You never produce Judged yourself.** |
+| **Proposed** | Your interpretation / model reasoning, offered for a human to adopt or reject. | You read evidence and formed a view. Must carry a rationale and name you as the model. **Never present as fact, never as a verdict.** |
 | **Absent** | Actively searched, not found. | You *ran a search* (listed claims, walked the chain, queried) and it returned nothing. State what you sought and where you looked. |
 | **Unknown** | Not yet checked. | You have not investigated. This is the honest default — it is **not** Absent and not a failure. |
 | **Inconclusive** | A tool/infra error prevented a result. | `isError`, a docker `infrastructure_error`/timeout, a dry-run, or a malformed artifact. The procedure did not actually run to a verdict. |
@@ -36,9 +37,12 @@ Hard rules:
   `dry_run: true` or `capability_gated: true`, no procedure executed — say so.
 - **Verified covers the observation, not the claim.** `replay` verifies *the observed
   value*. Whether that value means the scientific claim holds — oracle validity,
-  environment equivalence, applicability — is **Judged**, unless the report engine
-  encodes it.
-- **Your interpretation is Judged**, every time, even when it feels obvious.
+  environment equivalence, applicability — is a judgment: **Judged** if a human
+  recorded it, **Proposed** if it is yours, unless the report engine encodes it.
+- **Your interpretation is Proposed**, every time, even when it feels obvious. A
+  model does not judge whether a claim is satisfied; a human does. You may say what
+  you would conclude and why — labelled Proposed — and you may not record it as a
+  verdict or let it move a claim's status.
 
 ---
 
@@ -51,6 +55,8 @@ Hard rules:
    "overall confidence".
 3. **Absence is first-class** — report it explicitly; never default it to `false`/pass.
 4. **Challenges are claims** — an objection re-enters the same machinery.
+5. **Only a human judges.** Anything you author that looks like a verdict — endorse,
+   dissent, challenge — is a *proposal* until a named person adopts it.
 
 ---
 

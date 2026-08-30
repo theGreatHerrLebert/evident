@@ -105,7 +105,8 @@ claim:
   is not required to be complete or to track the statement word-for-word. It is
   never normative: evidence does not support it, challenges do not target it,
   and the validator never reads its content. In typed-trust terms it is a
-  `Judged` gloss of `statement` (author or model, curator-approved), and
+  `Judged` gloss of `statement` — human-authored, or model-drafted and then
+  adopted by a curator (until adopted it is a `Proposed` draft) — and
   renderers MUST label it as such ("In plain words — not the claim") and show
   it *next to* `statement`, never instead of it, so a reader can see the
   simplification and spot drift. Optional at every tier.

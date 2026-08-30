@@ -19,8 +19,9 @@ understanding, or guarantees."*
   identified conditions (a benchmark, a query, a hash check), so a third party can repeat
   it. (Bit-for-bit reproducibility depends on pinning the environment; EVIDENT records the
   method so the re-run is *possible* and *auditable*.)
-- **Judged** — a model or human interpretation. Non-reproducible; carries a rationale;
-  *never rendered as fact*.
+- **Judged** — a *human's* interpretation. Non-reproducible; carries a rationale;
+  *never rendered as fact*. A model's interpretation is only ever **Proposed** — it
+  can help a person reach a verdict, it cannot issue one.
 - **Absent** — looked for, not found. A first-class result, not a blank.
 
 The binding rule: the final trust report is **deterministic — synthesis calls no model.**

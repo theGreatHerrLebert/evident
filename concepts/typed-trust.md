@@ -11,15 +11,18 @@ the first three-and-Absent are derivations in this model. *Verified-failure*
 is `Verified` whose bound criterion resolved to `Fail`; *Unknown* is "no
 attestation exists yet" (nothing to type); *Inconclusive* is a procedure
 that did not run to a verdict and therefore produced no `Verified`
-attestation. The driver vocabulary is how an agent reports; this document
-is what the engine stores.
+attestation. A model driver never emits `Judged` at all: its own reasoning
+is **Proposed** (§6) until a human adopts it. The driver vocabulary is how
+an agent reports; this document is what the engine stores.
 
 **The contract in one sentence.** Every assertion EVIDENT carries records
 *how it was established* as part of its type: `Verified` (reproducible
 procedure), `Judged` (interpretation), or `Absent` (sought and not found).
-A model judgment and a human judgment are the same kind of derivation;
-the framework restricts what a *stage* may produce, not what an *author*
-may be.
+**Judgment is human.** A `Judged` derivation — and any review event
+that moves a claim's status — is authored by a person. Models and
+automation run procedures (`Verified`), report what they could not find
+(`Absent`), and *propose* judgments; they never issue them. The
+framework restricts what a *stage* may produce and who may judge.
 
 This document specifies the types, the invariants they enforce, and the
 small set of validator rules that hold the system together. It is
@@ -82,9 +85,10 @@ truth?") live outside the type system — a tool correlates
 `(Identity, protocol)` pairs to outcomes.
 
 **Validator rules:**
-- `Identity { kind: Automated, .. }` cannot appear as the `by` of a
-  `Judged` derivation. Automation does not author non-reproducible
-  interpretations.
+- Only `Identity { kind: Human, .. }` may appear as the `by` of a
+  `Judged` derivation or of a status-moving `ReviewEvent` (invariant 9).
+  `Model` and `Automated` identities author `Verified` and `Absent`
+  derivations and `Proposed` review events only.
 - Renderers and validators key off well-known `IdentityDetail.key`
   values (`orcid`, `affiliation`, `ci_run`, `version`,
   `anonymity_reason`) when present. Unknown keys pass through.
@@ -110,7 +114,7 @@ enum Derivation {
         reruns: Vec<Rerun>,             // chronological; latest is most recent
     },
     Judged {
-        by: Identity,
+        by: Identity,                   // kind == Human (invariant 9)
         protocol: Option<String>,       // rubric / prompt / decoding spec
         rationale: String,              // required; non-empty
         confidence: Confidence,
@@ -173,12 +177,22 @@ discipline is project-driven, not type-enforced.
    backing Claim's TrustReport governs whether the challenge moves
    render-time status. Closed *procedural* `ChallengeCategory` variants
    (§6) may move status without backing.
-7. **Reviewability is author-symmetric.** No framework rule mentions a
-   specific author kind.
+7. **Evidence is author-symmetric; judgment is not.** Who ran a
+   procedure does not change what `Verified` means — a model's replay
+   and a human's replay are the same evidence. Interpretation is
+   different: see 9.
 8. **Endorsements have no semantic weight by default.** They strengthen
    the displayed rationale; they do not affect criterion results or
    aggregate.
-9. **`Automated` cannot judge.** Validator rule.
+9. **Only a human judges.** The `by` of every `Judged` derivation and of
+   every status-moving `ReviewEvent` (`Endorse`, `Dissent`, `Challenge`,
+   `Supersede`) has `kind: Human`. A model or automated reviewer records
+   its view as `ReviewKind::Proposed`, which carries the same content
+   but is inert in the §8 status rule until a human event adopts it.
+   Rationale: a model can help a person *reach* a verdict — gather
+   evidence, draft the objection, run the replay — but whether a claim
+   is satisfied is a human decision, and the report must not be
+   movable by a model alone. Validator rule.
 10. **Release-tier review events require a protocol.** A `ReviewEvent`
     with `kind ∈ {Endorse, Dissent, Challenge}` targeting a release-tier
     claim must carry a non-empty `protocol`. Otherwise "peer-reviewed"
@@ -195,7 +209,7 @@ discipline is project-driven, not type-enforced.
 |---|---|---|---|
 | Claim extraction | Judged¹ | no | `Vec<Attested<Claim>>` |
 | Evidence discovery | Mixed | yes | `Vec<Evidence>` |
-| Adversarial review | Judged | no | `Vec<Attested<Claim>>` + `Vec<ReviewEvent>` |
+| Adversarial review | Judged (human) / Proposed (model) | no | `Vec<Attested<Claim>>` + `Vec<ReviewEvent>` |
 | Provenance analysis | Verified (preferred) | yes | `ProvenanceRecord` |
 | Synthesis | Deterministic | no | `TrustReport` |
 
@@ -204,9 +218,11 @@ regardless of who staffs it.
 
 ¹ Claim extraction is `Verified` when the input is a structured
 manifest (the projection is a deterministic translation); `Judged`
-when the input is prose (a paper, a README) and a model or human is
-interpreting it. The class is conditional on input shape, not on
-who runs the stage.
+when the input is prose (a paper, a README) and a human is
+interpreting it. A model extracting from prose produces *drafts*
+(`PromoteFromExtracted` is the human adoption step), not `Judged`
+claims. The class is conditional on input shape and, for prose, on a
+human having adopted the extraction.
 
 ---
 
@@ -265,7 +281,18 @@ enum ReviewKind {
         category: ChallengeCategory,
         backed_by: Option<ClaimId>,
     },
+    Proposed { of: Box<ReviewKind> },   // model/automated-authored draft of
+                                         // one of the above; inert for §8
 }
+```
+
+A `ReviewEvent` additionally carries `adopts: Option<EventId>`: a human
+event may name the `Proposed` event it countersigns, so the report can
+show "proposed by model X, adopted by reviewer Y" without the model
+ever having moved status. An unadopted proposal renders as a proposal;
+it is never summarised as a reviewer verdict.
+
+```rust
 
 enum Target {
     Claim(ClaimId),
@@ -424,6 +451,9 @@ Rule:
 > - **Contested** if the graph reachable from A contains a cycle in
 >   challenge edges;
 > - **Current** otherwise.
+>
+> Only events whose `by.kind == Human` and whose `kind` is not
+> `Proposed` participate (invariant 9).
 
 Endorsements and Dissents do not appear in the calculation. They
 strengthen displayed rationale only (invariant 8).
@@ -538,9 +568,13 @@ They are not normative. The contract is what's in this document.
 Where the implementation in `typed-trust/` is behind this document.
 Listed so the spec does not overstate what the code guarantees.
 
-- **Invariant 9 (`Automated` cannot judge)** — stated, not enforced by
-  the translator. An `automated` author on an Endorse/Dissent/Challenge
-  event is accepted.
+- **Invariant 9 (only a human judges; adopted 2026-08-30)** — not
+  enforced. The translator accepts `model` and `automated` authors on
+  Endorse/Dissent/Challenge events, such events move status, and
+  `panel_summary` counts model reviewers as verdicts. `ReviewKind::Proposed`
+  and `ReviewEvent.adopts` do not exist in code yet. `evident-agent review`
+  currently emits model-authored verdicts and must switch to emitting
+  proposals.
 - **Invariant 10 (protocol required at release tier)** — stated, not
   enforced. `protocol` is passed through unchecked.
 - **`reviewed_extraction_sha`** on a `PromoteFromExtracted` event is not

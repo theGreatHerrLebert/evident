@@ -33,7 +33,7 @@ validator (`workflow/validate_manifest.py`).
 Every value is `Attested<T>` with a derivation of exactly one kind:
 
 - **Verified** — a named procedure ran and produced this observation.
-- **Judged** — a human or model interpretation; carries a rationale; never rendered as fact.
+- **Judged** — a human's interpretation; carries a rationale; never rendered as fact. A model's view is only ever *Proposed* until a person adopts it.
 - **Absent** — sought and not found; a first-class result, not a blank.
 
 Review is a graph of events (endorse / dissent / challenge / supersede) over
