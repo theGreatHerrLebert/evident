@@ -1,6 +1,6 @@
 //! Manifest → Typed Trust translator.
 //!
-//! Implements the §11 seam from `concepts/typed-trust.md`: a
+//! Implements the §11 seam from `docs/concepts/typed-trust.md`: a
 //! deterministic projection from the shipping `evident.yaml` schema's
 //! measurement-class claims into Typed Trust constructors.
 //!
@@ -2220,7 +2220,7 @@ fn translate_promote_from_extracted_kind(
 
 // ----------------------------------------------------------------------
 // Phase 5 PR3: validate_promotion_rules — enforce the five
-// invariants from the Phase 5 extraction design (see design-history/).
+// invariants from the Phase 5 extraction design (see docs/design-history/).
 // ----------------------------------------------------------------------
 
 /// Phase 5 PR3: structured errors for the promotion-gate validator.

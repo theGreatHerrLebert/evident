@@ -1,5 +1,5 @@
 //! Render-aux — JSON-to-JSON post-process that adds the consumer
-//! conveniences described in `concepts/typed-trust-json-shape.md`:
+//! conveniences described in `docs/concepts/typed-trust-json-shape.md`:
 //!
 //! - `criteria[*].result.observed_value` — joined from the latest
 //!   [`MetricObservation`](crate::report::MetricObservation) matching

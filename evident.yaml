@@ -27,7 +27,7 @@ claims:
     tier: research
     trust_strategy:
       - validation
-    pattern: patterns/README.md#layered-evaluation-against-simulated-and-real-references
+    pattern: docs/reference/patterns.md#layered-evaluation-against-simulated-and-real-references
     claim: >
       A mid-flight GPU proteomics pipeline should be evaluated in layers:
       simulated ground truth for exact intermediate checks, real-data reference

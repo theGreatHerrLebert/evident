@@ -1,4 +1,4 @@
-//! TrustReport — see §7 and §8 of `concepts/typed-trust.md`.
+//! TrustReport — see §7 and §8 of `docs/concepts/typed-trust.md`.
 
 use crate::derivation::Attested;
 use crate::ids::{ClaimId, CriterionId, EventId};

@@ -1,4 +1,4 @@
-//! Claim — see §5 of `concepts/typed-trust.md`.
+//! Claim — see §5 of `docs/concepts/typed-trust.md`.
 //!
 //! Propositional content only. Review actions (Endorse, Dissent,
 //! Challenge, Supersede) live in `ReviewEvent`, not as Claim variants.
@@ -381,7 +381,7 @@ pub enum ClaimKind {
     /// comparator machinery: the difference between observation
     /// and concordance is at the curator-facing layer (paper IS
     /// the source vs. paper CITES a source), not at the
-    /// comparator. See `design-history/EVIDENT_THIRD_PARTY_OBSERVATION_DRAFT.md`
+    /// comparator. See `docs/design-history/EVIDENT_THIRD_PARTY_OBSERVATION_DRAFT.md`
     /// for the boundary decision rule against measurement /
     /// metadata_compatibility / behavioral_concordance.
     ThirdPartyObservation,

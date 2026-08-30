@@ -12,7 +12,7 @@ it to a **falsifiable check** (oracle + tolerance + replayable command), and
 record **how every assertion was established** — as a type, so a fact and an
 interpretation can never be confused.
 
-New here? Read the one-page [`OVERVIEW.md`](OVERVIEW.md), then run the worked
+New here? Read the one-page [`OVERVIEW.md`](docs/OVERVIEW.md), then run the worked
 examples in [`evident-agent/EXAMPLES.md`](evident-agent/EXAMPLES.md).
 
 ---
@@ -29,7 +29,7 @@ failure modes. Above research tier, prose tolerances are rejected by the
 validator (`workflow/validate_manifest.py`).
 
 **2. A deterministic trust engine** — [`typed-trust/`](typed-trust)
-(spec in [`concepts/typed-trust.md`](concepts/typed-trust.md)).
+(spec in [`docs/concepts/typed-trust.md`](docs/concepts/typed-trust.md)).
 Every value is `Attested<T>` with a derivation of exactly one kind:
 
 - **Verified** — a named procedure ran and produced this observation.
@@ -46,7 +46,7 @@ Runs each claim's cited command in Docker and writes the observation back as a
 `last_verified.json` sidecar; drafts claims from repos and papers with a
 source-span validator that refuses claims the source does not state; records
 adversarial reviews; and exposes all of it over MCP so a Claude or Codex
-session (`evident-agent drive`, prompt in [`EVIDENT_DRIVER.md`](EVIDENT_DRIVER.md))
+session (`evident-agent drive`, prompt in [`evident-agent/EVIDENT_DRIVER.md`](evident-agent/EVIDENT_DRIVER.md))
 can answer *"why should I trust claim X?"* from evidence, with every sentence
 tagged by how it was established.
 
@@ -63,18 +63,20 @@ tagged by how it was established.
 ## Layout
 
 ```text
-OVERVIEW.md            one-page introduction
-EVIDENT_DRIVER.md      the agent's operating contract (status vocabulary, hard rules)
+README.md              this file
 evident.yaml           this repo's own (small) example manifest
-workflow/              manifest SCHEMA, GRAMMAR, and the validator
+workflow/              the manifest contract: SCHEMA.md, GRAMMAR.md, validate_manifest.py
 typed-trust/           Rust engine + read-only MCP server
 evident-agent/         Python CLI (replay, extract, review, curate, drive) + exec MCP server
-concepts/              typed-trust spec, shared vocabulary, positioning essays
-patterns/ anti-patterns/ rules/ checklist/   short reference material for claim review
+                       and EVIDENT_DRIVER.md, the agent's operating contract
 cases/                 real consumer projects as submodules + interpreted summaries
 experiments/           the extraction-rate experiment (pre-registered; in progress)
-design-history/        drafts that shaped shipped code; not normative
-latex/                 the paper draft
+docs/                  everything explanatory — see docs/README.md
+  OVERVIEW.md            one-page introduction
+  concepts/              typed-trust spec, shared vocabulary, positioning essays
+  reference/             patterns, anti-patterns, rules, review checklist
+  proposals/             schema changes under discussion (claim.statement / claim.plain)
+  design-history/        drafts that shaped shipped code; not normative
 ```
 
 ---
@@ -107,7 +109,7 @@ Early but real. The engine, the agent, the driver and the validator exist and
 are tested (`cargo test` in `typed-trust/`, `pytest` in `evident-agent/`).
 Open work, in order: run the pre-registered extraction-rate experiment to
 completion; close the remaining gaps between the typed-trust spec and its
-enforcement (listed in `concepts/typed-trust.md` §14); land the
-[`claim.statement` proposal](EVIDENT_PROPOSAL_claim-statement_DRAFT.md).
+enforcement (listed in `docs/concepts/typed-trust.md` §14); land the
+[`claim.statement` proposal](docs/proposals/claim-statement.md).
 
 License: MIT.

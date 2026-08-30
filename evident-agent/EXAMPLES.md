@@ -1,6 +1,6 @@
 # EVIDENT examples
 
-Worked examples for every workflow. New to EVIDENT? Read [`../OVERVIEW.md`](../OVERVIEW.md)
+Worked examples for every workflow. New to EVIDENT? Read [`../docs/OVERVIEW.md`](../docs/OVERVIEW.md)
 first.
 
 Each example is tagged:

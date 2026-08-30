@@ -134,10 +134,10 @@ tolerances, "agrees with X" assertions that nobody can audit.
 
 ## Related reading
 
-- [`concepts/ai-assisted-coding.md`](ai-assisted-coding.md) — why the
+- [`docs/concepts/ai-assisted-coding.md`](ai-assisted-coding.md) — why the
   same forcing function matters more in an AI-assisted-coding world,
   with the four scientific-method pillars (skepticism, falsifiability,
   reproducibility, provenance) the schema operationalises.
-- [`workflow/GRAMMAR.md`](../workflow/GRAMMAR.md) — the schema's
+- [`workflow/GRAMMAR.md`](../../workflow/GRAMMAR.md) — the schema's
   rules and rationale, including why structured tolerances are not
   optional.

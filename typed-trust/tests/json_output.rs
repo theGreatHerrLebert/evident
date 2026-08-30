@@ -1,6 +1,6 @@
 //! Builds a TrustReport in code (the proteon SASA release-tier shape)
 //! and serializes it to pretty JSON. Asserts the JSON shape matches the
-//! sketch in `concepts/typed-trust-json-shape.md` and writes a copy to
+//! sketch in `docs/concepts/typed-trust-json-shape.md` and writes a copy to
 //! `tests/fixtures/proteon_sasa_release.trustreport.json` for inspection.
 
 use std::fs;

@@ -1,6 +1,6 @@
 //! Typed Trust core.
 //!
-//! Rust scaffold for the design specified in `concepts/typed-trust.md`.
+//! Rust scaffold for the design specified in `docs/concepts/typed-trust.md`.
 //! The verification engine for propositional empirical claims: every
 //! `Attested<T>` records *how* the value was established (Verified /
 //! Judged / Absent), reviews are graph edges via `ReviewEvent`, and

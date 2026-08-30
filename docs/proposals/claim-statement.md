@@ -1,7 +1,7 @@
 # Proposal: the exact claim is first-class (`claim.statement` + `claim.plain` + `claim.as_stated`)
 
 Status: DRAFT proposal. Not yet normative. Targets `workflow/SCHEMA.md` (manifest surface)
-and `workflow/GRAMMAR.md` (discipline), with a note on the `concepts/typed-trust.md` seam.
+and `workflow/GRAMMAR.md` (discipline), with a note on the `docs/concepts/typed-trust.md` seam.
 
 ## The hole
 
@@ -49,7 +49,7 @@ evidence supports. Every card in the fit-test had this gap until rewritten.
 
 ## The engine already supports this
 
-`concepts/typed-trust.md` §5 already types the claim correctly:
+`docs/concepts/typed-trust.md` §5 already types the claim correctly:
 
 ```rust
 struct Claim {
@@ -143,7 +143,7 @@ claim:
 Research tier may carry a statement whose scope is still prose-only (the claim is
 being scoped). It may not be promoted without moving that scope into structure.
 
-## New anti-pattern (for `anti-patterns/`)
+## New anti-pattern (for `docs/reference/anti-patterns.md`)
 
 - **Headline understatement / gloss drift.** A `claim` whose only prose is a short
   headline broader or weaker than what the evidence actually establishes, so the

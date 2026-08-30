@@ -100,7 +100,7 @@ Inconclusive). It will **not** assert that a claim holds without a tool result b
 | `--root` | corpus root the servers may access (default: cwd). |
 | `--allow-docker` | let `replay` run docker. **Off by default** → replay returns a dry-run. |
 | `--allow-extract` | let `extract_*` call the Anthropic API. **Off by default** → extract runs dry. |
-| `--driver-prompt` | override the canonical [`EVIDENT_DRIVER.md`](../EVIDENT_DRIVER.md). |
+| `--driver-prompt` | override the canonical [`EVIDENT_DRIVER.md`](EVIDENT_DRIVER.md). |
 
 The launcher writes **no persistent global state** (it never runs `claude`/`codex`
 config-mutating subcommands). It is composed per invocation in a temp dir that is removed

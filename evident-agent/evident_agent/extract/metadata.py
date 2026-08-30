@@ -18,7 +18,7 @@ The walker:
   this slice)
 - Generates stable claim ids derived from the source path
 
-See ``design-history/EVIDENT_PHASE5_PR5_DRAFT.md`` (which scoped this as a separate path from the empirical
+See ``docs/design-history/EVIDENT_PHASE5_PR5_DRAFT.md`` (which scoped this as a separate path from the empirical
 extractor.
 """
 

@@ -2,7 +2,7 @@
 
 Design drafts that shaped shipped code, kept for provenance. **Nothing here is
 normative.** The contract is `workflow/SCHEMA.md` + `workflow/GRAMMAR.md` (the
-manifest), `concepts/typed-trust.md` (the engine), and `EVIDENT_DRIVER.md`
+manifest), `docs/concepts/typed-trust.md` (the engine), and `EVIDENT_DRIVER.md`
 (the agent).
 
 - `EVIDENT_PHASE5_PR5_DRAFT.md` — repo/paper claim extraction (`evident-agent extract-*`).

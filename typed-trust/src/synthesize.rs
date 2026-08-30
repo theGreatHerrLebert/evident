@@ -1,4 +1,4 @@
-//! Synthesis — see §4/§8 of `concepts/typed-trust.md`.
+//! Synthesis — see §4/§8 of `docs/concepts/typed-trust.md`.
 //!
 //! Takes a claim, its translated criteria, its evidence, and any
 //! ReviewEvents targeting the report, and produces a [`TrustReport`].

@@ -59,4 +59,4 @@ as the next direction.
 ---
 
 New here? Start with worked, copy-pasteable examples for every workflow:
-[`evident-agent/EXAMPLES.md`](evident-agent/EXAMPLES.md).
+[`evident-agent/EXAMPLES.md`](../evident-agent/EXAMPLES.md).

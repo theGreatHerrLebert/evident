@@ -1,4 +1,4 @@
-//! Derivation — see §2 of `concepts/typed-trust.md`. The spine.
+//! Derivation — see §2 of `docs/concepts/typed-trust.md`. The spine.
 //!
 //! Every `Attested<T>` records HOW the value was established. The
 //! reproducibility distinction (Verified vs Judged) does NOT depend

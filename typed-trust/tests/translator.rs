@@ -194,7 +194,7 @@ fn translates_sasa_ci_claim_into_attested_claim() {
     assert_eq!(attested.value.source.span, "claims[0]");
 
     // Extraction from structured manifest is Verified, not Judged,
-    // per the §4 footnote in concepts/typed-trust.md.
+    // per the §4 footnote in docs/concepts/typed-trust.md.
     match &attested.derivation {
         Derivation::Verified {
             method, ran_by, ..

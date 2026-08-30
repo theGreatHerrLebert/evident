@@ -8,7 +8,7 @@
 use typed_trust::*;
 
 /// proteon-sasa-vs-biopython-release-1k-pdbs — the rich release-tier
-/// claim walked end-to-end in `concepts/typed-trust-proteon-fit.md`
+/// claim walked end-to-end in `docs/concepts/typed-trust-proteon-fit.md`
 /// Part 1.
 #[test]
 fn proteon_sasa_release_walkthrough() {
@@ -248,7 +248,7 @@ fn synthetic_challenge_against_charmm_electrostatic_band() {
             .into(),
         kind: ClaimKind::Causal,
         source: SourceSpan {
-            path: "concepts/typed-trust-proteon-fit.md".into(),
+            path: "docs/concepts/typed-trust-proteon-fit.md".into(),
             span: "Part 4 synthetic challenge".into(),
         },
         explicit: true,

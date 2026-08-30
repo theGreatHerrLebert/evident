@@ -1,4 +1,4 @@
-//! ReviewEvent — see §6 of `concepts/typed-trust.md`.
+//! ReviewEvent — see §6 of `docs/concepts/typed-trust.md`.
 //!
 //! Actions over existing objects in the graph. Not Claims; not
 //! pipeline input. Recorded by reviewers (output of adversarial

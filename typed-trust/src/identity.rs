@@ -1,4 +1,4 @@
-//! Identity — see §1 of `concepts/typed-trust.md`.
+//! Identity — see §1 of `docs/concepts/typed-trust.md`.
 //!
 //! One identity type for everyone: humans, models, automation,
 //! organizations, anonymized identities. The performer-vs-judge
