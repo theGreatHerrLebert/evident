@@ -7,7 +7,7 @@ EVIDENT starts from one question:
 > How do we justify trust in a computational result when nobody has read all
 > of the code that produced it?
 
-Its answer is not "look harder at the code." It is: state the **claim**, bind
+Its answer is not "look harder at the code" (even though this may be a suitable strategy for building trust in it). Here it is: state the **claim**, bind
 it to a **falsifiable check** (oracle + tolerance + replayable command), and
 record **how every assertion was established** — as a type, so a fact and an
 interpretation can never be confused.
