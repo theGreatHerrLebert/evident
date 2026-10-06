@@ -249,6 +249,8 @@ def _replay(state: ServerState, args: dict) -> dict:
         manifest_path.parent / "last_verified.json"
     )
     sidecar_path = _authorize_writable_file(state.policy, sidecar_arg)
+    # The derived lock file is written too, so it must pass the same policy.
+    _authorize_writable_file(state.policy, str(replay_mod.sidecar_path_lock(sidecar_path)))
 
     # Capability gate (hard-off): no --allow-docker → force dry-run.
     capability_gated = False

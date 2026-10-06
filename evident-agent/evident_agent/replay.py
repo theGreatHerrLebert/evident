@@ -31,15 +31,29 @@ def _sidecar_lock(sidecar_path: Path) -> Iterator[None]:
     sidecar, so concurrent replays don't lose each other's entries.
     Held only around the (fast) merge, never during docker execution."""
     import fcntl
+    import os
+    import stat
 
     sidecar_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = sidecar_path.with_name(sidecar_path.name + ".lock")
-    with open(lock_path, "w") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+    lock_path = sidecar_path_lock(sidecar_path)
+    # O_NOFOLLOW + no O_TRUNC: a symlink planted at the lock path must not
+    # redirect (and truncate) a file elsewhere (Codex MCP review, High #1).
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(f"sidecar lock {lock_path} is not a regular file")
+        fcntl.flock(fd, fcntl.LOCK_EX)
         try:
             yield
         finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def sidecar_path_lock(sidecar_path: Path) -> Path:
+    """The advisory lock file that guards ``sidecar_path``."""
+    return sidecar_path.with_name(sidecar_path.name + ".lock")
 
 
 # ---------------------------------------------------------------------
