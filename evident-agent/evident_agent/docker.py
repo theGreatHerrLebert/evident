@@ -12,6 +12,7 @@ orchestrate ``docker run`` calls and capture exit codes.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +31,23 @@ class DockerResult:
     timed_out: bool = False
 
 
+# A docker image reference: [registry[:port]/]name[/name...][:tag][@sha256:digest].
+# Anything else, in particular a value starting with "-", would be parsed by
+# `docker run` as an option (Codex MCP review, High #3).
+_COMPONENT = r"[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*"
+_IMAGE_RE = re.compile(
+    rf"^(?:{_COMPONENT}(?::[0-9]+)?/)?{_COMPONENT}(?:/{_COMPONENT})*"
+    r"(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(?:@sha256:[0-9a-f]{64})?$"
+)
+
+
+def validate_image(image: str) -> str:
+    """Return ``image`` if it is a plain docker image reference, else raise."""
+    if not isinstance(image, str) or not _IMAGE_RE.match(image):
+        raise ValueError(f"not a valid docker image reference: {image!r}")
+    return image
+
+
 def build_command(
     image: str,
     claim_id: str,
@@ -44,10 +62,17 @@ def build_command(
     defaults to ``host`` because some claims hit local registries or
     cached pip mirrors during execution.
     """
+    validate_image(image)
     cmd = [
         "docker",
         "run",
         "--rm",
+        # Least privilege that does not change what a replay can do: no
+        # setuid escalation inside the container, bounded process count.
+        "--security-opt",
+        "no-new-privileges",
+        "--pids-limit",
+        "4096",
         "-v",
         f"{source_dir.resolve()}:/work",
         "-w",

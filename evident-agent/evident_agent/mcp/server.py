@@ -24,17 +24,20 @@ from mcp.shared.exceptions import McpError
 
 from .errors import INTERNAL, ToolError, ToolErrorTier
 from .policy import AllowListPathPolicy, PolicyDenied
+from ..docker import validate_image
 from .tools import ServerState, dispatch_sync, tool_definitions
 
 logger = logging.getLogger("evident_agent.mcp")
 
 _USAGE = (
     "usage: evident-agent-mcp [--allow-root <path>] ... "
-    "[--allow-docker] [--allow-extract]\n\n"
+    "[--allow-docker] [--allow-image <ref>] ... [--allow-extract]\n\n"
     "Exec MCP server for the EVIDENT agent. Reads JSON-RPC 2.0 frames "
     "from stdin, writes responses to stdout.\n"
     "  --allow-root <dir-or-file>  (repeatable) restrict which paths tools may touch\n"
     "  --allow-docker              permit replay to actually run docker (default off → dry-run)\n"
+    "  --allow-image <ref>         (repeatable) docker images replay may run; replaces the default\n"
+    "                              proteon-evident:latest. Prefer digest-pinned refs (@sha256:...)\n"
     "  --allow-extract             permit extract_* to call the Anthropic API (default off → dry-run)\n"
 )
 
@@ -43,6 +46,7 @@ def _build_state(argv: Sequence[str]) -> ServerState:
     policy = AllowListPathPolicy()
     allow_docker = False
     allow_extract = False
+    images: set = set()
     it = iter(argv)
     for arg in it:
         if arg == "--allow-root":
@@ -56,6 +60,15 @@ def _build_state(argv: Sequence[str]) -> ServerState:
                 raise SystemExit(f"error: cannot register {p}: {exc.reason}")
         elif arg == "--allow-docker":
             allow_docker = True
+        elif arg == "--allow-image":
+            try:
+                ref = next(it)
+            except StopIteration:
+                raise SystemExit("error: --allow-image requires an image reference")
+            try:
+                images.add(validate_image(ref))
+            except ValueError as exc:
+                raise SystemExit(f"error: {exc}")
         elif arg == "--allow-extract":
             allow_extract = True
         elif arg in ("-h", "--help"):
@@ -63,7 +76,10 @@ def _build_state(argv: Sequence[str]) -> ServerState:
             raise SystemExit(0)
         else:
             raise SystemExit(f"error: unknown argument {arg!r}\n\n{_USAGE}")
-    return ServerState(policy=policy, allow_docker=allow_docker, allow_extract=allow_extract)
+    state = ServerState(policy=policy, allow_docker=allow_docker, allow_extract=allow_extract)
+    if images:
+        state.allowed_images = frozenset(images)
+    return state
 
 
 def _make_server(state: ServerState) -> Server:

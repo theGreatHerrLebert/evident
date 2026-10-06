@@ -25,11 +25,17 @@ from .errors import ToolError
 from .policy import AllowListPathPolicy, PolicyDenied
 
 
+DEFAULT_IMAGE = "proteon-evident:latest"
+
+
 @dataclass
 class ServerState:
     policy: AllowListPathPolicy
     allow_docker: bool = False
     allow_extract: bool = False
+    # Images replay may run. The client picks among these; it cannot name an
+    # arbitrary image (Codex MCP review, High #4). Set with --allow-image.
+    allowed_images: frozenset = frozenset({DEFAULT_IMAGE})
 
 
 # ---------------------------------------------------------------------
@@ -124,7 +130,8 @@ def tool_definitions() -> list[dict]:
                 "and writes the last_verified.json sidecar. SAFETY: actually "
                 "executes Docker — requires the server's --allow-docker; without "
                 "it the call is forced to dry-run. `manifest_path`, `sidecar`, and "
-                "`source_dir` must lie under an --allow-root path. Use `dry_run` to "
+                "`source_dir` (and each claim's manifest `source`) must lie under an --allow-root path; "
+                "`image` must be one the operator allowed with --allow-image. Use `dry_run` to "
                 "preview the docker command; `no_execute` to score existing "
                 "artifacts only. `render` invokes the server's own trusted "
                 "typed-trust binary (the binary is NOT client-selectable)."
@@ -234,7 +241,12 @@ def _replay(state: ServerState, args: dict) -> dict:
 
     manifest_path = _authorize(state.policy, arg_str(args, "manifest_path"))
     claim = arg_str_opt(args, "claim")
-    image = arg_str_opt(args, "image") or "proteon-evident:latest"
+    image = arg_str_opt(args, "image") or DEFAULT_IMAGE
+    if image not in state.allowed_images:
+        raise ToolError.unauthorized(
+            f"image {image!r} is not allowed; the server allows "
+            f"{sorted(state.allowed_images)} (operator flag --allow-image)"
+        )
     budget = arg_float_opt(args, "budget", 600.0)
     dry_run = arg_bool_opt(args, "dry_run")
     no_execute = arg_bool_opt(args, "no_execute")

@@ -105,3 +105,92 @@ def test_mcp_replay_manifest_source_inside_root_allowed(tmp_path: Path) -> None:
         assert frame["result"]["isError"] is False, frame
     finally:
         proc.close()
+
+
+# ---------------------------------------------------------------------
+# #3 Image references cannot inject docker options
+# ---------------------------------------------------------------------
+from evident_agent.docker import build_command, validate_image  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "ref",
+    [
+        "proteon-evident:latest",
+        "img",
+        "ghcr.io/org/tool:1.2.3",
+        "localhost:5000/team/tool",
+        "registry.example.org/a/b@sha256:" + "0" * 64,
+    ],
+)
+def test_validate_image_accepts_references(ref: str) -> None:
+    assert validate_image(ref) == ref
+
+
+@pytest.mark.parametrize(
+    "ref",
+    ["--privileged", "--volume=/:/host", "-v", "img --privileged", "", "Img Upper", "img;rm -rf /"],
+)
+def test_validate_image_rejects_option_like(ref: str) -> None:
+    with pytest.raises(ValueError):
+        validate_image(ref)
+    with pytest.raises(ValueError):
+        build_command(ref, "claim-A", Path("/tmp"))
+
+
+def test_build_command_drops_privilege_escalation() -> None:
+    argv = build_command("img", "claim-A", Path("/tmp"))
+    assert argv[argv.index("--security-opt") + 1] == "no-new-privileges"
+    assert "--pids-limit" in argv
+    assert argv.index("img") == len(argv) - 3  # image right before `replay <claim>`
+
+
+# ---------------------------------------------------------------------
+# #4 The client may only pick operator-allowed images
+# ---------------------------------------------------------------------
+def test_mcp_replay_rejects_unlisted_image(tmp_path: Path) -> None:
+    manifest = _write_measurement_manifest(tmp_path)
+    proc = McpProc(["--allow-root", str(tmp_path)])
+    try:
+        proc.initialize()
+        for image in ("attacker/evil:latest", "--privileged"):
+            frame = proc.call(
+                "replay",
+                {"manifest_path": str(manifest), "claim": "claim-A", "dry_run": True, "image": image},
+            )
+            assert "error" in frame or frame["result"]["isError"] is True, (image, frame)
+            assert "not allowed" in json.dumps(frame), frame
+    finally:
+        proc.close()
+
+
+def test_mcp_replay_allows_operator_listed_image(tmp_path: Path) -> None:
+    manifest = _write_measurement_manifest(tmp_path)
+    proc = McpProc(["--allow-root", str(tmp_path), "--allow-image", "ghcr.io/org/tool:1"])
+    try:
+        proc.initialize()
+        ok = proc.call(
+            "replay",
+            {"manifest_path": str(manifest), "claim": "claim-A", "dry_run": True, "image": "ghcr.io/org/tool:1"},
+        )
+        assert ok["result"]["isError"] is False, ok
+        # The operator list replaces the default.
+        default = proc.call(
+            "replay", {"manifest_path": str(manifest), "claim": "claim-A", "dry_run": True}
+        )
+        assert "error" in default or default["result"]["isError"] is True, default
+    finally:
+        proc.close()
+
+
+def test_mcp_server_refuses_invalid_allow_image(tmp_path: Path) -> None:
+    import subprocess
+    import sys
+
+    res = subprocess.run(
+        [sys.executable, "-m", "evident_agent.mcp", "--allow-root", str(tmp_path),
+         "--allow-image", "--privileged"],
+        capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL,
+    )
+    assert res.returncode != 0
+    assert "not a valid docker image reference" in res.stderr + res.stdout
