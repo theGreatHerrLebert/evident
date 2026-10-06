@@ -27,7 +27,7 @@ pub mod tools;
 use std::sync::Arc;
 
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 
 use crate::loader::AllowListPathPolicy;
@@ -41,6 +41,11 @@ const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 /// to handlers, write responses to stdout. Each request handed off
 /// to a `spawn_blocking` worker so typed-trust sync code stays
 /// sync.
+/// Largest JSON-RPC frame accepted; larger lines are refused, not buffered.
+pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
+/// Tool calls processed at once; further frames wait to be read.
+pub const MAX_CONCURRENT_REQUESTS: usize = 8;
+
 pub async fn run(state: Arc<ServerState>) -> std::io::Result<()> {
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin);
@@ -50,13 +55,42 @@ pub async fn run(state: Arc<ServerState>) -> std::io::Result<()> {
     // completion" race that surfaces when the runtime is dropped
     // while tasks are still resolving their final write.
     let mut in_flight = tokio::task::JoinSet::new();
+    // Bound concurrent work: reading pauses until a slot frees up, so a
+    // client cannot queue unbounded requests (Codex MCP review, Medium #6).
+    let slots = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_REQUESTS));
 
     let mut line = String::new();
     loop {
+        // Reap finished tasks as we go, not only when stdin closes.
+        while in_flight.try_join_next().is_some() {}
+        let permit = slots.clone().acquire_owned().await.expect("semaphore never closed");
+
         line.clear();
-        let n = reader.read_line(&mut line).await?;
+        // Read at most MAX_FRAME_BYTES (+1 to detect overflow) of one line.
+        let n = (&mut reader)
+            .take(MAX_FRAME_BYTES as u64 + 1)
+            .read_line(&mut line)
+            .await?;
         if n == 0 {
             break;
+        }
+        if line.len() > MAX_FRAME_BYTES && !line.ends_with('\n') {
+            // Discard the rest of the oversized line without buffering it.
+            let mut sink = Vec::new();
+            loop {
+                sink.clear();
+                let m = (&mut reader).take(64 * 1024).read_until(b'\n', &mut sink).await?;
+                if m == 0 || sink.ends_with(b"\n") {
+                    break;
+                }
+            }
+            let resp = json!({
+                "jsonrpc": "2.0",
+                "id": null,
+                "error": {"code": -32600, "message": format!("Invalid Request: frame exceeds {MAX_FRAME_BYTES} bytes")}
+            });
+            write_frame(&stdout, resp).await?;
+            continue;
         }
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -78,6 +112,7 @@ pub async fn run(state: Arc<ServerState>) -> std::io::Result<()> {
         let state = state.clone();
         let stdout = stdout.clone();
         in_flight.spawn(async move {
+            let _permit = permit; // released when this request finishes
             if let Some(resp) = dispatch(state, req).await {
                 let _ = write_frame(&stdout, resp).await;
             }

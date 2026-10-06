@@ -394,7 +394,7 @@ fn query_claims(state: &ServerState, args: Value) -> Result<Value, ToolError> {
             continue;
         }
         examined += 1;
-        let report = synthesize_for(state, &manifest_path, &c.claim.id, sidecar_path.as_deref(), None);
+        let report = synthesize_with_claims(state, &claims, &c.claim.id, sidecar_path.as_deref(), None);
         // A claim that fails to synthesize is reported, not silently
         // dropped: an empty result must mean "no match" (Codex MCP review,
         // Medium #10).
@@ -648,6 +648,19 @@ fn synthesize_for(
     last_verified_path: Option<&str>,
 ) -> Result<Value, ToolError> {
     let claims = load_claims_with_policy(manifest_path, &state.policy)?;
+    synthesize_with_claims(state, &claims, claim_id, sidecar_path, last_verified_path)
+}
+
+/// `synthesize_for` over an already-loaded corpus, so a query over many
+/// claims loads the manifest once rather than once per claim (Codex MCP
+/// review, Medium #6).
+fn synthesize_with_claims(
+    state: &ServerState,
+    claims: &[crate::loader::LoadedClaim],
+    claim_id: &str,
+    sidecar_path: Option<&str>,
+    last_verified_path: Option<&str>,
+) -> Result<Value, ToolError> {
     let now = "1970-01-01T00:00:00Z".to_string();
 
     // Find the target claim.

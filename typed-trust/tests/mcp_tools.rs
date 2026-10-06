@@ -1634,3 +1634,48 @@ fn malformed_envelopes_get_invalid_request() {
     assert!(resp["result"]["tools"].is_array(), "{resp}");
     proc.shutdown();
 }
+
+/// Medium #6: an oversized frame is refused (not buffered) and the
+/// server keeps serving afterwards.
+#[test]
+fn oversized_frame_is_refused_and_server_survives() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let big = format!(
+        r#"{{"jsonrpc":"2.0","id":99,"method":"tools/list","params":{{"pad":"{}"}}}}"#,
+        "x".repeat(5 * 1024 * 1024)
+    );
+    let resp = proc.send_raw(&big);
+    assert_eq!(resp["error"]["code"], json!(-32600), "{}", resp);
+    assert!(resp["error"]["message"].as_str().unwrap().contains("exceeds"));
+    assert!(proc.tools_list()["result"]["tools"].is_array());
+    proc.shutdown();
+}
+
+/// Medium #6: many pipelined requests are all answered with the
+/// concurrency cap and continuous task reaping in place.
+#[test]
+fn many_pipelined_requests_are_all_answered() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let n = 300u64;
+    for i in 0..n {
+        writeln!(
+            proc.stdin,
+            "{}",
+            json!({"jsonrpc": "2.0", "id": 10_000 + i, "method": "initialize", "params": {}})
+        )
+        .unwrap();
+    }
+    proc.stdin.flush().unwrap();
+    let mut seen = std::collections::HashSet::new();
+    while seen.len() < n as usize {
+        let mut line = String::new();
+        proc.stdout.read_line(&mut line).unwrap();
+        let v: Value = serde_json::from_str(line.trim()).unwrap();
+        assert!(v.get("error").is_none(), "{v}");
+        seen.insert(v["id"].as_u64().unwrap());
+    }
+    assert_eq!(seen.len(), n as usize);
+    proc.shutdown();
+}
