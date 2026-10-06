@@ -194,3 +194,110 @@ def test_mcp_server_refuses_invalid_allow_image(tmp_path: Path) -> None:
     )
     assert res.returncode != 0
     assert "not a valid docker image reference" in res.stderr + res.stdout
+
+
+# ---------------------------------------------------------------------
+# Fake docker for #5 and #6: logs argv; behaviour from FAKE_DOCKER_MODE
+# ---------------------------------------------------------------------
+_FAKE_DOCKER = """#!/usr/bin/env bash
+echo "$@" >> "$FAKE_DOCKER_LOG"
+[ "$1" = "rm" ] && exit 0
+case "$FAKE_DOCKER_MODE" in
+  sleep) exec sleep 30 ;;
+  exit125) echo "docker: Error response from daemon" >&2; exit 125 ;;
+  flood) head -c 50000000 /dev/zero | tr '\\\\0' 'x'; exit 0 ;;
+  *) exit 0 ;;
+esac
+"""
+
+
+@pytest.fixture
+def fake_docker(tmp_path: Path, monkeypatch):
+    bindir = tmp_path / "fakebin"
+    bindir.mkdir()
+    script = bindir / "docker"
+    script.write_text(_FAKE_DOCKER)
+    script.chmod(0o755)
+    log = tmp_path / "docker.log"
+    monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
+    monkeypatch.setenv("FAKE_DOCKER_LOG", str(log))
+
+    def set_mode(mode: str) -> Path:
+        monkeypatch.setenv("FAKE_DOCKER_MODE", mode)
+        return log
+
+    return set_mode
+
+
+from evident_agent import docker as docker_mod  # noqa: E402
+from evident_agent import sidecar as sidecar_mod  # noqa: E402
+
+
+def test_timeout_removes_named_container(tmp_path: Path, fake_docker) -> None:
+    log = fake_docker("sleep")
+    res = docker_mod.run("img", "claim-A", tmp_path, budget_seconds=1.0)
+    assert res.timed_out and res.exit_code == 124
+    calls = log.read_text().splitlines()
+    run_call = next(c for c in calls if c.startswith("run "))
+    name = run_call.split("--name ")[1].split()[0]
+    assert name.startswith("evident-replay-")
+    assert f"rm -f {name}" in calls
+
+
+def test_output_flood_is_bounded(tmp_path: Path, fake_docker) -> None:
+    fake_docker("flood")
+    res = docker_mod.run("img", "claim-A", tmp_path, budget_seconds=60, tail_bytes=2048)
+    assert res.exit_code == 0
+    assert len(res.stdout_tail) <= 2048 + len("...[truncated]...\n")
+
+
+def _seed_sidecar(path: Path, claim_id: str) -> None:
+    sidecar_mod.write(
+        path,
+        {claim_id: sidecar_mod.LastVerifiedEntry(commit="abc", date="2026-01-01", value=0.5, corpus_sha=None)},
+    )
+
+
+@pytest.mark.parametrize("mode,outcome", [("exit125", "infrastructure_error"), ("sleep", "timed_out")])
+def test_failed_attempt_keeps_previous_verification(tmp_path: Path, fake_docker, mode, outcome) -> None:
+    fake_docker(mode)
+    manifest = _write_measurement_manifest(tmp_path)
+    sidecar_path = tmp_path / "last_verified.json"
+    _seed_sidecar(sidecar_path, "claim-A")
+    before = sidecar_path.read_text()
+
+    result = replay_mod.run_replay(
+        manifest_path=manifest, claim_filter="claim-A", image="img",
+        budget=1.0, sidecar_path=sidecar_path,
+    )
+    assert [c.outcome for c in result.claims] == [outcome]
+    assert json.loads(sidecar_path.read_text()) == json.loads(before)
+
+
+def test_mcp_replay_exit125_is_tool_error(tmp_path: Path, fake_docker) -> None:
+    fake_docker("exit125")
+    manifest = _write_measurement_manifest(tmp_path)
+    proc = McpProc(["--allow-root", str(tmp_path), "--allow-docker", "--allow-image", "img"],
+                   env=dict(os.environ))
+    try:
+        proc.initialize()
+        frame = proc.call("replay", {"manifest_path": str(manifest), "claim": "claim-A", "image": "img"})
+        assert frame["result"]["isError"] is True, frame
+        assert "infrastructure_error" in frame["result"]["content"][0]["text"]
+    finally:
+        proc.close()
+
+
+@pytest.mark.parametrize("budget", [0, -5, 1e12])  # JSON has no infinity
+def test_mcp_replay_rejects_bad_budget(tmp_path: Path, budget) -> None:
+    manifest = _write_measurement_manifest(tmp_path)
+    proc = McpProc(["--allow-root", str(tmp_path)])
+    try:
+        proc.initialize()
+        frame = proc.call(
+            "replay",
+            {"manifest_path": str(manifest), "claim": "claim-A", "dry_run": True, "budget": budget},
+        )
+        assert "error" in frame or frame["result"]["isError"] is True, frame
+    finally:
+        proc.close()

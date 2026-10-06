@@ -25,6 +25,11 @@ from typing import Callable, Iterator, List, Optional
 from . import docker, manifest, scoring, sidecar, typed_trust
 
 
+# `docker run` exits 125 when the docker daemon/client fails before the
+# container's command runs (126/127 come from the container's command).
+DOCKER_RUN_FAILED = 125
+
+
 @contextlib.contextmanager
 def _sidecar_lock(sidecar_path: Path) -> Iterator[None]:
     """Advisory exclusive lock guarding the read-merge-write of a shared
@@ -207,6 +212,24 @@ def run_replay(
             stderr_tail = result.stderr_tail
             if result.timed_out:
                 outcome = "timed_out"
+            elif not dry_run and exit_code == DOCKER_RUN_FAILED:
+                # docker itself failed (daemon down, bad invocation): no
+                # experiment ran (Codex MCP review, Medium #11).
+                outcome = "infrastructure_error"
+            if outcome in ("timed_out", "infrastructure_error"):
+                # A failed attempt is not an observation: keep the previous
+                # sidecar entry instead of overwriting it with value=None.
+                claim_results.append(
+                    ReplayClaimResult(
+                        claim_id=claim.id,
+                        exit_code=exit_code,
+                        duration_s=duration_s,
+                        observed=None,
+                        outcome=outcome,
+                        stderr_tail=stderr_tail,
+                    )
+                )
+                continue
 
         if dry_run:
             claim_results.append(

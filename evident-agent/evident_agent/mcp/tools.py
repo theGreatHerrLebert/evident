@@ -16,6 +16,7 @@ they refuse real execution and run dry. Errors split into two tiers per
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -117,6 +118,7 @@ def _authorize_writable_file(policy: AllowListPathPolicy, path: str) -> Path:
 # Tool definitions
 # ---------------------------------------------------------------------
 _MAX_LOG_LINES = 500
+_MAX_BUDGET_S = 24 * 3600.0  # per-claim docker wall-clock ceiling
 
 
 def tool_definitions() -> list[dict]:
@@ -248,6 +250,10 @@ def _replay(state: ServerState, args: dict) -> dict:
             f"{sorted(state.allowed_images)} (operator flag --allow-image)"
         )
     budget = arg_float_opt(args, "budget", 600.0)
+    if not (math.isfinite(budget) and 0 < budget <= _MAX_BUDGET_S):
+        raise ToolError.invalid_params(
+            f"budget must be a number of seconds in (0, {_MAX_BUDGET_S:g}]"
+        )
     dry_run = arg_bool_opt(args, "dry_run")
     no_execute = arg_bool_opt(args, "no_execute")
     render = arg_str_opt(args, "render")

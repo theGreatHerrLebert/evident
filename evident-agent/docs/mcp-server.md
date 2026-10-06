@@ -89,6 +89,12 @@ Two tiers, mirroring `typed-trust-mcp`:
 A `dry_run: true` / `capability_gated: true` result is **not** an error — it means no
 procedure executed because the capability flag was off.
 
+`infrastructure_error` covers a missing docker binary and docker's own failure exit (125,
+daemon unavailable or invocation rejected). On a timeout the container is force-removed by
+name, not just the docker client killed. Neither outcome writes a sidecar entry, so the last
+successful verification of that claim is kept. Container output is spooled to disk and only
+its tail is returned. `budget` must be in (0, 86400] seconds.
+
 ## Register in a client
 
 Use the installed `evident-agent-mcp` console script (after `pip install -e .`). If you
