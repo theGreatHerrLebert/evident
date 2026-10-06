@@ -38,6 +38,8 @@ class ServerState:
     # Images replay may run. The client picks among these; it cannot name an
     # arbitrary image (Codex MCP review, High #4). Set with --allow-image.
     allowed_images: frozenset = frozenset({DEFAULT_IMAGE})
+    # Docker network for replay containers (--docker-network); operator-set.
+    docker_network: str = "host"
 
 
 # ---------------------------------------------------------------------
@@ -305,6 +307,7 @@ def _replay(state: ServerState, args: dict) -> dict:
             on_event=collect,
             # Every per-claim source dir, including manifest-derived ones.
             authorize_path=lambda p: _authorize(state.policy, str(p)),
+            network=state.docker_network,
         )
     except replay_mod.NoClaimsMatched as exc:
         raise ToolError.data(str(exc))

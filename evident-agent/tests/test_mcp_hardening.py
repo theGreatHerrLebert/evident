@@ -364,3 +364,45 @@ def test_malformed_sidecar_is_data_error(tmp_path: Path, content: str) -> None:
         assert "sidecar" in frame["result"]["content"][0]["text"]
     finally:
         proc.close()
+
+
+# ---------------------------------------------------------------------
+# Host networking is an operator setting (--docker-network)
+# ---------------------------------------------------------------------
+@pytest.mark.parametrize("mode", ["host", "bridge", "none"])
+def test_build_command_network_modes(mode: str) -> None:
+    argv = build_command("img", "claim-A", Path("/tmp"), network=mode)
+    assert argv[argv.index("--network") + 1] == mode
+
+
+def test_build_command_rejects_unknown_network() -> None:
+    with pytest.raises(ValueError):
+        build_command("img", "claim-A", Path("/tmp"), network="container:other")
+
+
+def test_mcp_docker_network_flag_reaches_docker(tmp_path: Path, fake_docker) -> None:
+    log = fake_docker("ok")
+    (tmp_path / "out.json").write_text("{}")
+    manifest = _write_measurement_manifest(tmp_path)
+    proc = McpProc(["--allow-root", str(tmp_path), "--allow-docker", "--allow-image", "img",
+                    "--docker-network", "none"], env=dict(os.environ))
+    try:
+        proc.initialize()
+        frame = proc.call("replay", {"manifest_path": str(manifest), "claim": "claim-A", "image": "img"})
+        assert "result" in frame, frame
+    finally:
+        proc.close()
+    run_call = next(c for c in log.read_text().splitlines() if c.startswith("run "))
+    assert "--network none" in run_call
+
+
+def test_mcp_server_rejects_unknown_network(tmp_path: Path) -> None:
+    import subprocess
+    import sys
+
+    res = subprocess.run(
+        [sys.executable, "-m", "evident_agent.mcp", "--allow-root", str(tmp_path),
+         "--docker-network", "container:x"],
+        capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL,
+    )
+    assert res.returncode != 0 and "--docker-network" in res.stderr + res.stdout

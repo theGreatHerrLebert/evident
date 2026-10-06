@@ -135,6 +135,7 @@ def run_replay(
     typed_trust_binary: Optional[str] = None,
     on_event: Optional[OnEvent] = None,
     authorize_path: Optional[Callable[[Path], Path]] = None,
+    network: str = "host",
 ) -> ReplayResult:
     """Replay selected measurement claims and populate the sidecar.
 
@@ -185,6 +186,7 @@ def run_replay(
                     source_dir=resolved_source,
                     budget_seconds=budget,
                     dry_run=dry_run,
+                    network=network,
                 )
             except (FileNotFoundError, OSError) as exc:
                 # docker binary missing / not launchable — infrastructure,

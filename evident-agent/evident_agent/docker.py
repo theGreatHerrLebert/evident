@@ -41,6 +41,11 @@ _IMAGE_RE = re.compile(
 )
 
 
+# Network modes replay may use. "host" is the historical default (some claims
+# reach local registries or pip mirrors); "none" isolates the container.
+NETWORK_MODES = ("host", "bridge", "none")
+
+
 def validate_image(image: str) -> str:
     """Return ``image`` if it is a plain docker image reference, else raise."""
     if not isinstance(image, str) or not _IMAGE_RE.match(image):
@@ -64,6 +69,8 @@ def build_command(
     cached pip mirrors during execution.
     """
     validate_image(image)
+    if network not in NETWORK_MODES:
+        raise ValueError(f"network must be one of {NETWORK_MODES}, got {network!r}")
     cmd = [
         "docker",
         "run",
@@ -96,6 +103,7 @@ def run(
     tail_bytes: int = 2048,
     extra_volumes: Optional[List[str]] = None,
     dry_run: bool = False,
+    network: str = "host",
 ) -> DockerResult:
     """Run one claim's replay via docker.
 
@@ -114,7 +122,7 @@ def run(
     import uuid
 
     name = f"evident-replay-{uuid.uuid4().hex[:12]}"
-    argv = build_command(image, claim_id, source_dir, extra_volumes, name=name)
+    argv = build_command(image, claim_id, source_dir, extra_volumes, network=network, name=name)
     if dry_run:
         return DockerResult(
             claim_id=claim_id,
