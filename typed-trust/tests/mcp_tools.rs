@@ -1516,3 +1516,86 @@ fn query_observation_does_not_leak_prior_value_codex_v3_f_cr1() {
     );
     proc.shutdown();
 }
+
+// ============================================================
+// Codex MCP review regressions (2026-10-06)
+// ============================================================
+
+/// High #7: `last_verified_sidecar` was accepted and ignored, so replay
+/// results never reached MCP reports.
+#[test]
+fn read_report_applies_last_verified_sidecar() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = write_simple_manifest(tmp.path(), "claim-lv");
+    let lv = tmp.path().join("last_verified.json");
+    std::fs::write(
+        &lv,
+        r#"{"claim-lv": {"commit": "deadbeef", "date": "2026-10-06", "value": 0.0123, "corpus_sha": null}}"#,
+    )
+    .unwrap();
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let without = decode_result(&proc.call_tool(
+        "read_report",
+        json!({"manifest_path": manifest.to_str().unwrap(), "claim_id": "claim-lv"}),
+    ));
+    let with = decode_result(&proc.call_tool(
+        "read_report",
+        json!({
+            "manifest_path": manifest.to_str().unwrap(),
+            "claim_id": "claim-lv",
+            "last_verified_sidecar": lv.to_str().unwrap()
+        }),
+    ));
+    proc.shutdown();
+    let with_s = with.to_string();
+    assert!(with_s.contains("deadbeef") || with_s.contains("0.0123"), "overlay missing: {with_s}");
+    assert!(!without.to_string().contains("deadbeef"));
+    assert_ne!(with, without);
+}
+
+#[test]
+fn read_report_last_verified_outside_root_is_denied() {
+    let allowed = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let manifest = write_simple_manifest(allowed.path(), "claim-lv");
+    let lv = outside.path().join("last_verified.json");
+    std::fs::write(&lv, r#"{"claim-lv": {"value": 1.0}}"#).unwrap();
+    let mut proc = McpProc::spawn(&["--allow-manifest", allowed.path().to_str().unwrap()]);
+    let resp = proc.call_tool(
+        "read_report",
+        json!({
+            "manifest_path": manifest.to_str().unwrap(),
+            "claim_id": "claim-lv",
+            "last_verified_sidecar": lv.to_str().unwrap()
+        }),
+    );
+    proc.shutdown();
+    let refused = resp.get("error").is_some() || resp["result"]["isError"] == json!(true);
+    assert!(refused, "expected refusal, got {resp}");
+}
+
+/// Medium #9: a continuation request without `limit` computed
+/// `start + usize::MAX` and overflowed.
+#[test]
+fn list_review_events_cursor_without_limit_does_not_overflow() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (manifest, sidecar) = write_ball_panel_fixture(tmp.path());
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let all = decode_result(&proc.call_tool(
+        "list_review_events",
+        json!({"manifest_path": manifest.to_str().unwrap(), "sidecar": sidecar.to_str().unwrap()}),
+    ));
+    let resp = proc.call_tool(
+        "list_review_events",
+        json!({
+            "manifest_path": manifest.to_str().unwrap(),
+            "sidecar": sidecar.to_str().unwrap(),
+            "cursor": "1"
+        }),
+    );
+    proc.shutdown();
+    assert!(resp.get("error").is_none(), "protocol error: {resp}");
+    let total = all["items"].as_array().unwrap().len();
+    assert!(total >= 2);
+    assert_eq!(decode_result(&resp)["items"].as_array().unwrap().len(), total - 1);
+}

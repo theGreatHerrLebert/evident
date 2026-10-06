@@ -25,21 +25,40 @@ from typing import Callable, Iterator, List, Optional
 from . import docker, manifest, scoring, sidecar, typed_trust
 
 
+# `docker run` exits 125 when the docker daemon/client fails before the
+# container's command runs (126/127 come from the container's command).
+DOCKER_RUN_FAILED = 125
+
+
 @contextlib.contextmanager
 def _sidecar_lock(sidecar_path: Path) -> Iterator[None]:
     """Advisory exclusive lock guarding the read-merge-write of a shared
     sidecar, so concurrent replays don't lose each other's entries.
     Held only around the (fast) merge, never during docker execution."""
     import fcntl
+    import os
+    import stat
 
     sidecar_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = sidecar_path.with_name(sidecar_path.name + ".lock")
-    with open(lock_path, "w") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+    lock_path = sidecar_path_lock(sidecar_path)
+    # O_NOFOLLOW + no O_TRUNC: a symlink planted at the lock path must not
+    # redirect (and truncate) a file elsewhere (Codex MCP review, High #1).
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(f"sidecar lock {lock_path} is not a regular file")
+        fcntl.flock(fd, fcntl.LOCK_EX)
         try:
             yield
         finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def sidecar_path_lock(sidecar_path: Path) -> Path:
+    """The advisory lock file that guards ``sidecar_path``."""
+    return sidecar_path.with_name(sidecar_path.name + ".lock")
 
 
 # ---------------------------------------------------------------------
@@ -115,6 +134,7 @@ def run_replay(
     render: Optional[str] = None,
     typed_trust_binary: Optional[str] = None,
     on_event: Optional[OnEvent] = None,
+    authorize_path: Optional[Callable[[Path], Path]] = None,
 ) -> ReplayResult:
     """Replay selected measurement claims and populate the sidecar.
 
@@ -142,6 +162,11 @@ def run_replay(
         # Per workflow/SCHEMA.md, claim.source resolves relative to the
         # TOP manifest directory, not the include file's directory.
         resolved_source = source_dir or claim.source_dir()
+        # A manifest can name any `source`; callers that enforce a path
+        # policy (the MCP server) check it before it is mounted, scored,
+        # or handed to git (Codex MCP review, High #2).
+        if authorize_path is not None:
+            resolved_source = authorize_path(resolved_source)
 
         outcome = "completed"
         stderr_tail: Optional[str] = None
@@ -187,6 +212,24 @@ def run_replay(
             stderr_tail = result.stderr_tail
             if result.timed_out:
                 outcome = "timed_out"
+            elif not dry_run and exit_code == DOCKER_RUN_FAILED:
+                # docker itself failed (daemon down, bad invocation): no
+                # experiment ran (Codex MCP review, Medium #11).
+                outcome = "infrastructure_error"
+            if outcome in ("timed_out", "infrastructure_error"):
+                # A failed attempt is not an observation: keep the previous
+                # sidecar entry instead of overwriting it with value=None.
+                claim_results.append(
+                    ReplayClaimResult(
+                        claim_id=claim.id,
+                        exit_code=exit_code,
+                        duration_s=duration_s,
+                        observed=None,
+                        outcome=outcome,
+                        stderr_tail=stderr_tail,
+                    )
+                )
+                continue
 
         if dry_run:
             claim_results.append(

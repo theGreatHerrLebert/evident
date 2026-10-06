@@ -21,10 +21,14 @@ Transport is JSON-RPC 2.0 over stdio (one frame per line). All logging goes to *
 |---|---|
 | `--allow-root <path>` | Repeatable allow-list. Tool calls may only touch paths under an allowed root (symlink-resolving; canonicalized at registration and per call). **Required** — with none configured, every call is rejected. |
 | `--allow-docker` | Permit `replay` to actually run docker. **Off by default** → `replay` is forced to dry-run. |
+| `--allow-image <ref>` | Repeatable. The docker images `replay` may run; the client's `image` must be one of them. Replaces the default (`proteon-evident:latest`). Prefer digest-pinned references (`name@sha256:...`). Invalid references are refused at startup. |
 | `--allow-extract` | Permit `extract_*` to call the Anthropic API. **Off by default** → `extract_*` runs dry. |
 
 The capability flags are the safety boundary: they live in the server, not the client's
-discretion. A client cannot make the server run docker or call the model unless the
+discretion. Containers run with `--security-opt no-new-privileges` and `--pids-limit 4096`;
+they still use host networking and a writable bind mount of the claim's source directory,
+which the allow-list must cover (the manifest's `source` is checked too, not only the
+`source_dir` argument). A client cannot make the server run docker or call the model unless the
 operator launched it with the corresponding flag.
 
 ## Tools
@@ -34,8 +38,8 @@ Runs a measurement claim's docker procedure, scores the artifact, writes the obs
 value to the sidecar. The render binary is the server's own trusted `typed-trust` — it is
 **not** client-selectable.
 
-Input: `manifest_path` (required), `claim`, `image`, `source_dir`, `budget`, `sidecar`,
-`dry_run`, `no_execute`, `render` (`json|md|html|mermaid`).
+Input: `manifest_path` (required), `claim`, `image` (must be an operator-allowed image),
+`source_dir`, `budget`, `sidecar`, `dry_run`, `no_execute`, `render` (`json|md|html|mermaid`).
 
 Output:
 ```json
@@ -84,6 +88,12 @@ Two tiers, mirroring `typed-trust-mcp`:
 
 A `dry_run: true` / `capability_gated: true` result is **not** an error — it means no
 procedure executed because the capability flag was off.
+
+`infrastructure_error` covers a missing docker binary and docker's own failure exit (125,
+daemon unavailable or invocation rejected). On a timeout the container is force-removed by
+name, not just the docker client killed. Neither outcome writes a sidecar entry, so the last
+successful verification of that claim is kept. Container output is spooled to disk and only
+its tail is returned. `budget` must be in (0, 86400] seconds.
 
 ## Register in a client
 

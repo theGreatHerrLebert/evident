@@ -21,7 +21,7 @@ use crate::review::ReviewEvent;
 use crate::synthesize::synthesize;
 use crate::translate::{
     backing_claim_for_event, translate_claim, translate_evidence, translate_review_event,
-    translate_tolerances, ManifestClaim, ManifestReviewEvent, ReviewEventSidecar,
+    translate_tolerances, ManifestClaim, ManifestLastVerified, ManifestReviewEvent, ReviewEventSidecar,
     TranslationContext,
 };
 
@@ -184,7 +184,7 @@ fn list_claims(state: &ServerState, args: Value) -> Result<Value, ToolError> {
     let total = claims.len();
     let start = cursor.min(total);
     let end = match limit {
-        Some(l) => (start + l).min(total),
+        Some(l) => start.saturating_add(l).min(total),
         None => total,
     };
     let slice = &claims[start..end];
@@ -336,7 +336,7 @@ fn list_review_events(state: &ServerState, args: Value) -> Result<Value, ToolErr
     }
     let total = filtered.len();
     let start = cursor.min(total);
-    let end = (start + limit).min(total);
+    let end = start.saturating_add(limit).min(total);
     let mut items: Vec<Value> = Vec::with_capacity(end - start);
     for e in &filtered[start..end] {
         let event = translate_review_event(e).map_err(|err| ToolError::data(err.to_string()))?;
@@ -387,6 +387,7 @@ fn query_claims(state: &ServerState, args: Value) -> Result<Value, ToolError> {
 
     let claims = load_claims_with_policy(&manifest_path, &state.policy)?;
     let mut matches: Vec<Value> = Vec::new();
+    let mut errors: Vec<Value> = Vec::new();
     let mut examined = 0usize;
     for (idx, c) in claims.iter().enumerate() {
         if idx < cursor {
@@ -394,7 +395,16 @@ fn query_claims(state: &ServerState, args: Value) -> Result<Value, ToolError> {
         }
         examined += 1;
         let report = synthesize_for(state, &manifest_path, &c.claim.id, sidecar_path.as_deref(), None);
-        let Ok(report) = report else { continue };
+        // A claim that fails to synthesize is reported, not silently
+        // dropped: an empty result must mean "no match" (Codex MCP review,
+        // Medium #10).
+        let report = match report {
+            Ok(r) => r,
+            Err(e) => {
+                errors.push(json!({"claim_id": c.claim.id, "error": e.message}));
+                continue;
+            }
+        };
 
         if let Some(ref status) = status_filter {
             if report["status"].as_str() != Some(status.as_str()) {
@@ -447,14 +457,15 @@ fn query_claims(state: &ServerState, args: Value) -> Result<Value, ToolError> {
             break;
         }
     }
-    let truncated = examined < claims.len() - cursor && matches.len() >= limit;
+    let truncated = examined < claims.len().saturating_sub(cursor) && matches.len() >= limit;
     let next_cursor = if truncated {
-        Some((cursor + examined).to_string())
+        Some(cursor.saturating_add(examined).to_string())
     } else {
         None
     };
     Ok(json!({
         "items": matches,
+        "errors": errors,
         "truncated": truncated,
         "cursor": next_cursor,
     }))
@@ -634,7 +645,7 @@ fn synthesize_for(
     manifest_path: &str,
     claim_id: &str,
     sidecar_path: Option<&str>,
-    _last_verified_path: Option<&str>,
+    last_verified_path: Option<&str>,
 ) -> Result<Value, ToolError> {
     let claims = load_claims_with_policy(manifest_path, &state.policy)?;
     let now = "1970-01-01T00:00:00Z".to_string();
@@ -645,15 +656,32 @@ fn synthesize_for(
         .find(|c| c.claim.id == claim_id)
         .ok_or_else(|| ToolError::data(format!("claim_id {claim_id:?} not in manifest")))?;
 
+    // Overlay the replay sidecar (last_verified.json) onto the claim, as the
+    // `typed-trust --sidecar` CLI does. This parameter used to be accepted
+    // and ignored, so replay results never reached MCP reports (Codex MCP
+    // review, High #7). Read through the canonical path the policy returned.
+    let mut target_claim = target.claim.clone();
+    if let Some(p) = last_verified_path {
+        let canonical = authorize_sidecar(state, p, "last_verified_sidecar")?;
+        let text = std::fs::read_to_string(&canonical).map_err(|e| {
+            ToolError::data(format!("cannot read last_verified_sidecar {p:?}: {e}"))
+        })?;
+        let overlay: HashMap<String, ManifestLastVerified> = serde_json::from_str(&text)
+            .map_err(|e| ToolError::data(format!("malformed last_verified_sidecar {p:?}: {e}")))?;
+        if let Some(lv) = overlay.get(claim_id) {
+            target_claim.last_verified = Some(lv.clone());
+        }
+    }
+
     let ctx = TranslationContext {
         now: now.clone(),
         manifest_path: target.source_path.clone(),
     };
-    let typed_claim = translate_claim(&ctx, &target.claim, &target.span)
+    let typed_claim = translate_claim(&ctx, &target_claim, &target.span)
         .map_err(|e| ToolError::data(e.to_string()))?
         .value;
-    let criteria = translate_tolerances(&target.claim).map_err(|e| ToolError::data(e.to_string()))?;
-    let evidence = translate_evidence(&ctx, &target.claim, &criteria)
+    let criteria = translate_tolerances(&target_claim).map_err(|e| ToolError::data(e.to_string()))?;
+    let evidence = translate_evidence(&ctx, &target_claim, &criteria)
         .map_err(|e| ToolError::data(e.to_string()))?
         .into_iter()
         .collect::<Vec<_>>();
@@ -699,7 +727,7 @@ fn synthesize_for(
     // Ok for non-extracted and research-tier extracted claims.
     let empty_raw: Vec<crate::translate::ManifestReviewEvent> = vec![];
     let events_for_claim = raw_by_claim.get(claim_id).unwrap_or(&empty_raw);
-    crate::translate::validate_promotion_rules(&target.claim, events_for_claim)
+    crate::translate::validate_promotion_rules(&target_claim, events_for_claim)
         .map_err(|e| ToolError::data(e.to_string()))?;
 
     let events: &[ReviewEvent] = events_by_claim

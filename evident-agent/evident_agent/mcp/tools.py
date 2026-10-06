@@ -16,6 +16,7 @@ they refuse real execution and run dry. Errors split into two tiers per
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,11 +26,17 @@ from .errors import ToolError
 from .policy import AllowListPathPolicy, PolicyDenied
 
 
+DEFAULT_IMAGE = "proteon-evident:latest"
+
+
 @dataclass
 class ServerState:
     policy: AllowListPathPolicy
     allow_docker: bool = False
     allow_extract: bool = False
+    # Images replay may run. The client picks among these; it cannot name an
+    # arbitrary image (Codex MCP review, High #4). Set with --allow-image.
+    allowed_images: frozenset = frozenset({DEFAULT_IMAGE})
 
 
 # ---------------------------------------------------------------------
@@ -111,6 +118,7 @@ def _authorize_writable_file(policy: AllowListPathPolicy, path: str) -> Path:
 # Tool definitions
 # ---------------------------------------------------------------------
 _MAX_LOG_LINES = 500
+_MAX_BUDGET_S = 24 * 3600.0  # per-claim docker wall-clock ceiling
 
 
 def tool_definitions() -> list[dict]:
@@ -124,7 +132,8 @@ def tool_definitions() -> list[dict]:
                 "and writes the last_verified.json sidecar. SAFETY: actually "
                 "executes Docker — requires the server's --allow-docker; without "
                 "it the call is forced to dry-run. `manifest_path`, `sidecar`, and "
-                "`source_dir` must lie under an --allow-root path. Use `dry_run` to "
+                "`source_dir` (and each claim's manifest `source`) must lie under an --allow-root path; "
+                "`image` must be one the operator allowed with --allow-image. Use `dry_run` to "
                 "preview the docker command; `no_execute` to score existing "
                 "artifacts only. `render` invokes the server's own trusted "
                 "typed-trust binary (the binary is NOT client-selectable)."
@@ -234,8 +243,17 @@ def _replay(state: ServerState, args: dict) -> dict:
 
     manifest_path = _authorize(state.policy, arg_str(args, "manifest_path"))
     claim = arg_str_opt(args, "claim")
-    image = arg_str_opt(args, "image") or "proteon-evident:latest"
+    image = arg_str_opt(args, "image") or DEFAULT_IMAGE
+    if image not in state.allowed_images:
+        raise ToolError.unauthorized(
+            f"image {image!r} is not allowed; the server allows "
+            f"{sorted(state.allowed_images)} (operator flag --allow-image)"
+        )
     budget = arg_float_opt(args, "budget", 600.0)
+    if not (math.isfinite(budget) and 0 < budget <= _MAX_BUDGET_S):
+        raise ToolError.invalid_params(
+            f"budget must be a number of seconds in (0, {_MAX_BUDGET_S:g}]"
+        )
     dry_run = arg_bool_opt(args, "dry_run")
     no_execute = arg_bool_opt(args, "no_execute")
     render = arg_str_opt(args, "render")
@@ -249,6 +267,8 @@ def _replay(state: ServerState, args: dict) -> dict:
         manifest_path.parent / "last_verified.json"
     )
     sidecar_path = _authorize_writable_file(state.policy, sidecar_arg)
+    # The derived lock file is written too, so it must pass the same policy.
+    _authorize_writable_file(state.policy, str(replay_mod.sidecar_path_lock(sidecar_path)))
 
     # Capability gate (hard-off): no --allow-docker → force dry-run.
     capability_gated = False
@@ -275,6 +295,8 @@ def _replay(state: ServerState, args: dict) -> dict:
             render=render,
             typed_trust_binary=None,  # NOT client-selectable (RCE gate, Codex Critical #1)
             on_event=collect,
+            # Every per-claim source dir, including manifest-derived ones.
+            authorize_path=lambda p: _authorize(state.policy, str(p)),
         )
     except replay_mod.NoClaimsMatched as exc:
         raise ToolError.data(str(exc))
