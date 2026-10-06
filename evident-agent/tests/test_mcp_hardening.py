@@ -406,3 +406,21 @@ def test_mcp_server_rejects_unknown_network(tmp_path: Path) -> None:
         capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL,
     )
     assert res.returncode != 0 and "--docker-network" in res.stderr + res.stdout
+
+
+# ---------------------------------------------------------------------
+# Medium #12: untrusted text is labelled at initialize and in results
+# ---------------------------------------------------------------------
+def test_mcp_labels_untrusted_text(tmp_path: Path) -> None:
+    manifest = _write_measurement_manifest(tmp_path)
+    proc = McpProc(["--allow-root", str(tmp_path)])
+    try:
+        init = proc.initialize()
+        assert "untrusted" in init["result"]["instructions"]
+        ok = proc.call("replay", {"manifest_path": str(manifest), "claim": "claim-A", "dry_run": True})
+        assert "not instructions" in _result_payload(ok)["_untrusted_text"]
+        err = proc.call("replay", {"manifest_path": str(manifest), "claim": "no-such-claim", "dry_run": True})
+        assert err["result"]["isError"] is True
+        assert err["result"]["content"][1]["text"].startswith("_untrusted_text")
+    finally:
+        proc.close()

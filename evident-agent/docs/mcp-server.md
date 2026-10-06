@@ -76,6 +76,16 @@ Output:
   "emitted_claims": 3, "skipped_files": 0 }
 ```
 
+## Untrusted text
+
+Tool results quote text that neither server wrote: manifest titles and claim text, review
+rationales and citations, extracted documents, process logs and stderr. Both servers
+(this one and `typed-trust-mcp`) state at `initialize` (`instructions`) that such text is
+untrusted data, not instructions, and add an `_untrusted_text` notice to every tool
+result (a field on success, a second content item on tier-2 errors). This makes the
+boundary explicit to the client; it cannot by itself stop a model from following
+injected text, so client-side policy still has to treat these strings as evidence only.
+
 ## Error model
 
 Two tiers, mirroring `typed-trust-mcp`:

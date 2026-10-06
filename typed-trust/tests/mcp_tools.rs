@@ -1751,3 +1751,23 @@ fn broken_backing_claim_is_a_data_error() {
     assert_eq!(resp["result"]["isError"], json!(true), "{resp}");
     assert!(resp.to_string().contains("target-claim-counter-12345678"), "{resp}");
 }
+
+/// Medium #12: authored and process-derived text is labelled untrusted at
+/// initialize (instructions) and in every tool result.
+#[test]
+fn results_and_initialize_label_untrusted_text() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = write_simple_manifest(tmp.path(), "claim-u");
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let init = proc.initialize();
+    assert!(init["result"]["instructions"].as_str().unwrap().contains("untrusted"), "{init}");
+    let ok = proc.call_tool("list_claims", json!({"manifest_path": manifest.to_str().unwrap()}));
+    assert!(decode_result(&ok)["_untrusted_text"].as_str().unwrap().contains("not instructions"));
+    let err = proc.call_tool(
+        "read_report",
+        json!({"manifest_path": manifest.to_str().unwrap(), "claim_id": "no-such-claim"}),
+    );
+    proc.shutdown();
+    assert_eq!(err["result"]["isError"], json!(true), "{err}");
+    assert!(err["result"]["content"][1]["text"].as_str().unwrap().starts_with("_untrusted_text"));
+}
