@@ -277,6 +277,8 @@ def _replay(state: ServerState, args: dict) -> dict:
             render=render,
             typed_trust_binary=None,  # NOT client-selectable (RCE gate, Codex Critical #1)
             on_event=collect,
+            # Every per-claim source dir, including manifest-derived ones.
+            authorize_path=lambda p: _authorize(state.policy, str(p)),
         )
     except replay_mod.NoClaimsMatched as exc:
         raise ToolError.data(str(exc))

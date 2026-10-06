@@ -129,6 +129,7 @@ def run_replay(
     render: Optional[str] = None,
     typed_trust_binary: Optional[str] = None,
     on_event: Optional[OnEvent] = None,
+    authorize_path: Optional[Callable[[Path], Path]] = None,
 ) -> ReplayResult:
     """Replay selected measurement claims and populate the sidecar.
 
@@ -156,6 +157,11 @@ def run_replay(
         # Per workflow/SCHEMA.md, claim.source resolves relative to the
         # TOP manifest directory, not the include file's directory.
         resolved_source = source_dir or claim.source_dir()
+        # A manifest can name any `source`; callers that enforce a path
+        # policy (the MCP server) check it before it is mounted, scored,
+        # or handed to git (Codex MCP review, High #2).
+        if authorize_path is not None:
+            resolved_source = authorize_path(resolved_source)
 
         outcome = "completed"
         stderr_tail: Optional[str] = None

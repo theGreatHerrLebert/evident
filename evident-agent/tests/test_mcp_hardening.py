@@ -65,3 +65,43 @@ def test_mcp_replay_lock_symlink_escape_denied(tmp_path: Path) -> None:
     finally:
         proc.close()
     assert victim.read_text() == "precious"
+
+
+# ---------------------------------------------------------------------
+# #2 Manifest-derived source dirs must pass the allow-list
+# ---------------------------------------------------------------------
+def test_mcp_replay_manifest_source_outside_root_denied(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    (tmp_path / "outside").mkdir()
+    manifest = _write_measurement_manifest(root)
+    manifest.write_text(manifest.read_text().replace("source: .", "source: ../outside"))
+
+    proc = McpProc(["--allow-root", str(root)])
+    try:
+        proc.initialize()
+        for mode in ({"dry_run": True}, {"no_execute": True}):
+            frame = proc.call(
+                "replay", {"manifest_path": str(manifest), "claim": "claim-A", **mode}
+            )
+            assert "error" in frame or frame["result"]["isError"] is True, (mode, frame)
+            assert "outside" in json.dumps(frame), frame
+    finally:
+        proc.close()
+    assert not (root / "last_verified.json").exists()
+
+
+def test_mcp_replay_manifest_source_inside_root_allowed(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    (root / "src").mkdir(parents=True)
+    manifest = _write_measurement_manifest(root)
+    manifest.write_text(manifest.read_text().replace("source: .", "source: src"))
+    proc = McpProc(["--allow-root", str(root)])
+    try:
+        proc.initialize()
+        frame = proc.call(
+            "replay", {"manifest_path": str(manifest), "claim": "claim-A", "dry_run": True}
+        )
+        assert frame["result"]["isError"] is False, frame
+    finally:
+        proc.close()
