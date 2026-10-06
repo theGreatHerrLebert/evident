@@ -506,6 +506,15 @@ fn walk_backing_chain(state: &ServerState, args: Value) -> Result<Value, ToolErr
     let max_depth = arg_usize_opt(&args, "max_depth").unwrap_or(4);
 
     let report = synthesize_for(state, &manifest_path, &claim_id, Some(&sidecar_path), None)?;
+    // Backing reports by claim id, to attach each to the challenge it backs.
+    let backing: HashMap<String, Value> = report["_graph"]["backing_reports"]
+        .as_array()
+        .map(|rs| {
+            rs.iter()
+                .filter_map(|r| r["claim"].as_str().map(|id| (id.to_string(), r.clone())))
+                .collect()
+        })
+        .unwrap_or_default();
     let challenges: Vec<Value> = report["_graph"]["review_events"]
         .as_array()
         .map(|events| {
@@ -516,7 +525,14 @@ fn walk_backing_chain(state: &ServerState, args: Value) -> Result<Value, ToolErr
                     Some(f) => e["id"].as_str() == Some(f.as_str()),
                     None => true,
                 })
-                .cloned()
+                .map(|e| {
+                    let backed_by = e["kind"]["data"]["backed_by"].as_str();
+                    json!({
+                        "event": e,
+                        "backed_by": backed_by,
+                        "backing_report": backed_by.and_then(|b| backing.get(b)).cloned(),
+                    })
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -524,8 +540,10 @@ fn walk_backing_chain(state: &ServerState, args: Value) -> Result<Value, ToolErr
         "claim_id": claim_id,
         "status": report["status"],
         "challenges": challenges,
+        // Backing claims are leaves by schema, so the chain is one level
+        // deep whatever max_depth is; it is echoed for compatibility.
+        "depth": 1,
         "max_depth": max_depth,
-        "note": "Phase 3-i returns one level. Future phases recurse via further read_report calls.",
     }))
 }
 
@@ -748,38 +766,34 @@ fn synthesize_with_claims(
         .map(|v| v.as_slice())
         .unwrap_or(&[]);
 
-    let backing_reports: Vec<crate::report::TrustReport> = backing_claims_by_target
-        .get(claim_id)
-        .map(|bcs| {
-            let mut out = Vec::new();
-            for bc in bcs {
-                let bc_ctx = TranslationContext {
-                    now: now.clone(),
-                    manifest_path: ctx.manifest_path.clone(),
-                };
-                let span = "(mcp_backing)".to_string();
-                if let Err(_) = translate_claim(&bc_ctx, bc, &span) {
-                    continue;
-                }
-                let Ok(bc_criteria) = translate_tolerances(bc) else { continue };
-                let bc_evidence: Vec<_> = match translate_evidence(&bc_ctx, bc, &bc_criteria) {
-                    Ok(opt) => opt.into_iter().collect(),
-                    Err(_) => continue,
-                };
-                let bc_report = synthesize(
-                    ClaimId::new(&bc.id),
-                    bc_criteria,
-                    &bc_evidence,
-                    &[],
-                    &[],
-                    &std::collections::HashSet::new(),
-                    now.clone(),
-                );
-                out.push(bc_report);
-            }
-            out
-        })
-        .unwrap_or_default();
+    // Backing claims are leaves by schema (no events of their own, no
+    // recursive backing), exactly as in the typed-trust CLI's
+    // synthesize_backing_reports. As there, a backing claim that fails to
+    // translate is an error, not a silent skip: a challenge cannot be
+    // sustained by a backing that does not exist.
+    let mut backing_reports: Vec<crate::report::TrustReport> = Vec::new();
+    for bc in backing_claims_by_target.get(claim_id).map(|v| v.as_slice()).unwrap_or(&[]) {
+        let bc_ctx = TranslationContext {
+            now: now.clone(),
+            manifest_path: ctx.manifest_path.clone(),
+        };
+        let fail = |e: String| ToolError::data(format!("backing claim {}: {e}", bc.id));
+        translate_claim(&bc_ctx, bc, &"(mcp_backing)".to_string()).map_err(|e| fail(e.to_string()))?;
+        let bc_criteria = translate_tolerances(bc).map_err(|e| fail(e.to_string()))?;
+        let bc_evidence: Vec<_> = translate_evidence(&bc_ctx, bc, &bc_criteria)
+            .map_err(|e| fail(e.to_string()))?
+            .into_iter()
+            .collect();
+        backing_reports.push(synthesize(
+            ClaimId::new(&bc.id),
+            bc_criteria,
+            &bc_evidence,
+            &[],
+            &[],
+            &std::collections::HashSet::new(),
+            now.clone(),
+        ));
+    }
 
     let report = synthesize(
         ClaimId::new(claim_id),

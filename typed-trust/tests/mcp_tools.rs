@@ -1679,3 +1679,75 @@ fn many_pipelined_requests_are_all_answered() {
     assert_eq!(seen.len(), n as usize);
     proc.shutdown();
 }
+
+/// Write the simple manifest plus a sidecar whose one substantive challenge
+/// carries an inline backing claim with the given tolerance op.
+fn write_backed_challenge(dir: &Path, backing_op: &str) -> (PathBuf, PathBuf) {
+    let manifest = write_simple_manifest(dir, "target-claim");
+    let sidecar = dir.join("review_events.json");
+    std::fs::write(
+        &sidecar,
+        serde_json::to_string_pretty(&json!({"events": [{
+            "claim_id": "target-claim",
+            "kind": "challenge",
+            "author": {"kind": "human", "name": "reviewer", "version": null},
+            "rationale": "Counter-evidence exceeds the bound.",
+            "timestamp": "2026-10-06T10:00:00Z",
+            "challenge": {
+                "category": "weak_statistics",
+                "target_criterion_id": "relative_error",
+                "violation": {"metric": "relative_error", "observed_value": 0.025, "bound": 0.02,
+                              "comparator": "<", "citation": "row 1"},
+                "backing_claim": {
+                    "id": "target-claim-counter-12345678",
+                    "kind": "measurement",
+                    "tier": "ci",
+                    "source": ".",
+                    "title": "Counter",
+                    "claim": "Observed 0.025 exceeds 0.02.",
+                    "tolerances": [{"metric": "relative_error", "op": backing_op, "value": 0.02, "prose": "exceeds"}],
+                    "evidence": {"oracle": ["Test"], "command": "true", "artifact": "out.json"}
+                }
+            }
+        }]}))
+        .unwrap(),
+    )
+    .unwrap();
+    (manifest, sidecar)
+}
+
+/// #8: each challenge carries its backing claim's report.
+#[test]
+fn walk_backing_chain_attaches_backing_report() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (manifest, sidecar) = write_backed_challenge(tmp.path(), ">");
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let payload = decode_result(&proc.call_tool(
+        "walk_backing_chain",
+        json!({"manifest_path": manifest.to_str().unwrap(), "claim_id": "target-claim",
+               "sidecar": sidecar.to_str().unwrap()}),
+    ));
+    proc.shutdown();
+    let ch = &payload["challenges"][0];
+    assert_eq!(ch["backed_by"], json!("target-claim-counter-12345678"), "{payload}");
+    assert_eq!(ch["backing_report"]["claim"], json!("target-claim-counter-12345678"), "{payload}");
+    assert!(ch["backing_report"]["status"].is_string(), "{payload}");
+    assert_eq!(payload["depth"], json!(1));
+}
+
+/// #8 parity with the CLI: a backing claim that fails to translate is an
+/// error, not a silently missing backing.
+#[test]
+fn broken_backing_claim_is_a_data_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (manifest, sidecar) = write_backed_challenge(tmp.path(), "not-an-op");
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let resp = proc.call_tool(
+        "read_report",
+        json!({"manifest_path": manifest.to_str().unwrap(), "claim_id": "target-claim",
+               "sidecar": sidecar.to_str().unwrap()}),
+    );
+    proc.shutdown();
+    assert_eq!(resp["result"]["isError"], json!(true), "{resp}");
+    assert!(resp.to_string().contains("target-claim-counter-12345678"), "{resp}");
+}
