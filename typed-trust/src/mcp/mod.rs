@@ -101,10 +101,36 @@ async fn write_frame(
     Ok(())
 }
 
+fn invalid_request(id: Value, why: &str) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {"code": -32600, "message": format!("Invalid Request: {why}")}
+    })
+}
+
 async fn dispatch(state: Arc<ServerState>, req: Value) -> Option<Value> {
-    let id = req.get("id").cloned()?;
-    let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
-    let params = req.get("params").cloned().unwrap_or(Value::Null);
+    // JSON-RPC 2.0 envelope (Codex MCP review, Low #13): a request must be an
+    // object with "jsonrpc": "2.0", a string "method", and an id that is a
+    // string, integer or null. Only a *valid* notification (no "id") gets no
+    // reply; an invalid frame without an id is answered with id null.
+    let Some(obj) = req.as_object() else {
+        return Some(invalid_request(Value::Null, "frame is not a JSON object (batches are not supported)"));
+    };
+    let id = match obj.get("id") {
+        None => None,
+        Some(v @ (Value::String(_) | Value::Null)) => Some(v.clone()),
+        Some(v @ Value::Number(n)) if n.is_i64() || n.is_u64() => Some(v.clone()),
+        Some(_) => return Some(invalid_request(Value::Null, "id must be a string, integer or null")),
+    };
+    if obj.get("jsonrpc").and_then(|v| v.as_str()) != Some("2.0") {
+        return Some(invalid_request(id.unwrap_or(Value::Null), "jsonrpc must be \"2.0\""));
+    }
+    let Some(method) = obj.get("method").and_then(|m| m.as_str()) else {
+        return Some(invalid_request(id.unwrap_or(Value::Null), "method must be a string"));
+    };
+    let id = id?; // a valid notification: handled by nobody, answered never
+    let params = obj.get("params").cloned().unwrap_or(Value::Null);
 
     match method {
         "initialize" => Some(json!({

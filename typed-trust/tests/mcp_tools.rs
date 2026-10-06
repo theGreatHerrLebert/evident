@@ -82,6 +82,15 @@ impl McpProc {
         }
     }
 
+    /// Write one raw line and return the next frame the server sends.
+    fn send_raw(&mut self, line: &str) -> Value {
+        writeln!(self.stdin, "{line}").expect("write");
+        self.stdin.flush().expect("flush");
+        let mut out = String::new();
+        self.stdout.read_line(&mut out).expect("read");
+        serde_json::from_str(out.trim()).expect("server frame is JSON")
+    }
+
     fn shutdown(mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -1598,4 +1607,30 @@ fn list_review_events_cursor_without_limit_does_not_overflow() {
     let total = all["items"].as_array().unwrap().len();
     assert!(total >= 2);
     assert_eq!(decode_result(&resp)["items"].as_array().unwrap().len(), total - 1);
+}
+
+/// Low #13: malformed JSON-RPC envelopes are answered with -32600, not
+/// accepted (array id) or silently dropped ({} / scalars).
+#[test]
+fn malformed_envelopes_get_invalid_request() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    for (frame, want_id) in [
+        (r#"{"jsonrpc":"2.0","id":[],"method":"tools/list"}"#, Value::Null),
+        (r#"{}"#, Value::Null),
+        (r#"42"#, Value::Null),
+        (r#"[{"jsonrpc":"2.0","id":1,"method":"tools/list"}]"#, Value::Null),
+        (r#"{"id":7,"method":"tools/list"}"#, json!(7)),
+        (r#"{"jsonrpc":"1.0","id":"x","method":"tools/list"}"#, json!("x")),
+        (r#"{"jsonrpc":"2.0","id":8}"#, json!(8)),
+    ] {
+        let resp = proc.send_raw(frame);
+        assert_eq!(resp["error"]["code"], json!(-32600), "{frame} -> {resp}");
+        assert_eq!(resp["id"], want_id, "{frame} -> {resp}");
+    }
+    // A valid notification gets no reply: the next frame answers the request.
+    writeln!(proc.stdin, r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#).unwrap();
+    let resp = proc.tools_list();
+    assert!(resp["result"]["tools"].is_array(), "{resp}");
+    proc.shutdown();
 }
