@@ -301,3 +301,66 @@ def test_mcp_replay_rejects_bad_budget(tmp_path: Path, budget) -> None:
         assert "error" in frame or frame["result"]["isError"] is True, frame
     finally:
         proc.close()
+
+
+# ---------------------------------------------------------------------
+# Low #14: dry runs create nothing; malformed sidecars are data errors
+# ---------------------------------------------------------------------
+from test_mcp_loadbearing import FIXTURE_PYPROJECT  # noqa: E402
+
+
+@pytest.mark.parametrize("server_args,call_args", [
+    ([], {}),                                  # capability-gated (no --allow-docker)
+    (["--allow-docker"], {"dry_run": True}),   # explicit dry run
+])
+def test_replay_dry_run_creates_no_directories(tmp_path: Path, server_args, call_args) -> None:
+    manifest = _write_measurement_manifest(tmp_path)
+    new_dir = tmp_path / "not" / "yet"
+    proc = McpProc(["--allow-root", str(tmp_path), *server_args])
+    try:
+        proc.initialize()
+        frame = proc.call(
+            "replay",
+            {"manifest_path": str(manifest), "claim": "claim-A",
+             "sidecar": str(new_dir / "last_verified.json"), **call_args},
+        )
+        assert frame["result"]["isError"] is False, frame
+        assert _result_payload(frame)["dry_run"] is True
+    finally:
+        proc.close()
+    assert not (tmp_path / "not").exists()
+
+
+def test_extract_repo_dry_run_writes_preview_inside_authorized_dir(tmp_path: Path) -> None:
+    """Unlike replay, a dry extraction writes preview files by design; the
+    output dir must still be authorized (and is materialized + rechecked)."""
+    out = tmp_path / "gen" / "deep"
+    proc = McpProc(["--allow-root", str(FIXTURE_PYPROJECT), "--allow-root", str(tmp_path)])
+    try:
+        proc.initialize()
+        frame = proc.call(
+            "extract_repo",
+            {"repo_path": str(FIXTURE_PYPROJECT), "output_dir": str(out), "dry_run": True},
+        )
+        assert frame["result"]["isError"] is False, frame
+        assert _result_payload(frame)["dry_run"] is True
+    finally:
+        proc.close()
+    assert out.is_dir()
+
+
+@pytest.mark.parametrize("content", ["[]", "{not json", '"a string"'])
+def test_malformed_sidecar_is_data_error(tmp_path: Path, content: str) -> None:
+    manifest = _write_measurement_manifest(tmp_path)
+    (tmp_path / "last_verified.json").write_text(content)
+    proc = McpProc(["--allow-root", str(tmp_path)])
+    try:
+        proc.initialize()
+        frame = proc.call(
+            "replay", {"manifest_path": str(manifest), "claim": "claim-A", "no_execute": True}
+        )
+        # Tier-2 (the model can react), naming the problem, not -32603 internal.
+        assert "result" in frame and frame["result"]["isError"] is True, frame
+        assert "sidecar" in frame["result"]["content"][0]["text"]
+    finally:
+        proc.close()

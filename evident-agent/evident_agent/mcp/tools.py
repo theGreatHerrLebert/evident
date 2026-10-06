@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from ..sidecar import SidecarFormatError
 from .errors import ToolError
 from .policy import AllowListPathPolicy, PolicyDenied
 
@@ -263,18 +264,25 @@ def _replay(state: ServerState, args: dict) -> dict:
     source_dir_arg = arg_str_opt(args, "source_dir")
     source_dir = _authorize(state.policy, source_dir_arg) if source_dir_arg else None
 
-    sidecar_arg = arg_str_opt(args, "sidecar") or str(
-        manifest_path.parent / "last_verified.json"
-    )
-    sidecar_path = _authorize_writable_file(state.policy, sidecar_arg)
-    # The derived lock file is written too, so it must pass the same policy.
-    _authorize_writable_file(state.policy, str(replay_mod.sidecar_path_lock(sidecar_path)))
-
     # Capability gate (hard-off): no --allow-docker → force dry-run.
     capability_gated = False
     if not state.allow_docker and not dry_run and not no_execute:
         dry_run = True
         capability_gated = True
+
+    sidecar_arg = arg_str_opt(args, "sidecar") or str(
+        manifest_path.parent / "last_verified.json"
+    )
+    lock_arg = str(replay_mod.sidecar_path_lock(Path(sidecar_arg)))
+    if dry_run:
+        # A dry run writes nothing, so it must not create directories either
+        # (Codex MCP review, Low #14): authorize without materializing.
+        sidecar_path = _authorize(state.policy, sidecar_arg, allow_missing=True)
+        _authorize(state.policy, lock_arg, allow_missing=True)
+    else:
+        sidecar_path = _authorize_writable_file(state.policy, sidecar_arg)
+        # The derived lock file is written too, so it must pass the same policy.
+        _authorize_writable_file(state.policy, str(replay_mod.sidecar_path_lock(sidecar_path)))
 
     log: list[str] = []
 
@@ -302,6 +310,8 @@ def _replay(state: ServerState, args: dict) -> dict:
         raise ToolError.data(str(exc))
     except replay_mod.RenderFailed as exc:
         raise ToolError.data(f"typed-trust render failed (exit {exc.exit_code}): {exc.stderr}")
+    except SidecarFormatError as exc:
+        raise ToolError.data(str(exc))
 
     payload = {
         "sidecar_path": str(result.sidecar_path) if result.sidecar_path else None,
@@ -343,7 +353,6 @@ def _extract_repo(state: ServerState, args: dict) -> dict:
     from ..extract import cli as extract_cli
 
     repo_path = _authorize(state.policy, arg_str(args, "repo_path"))
-    output_dir = _authorize_writable_dir(state.policy, arg_str(args, "output_dir"))
     project = arg_str_opt(args, "project")
     model = arg_str_opt(args, "model") or "claude-opus-4-7"
     dry_run = arg_bool_opt(args, "dry_run")
@@ -351,6 +360,10 @@ def _extract_repo(state: ServerState, args: dict) -> dict:
 
     if not state.allow_extract:
         dry_run = True
+    # A dry extraction still writes preview files into output_dir
+    # (audit.write_dry_run_outputs), so it is materialized and strict-
+    # rechecked in both modes.
+    output_dir = _authorize_writable_dir(state.policy, arg_str(args, "output_dir"))
 
     try:
         result = extract_cli.run_extract_repo(
@@ -373,7 +386,6 @@ def _extract_paper(state: ServerState, args: dict) -> dict:
     from ..extract import cli as extract_cli
 
     paper_path = _authorize(state.policy, arg_str(args, "paper_path"))
-    output_dir = _authorize_writable_dir(state.policy, arg_str(args, "output_dir"))
     source_id = arg_str_opt(args, "source_id")
     project = arg_str_opt(args, "project")
     model = arg_str_opt(args, "model") or "claude-opus-4-7"
@@ -382,6 +394,10 @@ def _extract_paper(state: ServerState, args: dict) -> dict:
 
     if not state.allow_extract:
         dry_run = True
+    # A dry extraction still writes preview files into output_dir
+    # (audit.write_dry_run_outputs), so it is materialized and strict-
+    # rechecked in both modes.
+    output_dir = _authorize_writable_dir(state.policy, arg_str(args, "output_dir"))
 
     try:
         result = extract_cli.run_extract_paper(
