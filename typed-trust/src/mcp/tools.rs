@@ -136,7 +136,7 @@ fn get_superseded_events_tool() -> Value {
 fn walk_backing_chain_tool() -> Value {
     json!({
         "name": "walk_backing_chain",
-        "description": "Walk the backing-claim graph rooted at one claim, grouped by originating Challenge event. Use to answer questions like 'why is this claim contested?' or 'what backs this challenge?'. Returns nested {challenges -> backing_claims -> children} with cycle detection and a configurable max_depth (default 4). Optional event_id filters to one branch.",
+        "description": "Walk the backing-claim graph rooted at one claim, grouped by originating Challenge event. Use to answer questions like 'why is this claim contested?' or 'what backs this challenge?'. Currently returns only the immediate Challenge events of the claim and their backing claims; nested traversal and cycle detection are not implemented yet, and max_depth is echoed but has no effect. Optional event_id filters to one branch.",
         "inputSchema": {
             "type": "object",
             "properties": {
