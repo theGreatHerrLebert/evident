@@ -301,3 +301,126 @@ def test_mcp_replay_rejects_bad_budget(tmp_path: Path, budget) -> None:
         assert "error" in frame or frame["result"]["isError"] is True, frame
     finally:
         proc.close()
+
+
+# ---------------------------------------------------------------------
+# Low #14: dry runs create nothing; malformed sidecars are data errors
+# ---------------------------------------------------------------------
+from test_mcp_loadbearing import FIXTURE_PYPROJECT  # noqa: E402
+
+
+@pytest.mark.parametrize("server_args,call_args", [
+    ([], {}),                                  # capability-gated (no --allow-docker)
+    (["--allow-docker"], {"dry_run": True}),   # explicit dry run
+])
+def test_replay_dry_run_creates_no_directories(tmp_path: Path, server_args, call_args) -> None:
+    manifest = _write_measurement_manifest(tmp_path)
+    new_dir = tmp_path / "not" / "yet"
+    proc = McpProc(["--allow-root", str(tmp_path), *server_args])
+    try:
+        proc.initialize()
+        frame = proc.call(
+            "replay",
+            {"manifest_path": str(manifest), "claim": "claim-A",
+             "sidecar": str(new_dir / "last_verified.json"), **call_args},
+        )
+        assert frame["result"]["isError"] is False, frame
+        assert _result_payload(frame)["dry_run"] is True
+    finally:
+        proc.close()
+    assert not (tmp_path / "not").exists()
+
+
+def test_extract_repo_dry_run_writes_preview_inside_authorized_dir(tmp_path: Path) -> None:
+    """Unlike replay, a dry extraction writes preview files by design; the
+    output dir must still be authorized (and is materialized + rechecked)."""
+    out = tmp_path / "gen" / "deep"
+    proc = McpProc(["--allow-root", str(FIXTURE_PYPROJECT), "--allow-root", str(tmp_path)])
+    try:
+        proc.initialize()
+        frame = proc.call(
+            "extract_repo",
+            {"repo_path": str(FIXTURE_PYPROJECT), "output_dir": str(out), "dry_run": True},
+        )
+        assert frame["result"]["isError"] is False, frame
+        assert _result_payload(frame)["dry_run"] is True
+    finally:
+        proc.close()
+    assert out.is_dir()
+
+
+@pytest.mark.parametrize("content", ["[]", "{not json", '"a string"'])
+def test_malformed_sidecar_is_data_error(tmp_path: Path, content: str) -> None:
+    manifest = _write_measurement_manifest(tmp_path)
+    (tmp_path / "last_verified.json").write_text(content)
+    proc = McpProc(["--allow-root", str(tmp_path)])
+    try:
+        proc.initialize()
+        frame = proc.call(
+            "replay", {"manifest_path": str(manifest), "claim": "claim-A", "no_execute": True}
+        )
+        # Tier-2 (the model can react), naming the problem, not -32603 internal.
+        assert "result" in frame and frame["result"]["isError"] is True, frame
+        assert "sidecar" in frame["result"]["content"][0]["text"]
+    finally:
+        proc.close()
+
+
+# ---------------------------------------------------------------------
+# Host networking is an operator setting (--docker-network)
+# ---------------------------------------------------------------------
+@pytest.mark.parametrize("mode", ["host", "bridge", "none"])
+def test_build_command_network_modes(mode: str) -> None:
+    argv = build_command("img", "claim-A", Path("/tmp"), network=mode)
+    assert argv[argv.index("--network") + 1] == mode
+
+
+def test_build_command_rejects_unknown_network() -> None:
+    with pytest.raises(ValueError):
+        build_command("img", "claim-A", Path("/tmp"), network="container:other")
+
+
+def test_mcp_docker_network_flag_reaches_docker(tmp_path: Path, fake_docker) -> None:
+    log = fake_docker("ok")
+    (tmp_path / "out.json").write_text("{}")
+    manifest = _write_measurement_manifest(tmp_path)
+    proc = McpProc(["--allow-root", str(tmp_path), "--allow-docker", "--allow-image", "img",
+                    "--docker-network", "none"], env=dict(os.environ))
+    try:
+        proc.initialize()
+        frame = proc.call("replay", {"manifest_path": str(manifest), "claim": "claim-A", "image": "img"})
+        assert "result" in frame, frame
+    finally:
+        proc.close()
+    run_call = next(c for c in log.read_text().splitlines() if c.startswith("run "))
+    assert "--network none" in run_call
+
+
+def test_mcp_server_rejects_unknown_network(tmp_path: Path) -> None:
+    import subprocess
+    import sys
+
+    res = subprocess.run(
+        [sys.executable, "-m", "evident_agent.mcp", "--allow-root", str(tmp_path),
+         "--docker-network", "container:x"],
+        capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL,
+    )
+    assert res.returncode != 0 and "--docker-network" in res.stderr + res.stdout
+
+
+# ---------------------------------------------------------------------
+# Medium #12: untrusted text is labelled at initialize and in results
+# ---------------------------------------------------------------------
+def test_mcp_labels_untrusted_text(tmp_path: Path) -> None:
+    manifest = _write_measurement_manifest(tmp_path)
+    proc = McpProc(["--allow-root", str(tmp_path)])
+    try:
+        init = proc.initialize()
+        assert "untrusted" in init["result"]["instructions"]
+        ok = proc.call("replay", {"manifest_path": str(manifest), "claim": "claim-A", "dry_run": True})
+        assert "not instructions" in _result_payload(ok)["_untrusted_text"]
+        err = proc.call("replay", {"manifest_path": str(manifest), "claim": "no-such-claim", "dry_run": True})
+        assert err["result"]["isError"] is True
+        assert err["result"]["content"][1]["text"].startswith("_untrusted_text")
+    finally:
+        proc.close()

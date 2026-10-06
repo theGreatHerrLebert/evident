@@ -44,11 +44,27 @@ class LastVerifiedEntry:
         return {k: v for k, v in asdict(self).items() if v is not None}
 
 
+class SidecarFormatError(ValueError):
+    """The sidecar exists but is not a JSON object of claim entries."""
+
+
 def read(path: Path) -> Dict[str, LastVerifiedEntry]:
-    """Load a sidecar file; return empty dict if the file doesn't exist."""
+    """Load a sidecar file; return empty dict if the file doesn't exist.
+
+    Raises :class:`SidecarFormatError` for malformed content, so callers
+    can report it as a data problem rather than an internal defect.
+    """
     if not path.is_file():
         return {}
-    raw = json.loads(path.read_text())
+    try:
+        raw = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise SidecarFormatError(f"sidecar {path} is not valid JSON ({exc})") from exc
+    if not isinstance(raw, dict):
+        raise SidecarFormatError(
+            f"sidecar {path} must be a JSON object mapping claim ids to entries, "
+            f"got {type(raw).__name__}"
+        )
     out: Dict[str, LastVerifiedEntry] = {}
     for claim_id, entry in raw.items():
         if not isinstance(entry, dict):

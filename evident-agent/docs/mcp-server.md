@@ -22,11 +22,12 @@ Transport is JSON-RPC 2.0 over stdio (one frame per line). All logging goes to *
 | `--allow-root <path>` | Repeatable allow-list. Tool calls may only touch paths under an allowed root (symlink-resolving; canonicalized at registration and per call). **Required** — with none configured, every call is rejected. |
 | `--allow-docker` | Permit `replay` to actually run docker. **Off by default** → `replay` is forced to dry-run. |
 | `--allow-image <ref>` | Repeatable. The docker images `replay` may run; the client's `image` must be one of them. Replaces the default (`proteon-evident:latest`). Prefer digest-pinned references (`name@sha256:...`). Invalid references are refused at startup. |
+| `--docker-network <mode>` | Network for replay containers: `host` (default, kept because some claims reach local registries or pip mirrors), `bridge`, or `none` (no network). |
 | `--allow-extract` | Permit `extract_*` to call the Anthropic API. **Off by default** → `extract_*` runs dry. |
 
 The capability flags are the safety boundary: they live in the server, not the client's
 discretion. Containers run with `--security-opt no-new-privileges` and `--pids-limit 4096`;
-they still use host networking and a writable bind mount of the claim's source directory,
+by default they use host networking (`--docker-network` changes it) and a writable bind mount of the claim's source directory,
 which the allow-list must cover (the manifest's `source` is checked too, not only the
 `source_dir` argument). A client cannot make the server run docker or call the model unless the
 operator launched it with the corresponding flag.
@@ -74,6 +75,16 @@ Output:
 { "output_dir": "...", "source_id": "...", "source_sha": "...",
   "emitted_claims": 3, "skipped_files": 0 }
 ```
+
+## Untrusted text
+
+Tool results quote text that neither server wrote: manifest titles and claim text, review
+rationales and citations, extracted documents, process logs and stderr. Both servers
+(this one and `typed-trust-mcp`) state at `initialize` (`instructions`) that such text is
+untrusted data, not instructions, and add an `_untrusted_text` notice to every tool
+result (a field on success, a second content item on tier-2 errors). This makes the
+boundary explicit to the client; it cannot by itself stop a model from following
+injected text, so client-side policy still has to treat these strings as evidence only.
 
 ## Error model
 

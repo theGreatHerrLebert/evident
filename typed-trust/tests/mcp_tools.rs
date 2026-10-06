@@ -82,6 +82,15 @@ impl McpProc {
         }
     }
 
+    /// Write one raw line and return the next frame the server sends.
+    fn send_raw(&mut self, line: &str) -> Value {
+        writeln!(self.stdin, "{line}").expect("write");
+        self.stdin.flush().expect("flush");
+        let mut out = String::new();
+        self.stdout.read_line(&mut out).expect("read");
+        serde_json::from_str(out.trim()).expect("server frame is JSON")
+    }
+
     fn shutdown(mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -1598,4 +1607,167 @@ fn list_review_events_cursor_without_limit_does_not_overflow() {
     let total = all["items"].as_array().unwrap().len();
     assert!(total >= 2);
     assert_eq!(decode_result(&resp)["items"].as_array().unwrap().len(), total - 1);
+}
+
+/// Low #13: malformed JSON-RPC envelopes are answered with -32600, not
+/// accepted (array id) or silently dropped ({} / scalars).
+#[test]
+fn malformed_envelopes_get_invalid_request() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    for (frame, want_id) in [
+        (r#"{"jsonrpc":"2.0","id":[],"method":"tools/list"}"#, Value::Null),
+        (r#"{}"#, Value::Null),
+        (r#"42"#, Value::Null),
+        (r#"[{"jsonrpc":"2.0","id":1,"method":"tools/list"}]"#, Value::Null),
+        (r#"{"id":7,"method":"tools/list"}"#, json!(7)),
+        (r#"{"jsonrpc":"1.0","id":"x","method":"tools/list"}"#, json!("x")),
+        (r#"{"jsonrpc":"2.0","id":8}"#, json!(8)),
+    ] {
+        let resp = proc.send_raw(frame);
+        assert_eq!(resp["error"]["code"], json!(-32600), "{frame} -> {resp}");
+        assert_eq!(resp["id"], want_id, "{frame} -> {resp}");
+    }
+    // A valid notification gets no reply: the next frame answers the request.
+    writeln!(proc.stdin, r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#).unwrap();
+    let resp = proc.tools_list();
+    assert!(resp["result"]["tools"].is_array(), "{resp}");
+    proc.shutdown();
+}
+
+/// Medium #6: an oversized frame is refused (not buffered) and the
+/// server keeps serving afterwards.
+#[test]
+fn oversized_frame_is_refused_and_server_survives() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let big = format!(
+        r#"{{"jsonrpc":"2.0","id":99,"method":"tools/list","params":{{"pad":"{}"}}}}"#,
+        "x".repeat(5 * 1024 * 1024)
+    );
+    let resp = proc.send_raw(&big);
+    assert_eq!(resp["error"]["code"], json!(-32600), "{}", resp);
+    assert!(resp["error"]["message"].as_str().unwrap().contains("exceeds"));
+    assert!(proc.tools_list()["result"]["tools"].is_array());
+    proc.shutdown();
+}
+
+/// Medium #6: many pipelined requests are all answered with the
+/// concurrency cap and continuous task reaping in place.
+#[test]
+fn many_pipelined_requests_are_all_answered() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let n = 300u64;
+    for i in 0..n {
+        writeln!(
+            proc.stdin,
+            "{}",
+            json!({"jsonrpc": "2.0", "id": 10_000 + i, "method": "initialize", "params": {}})
+        )
+        .unwrap();
+    }
+    proc.stdin.flush().unwrap();
+    let mut seen = std::collections::HashSet::new();
+    while seen.len() < n as usize {
+        let mut line = String::new();
+        proc.stdout.read_line(&mut line).unwrap();
+        let v: Value = serde_json::from_str(line.trim()).unwrap();
+        assert!(v.get("error").is_none(), "{v}");
+        seen.insert(v["id"].as_u64().unwrap());
+    }
+    assert_eq!(seen.len(), n as usize);
+    proc.shutdown();
+}
+
+/// Write the simple manifest plus a sidecar whose one substantive challenge
+/// carries an inline backing claim with the given tolerance op.
+fn write_backed_challenge(dir: &Path, backing_op: &str) -> (PathBuf, PathBuf) {
+    let manifest = write_simple_manifest(dir, "target-claim");
+    let sidecar = dir.join("review_events.json");
+    std::fs::write(
+        &sidecar,
+        serde_json::to_string_pretty(&json!({"events": [{
+            "claim_id": "target-claim",
+            "kind": "challenge",
+            "author": {"kind": "human", "name": "reviewer", "version": null},
+            "rationale": "Counter-evidence exceeds the bound.",
+            "timestamp": "2026-10-06T10:00:00Z",
+            "challenge": {
+                "category": "weak_statistics",
+                "target_criterion_id": "relative_error",
+                "violation": {"metric": "relative_error", "observed_value": 0.025, "bound": 0.02,
+                              "comparator": "<", "citation": "row 1"},
+                "backing_claim": {
+                    "id": "target-claim-counter-12345678",
+                    "kind": "measurement",
+                    "tier": "ci",
+                    "source": ".",
+                    "title": "Counter",
+                    "claim": "Observed 0.025 exceeds 0.02.",
+                    "tolerances": [{"metric": "relative_error", "op": backing_op, "value": 0.02, "prose": "exceeds"}],
+                    "evidence": {"oracle": ["Test"], "command": "true", "artifact": "out.json"}
+                }
+            }
+        }]}))
+        .unwrap(),
+    )
+    .unwrap();
+    (manifest, sidecar)
+}
+
+/// #8: each challenge carries its backing claim's report.
+#[test]
+fn walk_backing_chain_attaches_backing_report() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (manifest, sidecar) = write_backed_challenge(tmp.path(), ">");
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let payload = decode_result(&proc.call_tool(
+        "walk_backing_chain",
+        json!({"manifest_path": manifest.to_str().unwrap(), "claim_id": "target-claim",
+               "sidecar": sidecar.to_str().unwrap()}),
+    ));
+    proc.shutdown();
+    let ch = &payload["challenges"][0];
+    assert_eq!(ch["backed_by"], json!("target-claim-counter-12345678"), "{payload}");
+    assert_eq!(ch["backing_report"]["claim"], json!("target-claim-counter-12345678"), "{payload}");
+    assert!(ch["backing_report"]["status"].is_string(), "{payload}");
+    assert_eq!(payload["depth"], json!(1));
+}
+
+/// #8 parity with the CLI: a backing claim that fails to translate is an
+/// error, not a silently missing backing.
+#[test]
+fn broken_backing_claim_is_a_data_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (manifest, sidecar) = write_backed_challenge(tmp.path(), "not-an-op");
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let resp = proc.call_tool(
+        "read_report",
+        json!({"manifest_path": manifest.to_str().unwrap(), "claim_id": "target-claim",
+               "sidecar": sidecar.to_str().unwrap()}),
+    );
+    proc.shutdown();
+    assert_eq!(resp["result"]["isError"], json!(true), "{resp}");
+    assert!(resp.to_string().contains("target-claim-counter-12345678"), "{resp}");
+}
+
+/// Medium #12: authored and process-derived text is labelled untrusted at
+/// initialize (instructions) and in every tool result.
+#[test]
+fn results_and_initialize_label_untrusted_text() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = write_simple_manifest(tmp.path(), "claim-u");
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let init = proc.initialize();
+    assert!(init["result"]["instructions"].as_str().unwrap().contains("untrusted"), "{init}");
+    let ok = proc.call_tool("list_claims", json!({"manifest_path": manifest.to_str().unwrap()}));
+    assert!(decode_result(&ok)["_untrusted_text"].as_str().unwrap().contains("not instructions"));
+    let err = proc.call_tool(
+        "read_report",
+        json!({"manifest_path": manifest.to_str().unwrap(), "claim_id": "no-such-claim"}),
+    );
+    proc.shutdown();
+    assert_eq!(err["result"]["isError"], json!(true), "{err}");
+    assert!(err["result"]["content"][1]["text"].as_str().unwrap().starts_with("_untrusted_text"));
 }
