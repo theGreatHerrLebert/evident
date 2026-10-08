@@ -325,6 +325,10 @@ fn main() -> ExitCode {
         // carry these fields — they round-trip via the aux map keyed
         // by event_id.
         decorate_with_aux(&mut augmented, &review_event_aux);
+        typed_trust::attach_gist(
+            &mut augmented,
+            typed_trust::translate::translate_gist(mc).ok().flatten().as_ref(),
+        );
 
         reports.push(augmented);
     }

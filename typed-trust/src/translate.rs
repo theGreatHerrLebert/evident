@@ -74,6 +74,13 @@ pub struct ManifestClaim {
     pub last_verified: Option<ManifestLastVerified>,
     pub assumptions: Option<Vec<String>>,
     pub failure_modes: Option<Vec<String>>,
+    /// Plain-language summary for fast screening. Authored in the
+    /// manifest and rendered verbatim beside the claim; never evidence.
+    /// Kept raw here and checked by [`translate_gist`], so a bad gist
+    /// fails its own claim rather than the whole manifest. The outer
+    /// Option is "key present", the inner one "not null".
+    #[serde(default, deserialize_with = "present_or_null")]
+    pub gist: Option<Option<serde_yaml_ng::Value>>,
     /// PR5b: required when ``kind == "metadata_compatibility"``.
     /// Carries the declarative configuration claim — what field is
     /// being asserted, what value the source declares, and which
@@ -93,6 +100,90 @@ pub struct ManifestClaim {
     /// Absent for any other kind.
     #[serde(default)]
     pub observation: Option<ManifestObservationBlock>,
+}
+
+/// A claim told plainly: what it says, why it matters, and what would
+/// show it wrong. The author's framing, shown next to the precise claim
+/// and never in place of it; the engine does not check it against the
+/// evidence. Produced by [`translate_gist`] from the raw manifest value.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ManifestGist {
+    pub what: String,
+    pub why: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wrong_if: Option<String>,
+}
+
+/// The most characters a gist part may have once whitespace is collapsed.
+/// Same bound as workflow/validate_manifest.py.
+pub const GIST_MAX_CHARS: usize = 300;
+
+/// Distinguish a key written as `null` (`Some(None)`) from an absent key
+/// (`None`, via `#[serde(default)]`).
+fn present_or_null<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
+}
+
+/// Check a claim's `gist` with the validator's rules: a mapping whose
+/// `what` and `why`, and on measurement claims `wrong_if`, are non-empty
+/// strings of at most [`GIST_MAX_CHARS`] characters. Returns the gist
+/// with whitespace collapsed, or `None` when the claim has none.
+pub fn translate_gist(mc: &ManifestClaim) -> Result<Option<ManifestGist>, TranslateError> {
+    use serde_yaml_ng::Value;
+    let bad = |reason: String| TranslateError::InvalidGist {
+        id: mc.id.clone(),
+        reason,
+    };
+    // Kept as raw YAML so every shape problem (a sentence instead of a
+    // mapping, an unknown key, a null part) fails this claim only.
+    let map = match &mc.gist {
+        None => return Ok(None),
+        Some(None) => return Err(bad("gist is null; omit it or give what, why and wrong_if".into())),
+        Some(Some(Value::Mapping(m))) => m,
+        Some(Some(_)) => return Err(bad("gist must be a mapping with what, why and wrong_if".into())),
+    };
+    let mut unknown: Vec<String> = map
+        .keys()
+        .filter(|k| !matches!(k.as_str(), Some("what" | "why" | "wrong_if")))
+        .map(|k| match k {
+            Value::String(t) => t.clone(),
+            other => format!("{other:?}"),
+        })
+        .collect();
+    if !unknown.is_empty() {
+        unknown.sort();
+        return Err(bad(format!("gist has unknown keys: {unknown:?}")));
+    }
+    let text = |key: &str, required: bool| -> Result<Option<String>, TranslateError> {
+        match map.get(key) {
+            None if required => Err(bad(format!("gist.{key} is required"))),
+            None => Ok(None),
+            Some(Value::String(t)) => {
+                let t = t.split_whitespace().collect::<Vec<_>>().join(" ");
+                if t.is_empty() {
+                    Err(bad(format!("gist.{key} must be a non-empty string")))
+                } else if t.chars().count() > GIST_MAX_CHARS {
+                    Err(bad(format!(
+                        "gist.{key} is {} characters; keep it under {GIST_MAX_CHARS}",
+                        t.chars().count()
+                    )))
+                } else {
+                    Ok(Some(t))
+                }
+            }
+            // Present but null, a number, a list...: the validator rejects
+            // these too, whether or not the part is required.
+            Some(_) => Err(bad(format!("gist.{key} must be a non-empty string"))),
+        }
+    };
+    let what = text("what", true)?.expect("required");
+    let why = text("why", true)?.expect("required");
+    let wrong_if = text("wrong_if", mc.kind == "measurement")?;
+    Ok(Some(ManifestGist { what, why, wrong_if }))
 }
 
 /// PR5b: structured block for ``kind: metadata_compatibility``
@@ -627,6 +718,8 @@ pub enum TranslateError {
     /// behavioral_concordance claim accidentally carries an
     /// `observation` block. Keeps the kinds disjoint.
     NonObservationClaimCarriesObservation { id: String },
+    /// The claim's `gist` breaks the rules in [`translate_gist`].
+    InvalidGist { id: String, reason: String },
     /// `last_verified.values` names an output that no tolerance of the
     /// claim declares.
     LastVerifiedUnknownOutput { id: String, output: String },
@@ -863,6 +956,7 @@ impl std::fmt::Display for TranslateError {
                 "claim {id}: only kind=third_party_observation may carry \
                  an `observation` block"
             ),
+            TranslateError::InvalidGist { id, reason } => write!(f, "claim {id}: {reason}"),
             TranslateError::LastVerifiedUnknownOutput { id, output } => write!(
                 f,
                 "claim {id}: last_verified.values names output {output:?}, \
@@ -908,6 +1002,9 @@ pub fn translate_claim(
     mc: &ManifestClaim,
     span: &str,
 ) -> Result<Attested<Claim>, TranslateError> {
+    // Checked before the scope test so policy and reference claims, which
+    // carry gists too, are held to the same rules as the validator applies.
+    translate_gist(mc)?;
     // §0 scope: measurement claims (empirical), metadata_compatibility
     // claims (PR5b — declarative configuration claims), or
     // behavioral_concordance claims (PR5f — paper measured-behavior

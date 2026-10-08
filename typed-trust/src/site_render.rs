@@ -135,7 +135,13 @@ pub fn render_site(
                     counts["total"] = json!(counts["total"].as_u64().unwrap_or(0) + 1);
                 }
             }
-            fragments.insert(id.clone(), Value::String(render_html_fragment(r)));
+            // The drawer shows the gist above the claim; keep it out of the
+            // fragment below so it does not appear twice.
+            let mut fragment_input = (*r).clone();
+            if let Some(o) = fragment_input.as_object_mut() {
+                o.remove("gist");
+            }
+            fragments.insert(id.clone(), Value::String(render_html_fragment(&fragment_input)));
             reports_out.insert(id.clone(), (*r).clone());
         }
 
@@ -149,6 +155,15 @@ pub fn render_site(
                     "not_synthesized".into()
                 }
             });
+
+        // The checked gist from the report when there is one. Policy and
+        // reference claims have no report but passed the same gist check
+        // unless their status is error, so their written gist is shown.
+        let gist = match report {
+            Some(r) => r.get("gist").cloned().unwrap_or(Value::Null),
+            None if status == "error" => Value::Null,
+            None => c["gist"].clone(),
+        };
 
         let oracles: Vec<Value> = c["evidence"]["oracle"].as_array().cloned().unwrap_or_default();
         let provenance_kind = match &c["provenance"] {
@@ -169,6 +184,7 @@ pub fn render_site(
             "case": c["case"],
             "pattern": c["pattern"],
             "claim": c["claim"],
+            "gist": gist,
             "provenance": provenance_kind,
             "review_status": c["review_status"],
             "inputs": c["inputs"],
@@ -194,8 +210,18 @@ pub fn render_site(
         "fragments": fragments,
         "skipped": skipped,
     });
-    // `</script>` inside embedded JSON would terminate the data block.
-    let data_json = serde_json::to_string(&data).unwrap_or_else(|_| "{}".into()).replace("</", "<\\/");
+    // Manifest text must not be able to end the data block: `</script>`
+    // closes it, and `<!--<script` switches the HTML tokenizer into a
+    // mode where the real closing tag no longer does. Escaping every
+    // `<`, `>` and `&` as a JSON unicode escape rules out both; U+2028
+    // and U+2029 are escaped for older JavaScript parsers.
+    let data_json = serde_json::to_string(&data)
+        .unwrap_or_else(|_| "{}".into())
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('&', "\\u0026")
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029");
 
     let title = if project.is_empty() { "EVIDENT claims".to_string() } else { format!("EVIDENT — {project}") };
 
@@ -274,6 +300,12 @@ body { max-width: none; margin: 0; padding: 0; background: var(--ground); color:
 #site table.claims tr.row:hover { background: var(--hover); }
 #site table.claims td.title { max-width: 34rem; }
 #site table.claims td.title .id { display: block; color: var(--muted); font-family: var(--mono); font-size: 0.74rem; }
+#site table.claims td.title .gist { display: block; color: var(--muted); font-size: 0.82rem; margin-top: 0.15rem; }
+#site #drawer .gist { background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; padding: 0.6rem 0.9rem; margin: 0.6rem 0; }
+#site #drawer .gist dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 0.75rem; margin: 0.3rem 0 0; }
+#site #drawer .gist dt { font-weight: 600; }
+#site #drawer .gist dd { margin: 0; }
+#site #drawer .gist .note { color: var(--muted); font-size: 0.78rem; }
 #site .pill { display: inline-block; padding: 0.05rem 0.5rem; border-radius: 10px; font-size: 0.75rem; font-weight: 600; border: 1px solid transparent; white-space: nowrap; }
 #site .pill.tier-ci { background: color-mix(in srgb, var(--accent) 16%, var(--surface)); color: var(--accent); }
 #site .pill.tier-release { background: color-mix(in srgb, var(--pass) 16%, var(--surface)); color: var(--pass); }
@@ -466,6 +498,7 @@ const SITE_JS: &str = r##"
     oracle: 'The reference the output is compared against: an established tool, an analytic solution, or simulated ground truth. It should be independent of the code under test, but the page does not check that, and an oracle can itself be wrong; the manifest records which one was used so both can be argued about.',
     criteria: 'Each tolerance on a claim becomes one criterion. ✓ the observed value met the tolerance · ✗ it did not · ? not assessed — the check exists, but the evidence this page was built from holds no dated observed value for it (or it is a prose-only tolerance, which cannot be assessed).',
     verified: 'The date and commit of the last recorded result, from the manifest or its last_verified.json sidecar, with any observed values. A date without values records a run but no measurement; a date from a --no-execute replay marks when stored outputs were scored, not a re-run. Empty means nothing is recorded; the project may keep it in a release bundle instead.',
+    gist: 'The author’s plain-language version of the claim: what it says, why it matters, and what would show it wrong. A screening aid written in the manifest, not a result — the engine does not check it, and the precise claim below it is what is tested.',
     provenance: 'Who or what authored the claim (a person, an automated extraction from a paper or repo) and whether it has been reviewed.',
   };
 
@@ -481,9 +514,10 @@ const SITE_JS: &str = r##"
     subsystem:  () => ({ title: 'Subsystem', body: G.subsystem }),
     oracle:     () => ({ title: 'Oracle', body: G.oracle }),
     capability: () => ({ title: 'Capability', body: G.capability }),
-    criteria:   () => ({ title: 'Checks (criteria)', body: G.criteria, items: [['✓ passed', 'The observed value met its tolerance.'], ['✗ failed', 'The observed value was outside its tolerance.'], ['? not assessed', 'The check is defined, but no observed value was available when this page was built.']] }),
+    criteria:   () => ({ title: 'Checks (criteria)', body: G.criteria, items: [['✓ passed', 'The observed value met its tolerance.'], ['✗ failed', 'The observed value was outside its tolerance.'], ['? not assessed', 'The check is defined, but the evidence this page was built from holds no dated observed value for it, or it is a prose-only tolerance.']] }),
     verified:   () => ({ title: 'Last verified', body: G.verified }),
     provenance: () => ({ title: 'Provenance', body: G.provenance }),
+    gist:       () => ({ title: 'In plain words', body: G.gist }),
     graph:      () => ({ title: 'Reading the graph', body: 'Circles are claims, coloured by status, with a thick border at release tier. Diamonds are oracles; small rectangles are capabilities (dashed links) and subsystems (dotted links). Red arrows are challenges backed by another claim.', items: [['claim', G.claim], ['oracle', G.oracle], ['capability', G.capability], ['subsystem', G.subsystem]] }),
   };
   const qbtn = (topic, label) => `<button class="q" type="button" data-help="${topic}" aria-haspopup="dialog" aria-expanded="false" aria-label="What is ${esc(label || topic)}?" title="What is ${esc(label || topic)}?">?</button>`;
@@ -551,7 +585,7 @@ const SITE_JS: &str = r##"
 
   function matches(c) {
     for (const f of FACETS) { const sel = state.sel[f.key]; if (sel.size && !f.get(c).some(v => sel.has(v))) return false; }
-    if (state.q) { const q = state.q.toLowerCase(); const blob = [c.id, c.title, c.claim, c.subsystem, ...(c.oracles || []), ...(c.capabilities || [])].join(' ').toLowerCase(); if (!blob.includes(q)) return false; }
+    if (state.q) { const q = state.q.toLowerCase(); const blob = [c.id, c.title, c.claim, ...Object.values(c.gist || {}), c.subsystem, ...(c.oracles || []), ...(c.capabilities || [])].join(' ').toLowerCase(); if (!blob.includes(q)) return false; }
     return true;
   }
   function filtered() { return CLAIMS.filter(matches); }
@@ -653,7 +687,7 @@ const SITE_JS: &str = r##"
 
   // ---------- table ----------
   const COLS = [
-    { key: 'title', label: 'Claim', q: 'claim', tip: G.claim, cell: c => `<td class="title">${esc(c.title)}<span class="id">${esc(c.id)}</span></td>`, val: c => c.title },
+    { key: 'title', label: 'Claim', q: 'claim', tip: G.claim, cell: c => `<td class="title">${esc(c.title)}${c.gist && c.gist.what ? `<span class="gist">${esc(c.gist.what)}</span>` : ''}<span class="id">${esc(c.id)}</span></td>`, val: c => c.title },
     { key: 'kind', label: 'Kind', q: 'kind', tip: G.kind._, cell: c => `<td><span class="pill kind" title="${esc(G.kind[c.kind] || '')}">${esc(c.kind)}</span></td>`, val: c => c.kind },
     { key: 'tier', label: 'Tier', q: 'tier', tip: G.tier._, cell: c => `<td><span class="pill tier-${esc(c.tier)}" title="${esc(G.tier[c.tier] || '')}">${esc(c.tier)}</span></td>`, val: c => TIERS.indexOf(c.tier) },
     { key: 'status', label: 'Status', q: 'status', tip: G.status._, cell: c => `<td><span class="pill status-${esc(c.status)}" title="${esc(G.status[c.status] || '')}">${esc(STATUS_LABEL[c.status] || c.status)}</span></td>`, val: c => c.status },
@@ -772,7 +806,14 @@ const SITE_JS: &str = r##"
     const QT = { 'Trust strategy': 'strategy', 'Subsystem': 'subsystem', 'Oracles': 'oracle', 'Capabilities': 'capability' };
     const rel = (label, vals, facet, tip) => vals && vals.length ? `<dt title="${esc(tip || '')}">${label}${qbtn(QT[label], label)}</dt><dd class="rel">${vals.map(v => `<a href="#" data-facet="${facet}" data-val="${esc(v)}" title="Show all claims with this ${label.toLowerCase()}">${esc(v)}</a>`).join(', ')}</dd>` : '';
     const lv = c.last_verified || {};
+    const g = c.gist || {};
+    const gistBox = g.what ? `<div class="gist"><span class="note">In plain words — the author’s summary, not a result${qbtn('gist', 'plain-language summary')}</span><dl>
+        <dt>In short</dt><dd>${esc(g.what)}</dd>
+        ${g.why ? `<dt>Why it matters</dt><dd>${esc(g.why)}</dd>` : ''}
+        ${g.wrong_if ? `<dt>Wrong if</dt><dd>${esc(g.wrong_if)}</dd>` : ''}
+      </dl></div>` : '';
     let html = `<h1>${esc(c.title)}</h1>
+      ${gistBox}
       <p><span class="pill kind" title="${esc(G.kind[c.kind] || '')}">${esc(c.kind)}</span>${qbtn('kind', 'kind')} <span class="pill tier-${esc(c.tier)}" title="${esc(G.tier[c.tier] || '')}">${esc(c.tier)} tier</span>${qbtn('tier', 'tier')} <span class="pill status-${esc(c.status)}" title="${esc(G.status[c.status] || '')}">${esc(STATUS_LABEL[c.status] || c.status)}</span>${qbtn('status', 'status')}</p>
       <p class="lead-in">What is claimed</p>
       <div class="claimtext">${esc(c.claim || '')}</div>

@@ -2454,3 +2454,94 @@ claims:
         "expected MeasurementWithoutOracle, got {err:?}",
     );
 }
+
+// ----------------------------------------------------------------------
+// gist: checked per claim, with the validator's rules
+// ----------------------------------------------------------------------
+
+fn gist_claim(kind: &str, gist: &str) -> String {
+    format!(
+        r#"
+claims:
+  - id: g
+    title: t
+    kind: {kind}
+    tier: research
+    source: .
+    claim: c
+{gist}
+"#
+    )
+}
+
+fn gist_of(yaml: &str) -> Result<Option<typed_trust::translate::ManifestGist>, String> {
+    let manifest = parse_manifest_file(yaml).map_err(|e| format!("parse: {e}"))?;
+    typed_trust::translate::translate_gist(&manifest.claims[0]).map_err(|e| e.to_string())
+}
+
+#[test]
+fn gist_is_optional() {
+    assert!(gist_of(&gist_claim("measurement", "")).unwrap().is_none());
+}
+
+#[test]
+fn gist_is_accepted_and_whitespace_collapsed() {
+    let g = gist_of(&gist_claim(
+        "measurement",
+        "    gist:\n      what: \"It  holds.\"\n      why: It matters.\n      wrong_if: It fails.",
+    ))
+    .unwrap()
+    .unwrap();
+    assert_eq!(g.what, "It holds.");
+    assert_eq!(g.wrong_if.as_deref(), Some("It fails."));
+}
+
+#[test]
+fn gist_wrong_if_is_required_only_on_measurement_claims() {
+    let e = gist_of(&gist_claim("measurement", "    gist:\n      what: a\n      why: b")).unwrap_err();
+    assert!(e.contains("gist.wrong_if is required"), "{e}");
+    assert!(gist_of(&gist_claim("policy", "    gist:\n      what: a\n      why: b")).unwrap().is_some());
+}
+
+#[test]
+fn gist_rejects_what_the_validator_rejects() {
+    for (gist, msg) in [
+        ("    gist: null", "gist is null"),
+        ("    gist:\n      what: 42\n      why: b\n      wrong_if: c", "gist.what must be a non-empty string"),
+        ("    gist:\n      what: \"  \"\n      why: b\n      wrong_if: c", "gist.what must be a non-empty string"),
+        ("    gist:\n      what: a\n      why: b\n      wrong_if: null", "gist.wrong_if must be a non-empty string"),
+    ] {
+        let e = gist_of(&gist_claim("measurement", gist)).unwrap_err();
+        assert!(e.contains(msg), "{gist}: {e}");
+    }
+    let long = format!("    gist:\n      what: {}\n      why: b\n      wrong_if: c", "x".repeat(301));
+    let e = gist_of(&gist_claim("measurement", &long)).unwrap_err();
+    assert!(e.contains("keep it under 300"), "{e}");
+}
+
+#[test]
+fn a_bad_gist_fails_its_claim_through_translate_claim() {
+    let manifest = parse_manifest_file(&gist_claim("measurement", "    gist:\n      what: 42\n      why: b\n      wrong_if: c")).unwrap();
+    let e = translate_claim(&ctx("m.yaml"), &manifest.claims[0], "claims[0]").unwrap_err();
+    assert!(matches!(e, TranslateError::InvalidGist { .. }), "{e}");
+}
+
+#[test]
+fn gist_shape_errors_fail_the_claim_not_the_manifest() {
+    for (gist, msg) in [
+        ("    gist: just a sentence", "gist must be a mapping"),
+        ("    gist:\n      - what\n      - why", "gist must be a mapping"),
+        ("    gist:\n      what: a\n      why: b\n      wrong_if: c\n      falsified_by: d", "unknown keys"),
+    ] {
+        // The manifest still parses; only translate_gist objects.
+        let e = gist_of(&gist_claim("measurement", gist)).unwrap_err();
+        assert!(!e.starts_with("parse:"), "{gist}: whole manifest failed: {e}");
+        assert!(e.contains(msg), "{gist}: {e}");
+    }
+}
+
+#[test]
+fn gist_rejects_a_null_wrong_if_even_where_optional() {
+    let e = gist_of(&gist_claim("policy", "    gist:\n      what: a\n      why: b\n      wrong_if: null")).unwrap_err();
+    assert!(e.contains("gist.wrong_if must be a non-empty string"), "{e}");
+}

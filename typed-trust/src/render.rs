@@ -216,6 +216,16 @@ pub struct RenderInput<'a> {
     pub observation_result: Option<&'a ConcordanceResult>,
 }
 
+/// Attach a claim's plain-language gist to its augmented report as a
+/// top-level `gist` block, for the human and site renderers. Kept out of
+/// [`RenderInput`] because it is presentation only: the report itself
+/// never depends on it.
+pub fn attach_gist(augmented: &mut Value, gist: Option<&crate::translate::ManifestGist>) {
+    if let (Some(g), Some(obj)) = (gist, augmented.as_object_mut()) {
+        obj.insert("gist".into(), serde_json::to_value(g).expect("serialize gist"));
+    }
+}
+
 /// Produce the augmented JSON. The normative report is serialized first;
 /// renderer-aux fields are added in-place.
 pub fn render_augmented(input: &RenderInput) -> Value {

@@ -98,6 +98,7 @@ silently mis-match.
 | `provenance`      | no       | enum/object | `automatic` (default), `human`, `peer-reviewed`, extractor provenance, or structured provenance (see below) |
 | `reviewers`       | no⁶      | list   | Named reviewers backing a `peer-reviewed` claim |
 | `last_verified`   | no       | object | `{commit, date, value, values, corpus_sha}` — staleness signal and observed values |
+| `gist`            | no       | object | `{what, why, wrong_if}` — the claim in plain words, for screening |
 | `assumptions`     | yes      | list   | Prose strings |
 | `failure_modes`   | yes      | list   | Prose strings |
 
@@ -375,6 +376,29 @@ optional in the manifest itself; readers should treat `null` as
 "unknown / never run / staleness explicitly unclaimed". Live status is
 typically held in a sidecar (`last_verified.json`) keyed by claim id so
 the manifest stays declarative.
+
+## `gist`
+
+```yaml
+gist:
+  what: We built fake instrument files, and standard analysis software read them like real ones.
+  why: Labs and journals treat raw files as proof that an experiment happened.
+  wrong_if: Any of the 14 planted proteins goes missing from any vendor's file.
+```
+
+Optional. The claim told plainly, so a reader can screen many claims
+fast: `what` it says, `why` it matters, and what would show it wrong
+(`wrong_if`, required on measurement claims). Each part is one or two
+sentences, at most 300 characters. Renderers show it verbatim above the
+precise claim and label it as the author's summary. It is never evidence,
+and the trust engine does not check it, so it must not say more than
+`claim` and `tolerances` do; `wrong_if` should name the same failure the
+tolerances test.
+
+Quote a part that YAML could read as something other than text, such as
+`yes`, `no`, `on`, `off` or a date. The validator reads YAML 1.1, where
+those are booleans or dates and fail as a gist part; the trust engine
+reads YAML 1.2 and would take them as text.
 
 ## Composition
 
