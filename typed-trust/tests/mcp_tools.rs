@@ -1771,3 +1771,22 @@ fn results_and_initialize_label_untrusted_text() {
     assert_eq!(err["result"]["isError"], json!(true), "{err}");
     assert!(err["result"]["content"][1]["text"].as_str().unwrap().starts_with("_untrusted_text"));
 }
+
+/// The MCP report carries the checked gist, as the CLI's does.
+#[test]
+fn read_report_carries_the_gist() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = write_simple_manifest(tmp.path(), "claim-gist");
+    let text = std::fs::read_to_string(&manifest).unwrap() + "    gist:\n      what: It stays   under two percent.\n      why: Larger errors would mislead.\n      wrong_if: The error reaches two percent.\n";
+    std::fs::write(&manifest, text).unwrap();
+    let mut proc = McpProc::spawn(&["--allow-manifest", tmp.path().to_str().unwrap()]);
+    let report = decode_result(&proc.call_tool(
+        "read_report",
+        json!({"manifest_path": manifest.to_str().unwrap(), "claim_id": "claim-gist"}),
+    ));
+    proc.shutdown();
+    let s = report.to_string();
+    // Whitespace is collapsed by translate_gist, as for the CLI.
+    assert!(s.contains("It stays under two percent."), "gist missing: {s}");
+    assert!(s.contains("The error reaches two percent."), "gist missing: {s}");
+}

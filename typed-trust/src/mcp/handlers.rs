@@ -805,7 +805,7 @@ fn synthesize_with_claims(
         now,
     );
 
-    let augmented = render_augmented(&RenderInput {
+    let mut augmented = render_augmented(&RenderInput {
         report: &report,
         evidence: &evidence,
         related_events: events,
@@ -817,6 +817,10 @@ fn synthesize_with_claims(
             observation: typed_claim.observation.as_ref(),
             observation_result: None,
     });
+    crate::attach_gist(
+        &mut augmented,
+        crate::translate::translate_gist(&target_claim).ok().flatten().as_ref(),
+    );
     let _ = supersede_projection; // reserved for future expansion
     Ok(augmented)
 }

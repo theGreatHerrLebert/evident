@@ -21,6 +21,23 @@ pub fn render_markdown(augmented_json: &Value) -> String {
         status_label(status)
     ));
 
+    // The author's plain-language framing, quoted and labelled so it
+    // reads as theirs and not as a result. Escaped, so manifest text
+    // cannot add links, images, emphasis or raw HTML.
+    if let Some(g) = augmented_json.get("gist") {
+        let line = |label: &str, key: &str| {
+            g[key]
+                .as_str()
+                .map(|t| format!("> **{label}** {}  \n", escape_markdown(t)))
+                .unwrap_or_default()
+        };
+        out.push_str("> *In plain words — the author's summary, not a result.*  \n");
+        out.push_str(&line("In short:", "what"));
+        out.push_str(&line("Why it matters:", "why"));
+        out.push_str(&line("Wrong if:", "wrong_if"));
+        out.push_str("\n");
+    }
+
     if let Some(criteria) = augmented_json["criteria"].as_array() {
         if !criteria.is_empty() {
             out.push_str("## Criteria\n\n");
@@ -1023,4 +1040,26 @@ fn render_gap(out: &mut String, g: &Value) {
             }
         }
     }
+}
+
+
+/// Make author text inert in markdown: collapse whitespace (so it stays on
+/// one quoted line), backslash-escape markdown punctuation, and entity-
+/// escape the characters HTML would interpret.
+fn escape_markdown(text: &str) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut out = String::with_capacity(flat.len());
+    for ch in flat.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '\\' | '`' | '*' | '_' | '[' | ']' | '(' | ')' | '#' | '!' | '|' | '~' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
 }

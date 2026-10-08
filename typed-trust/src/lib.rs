@@ -53,7 +53,7 @@ pub use synthesize::{
     compute_backing_reports, detect_cycle_contested, synthesize, BackingClaimInputs,
     ClaimLookup,
 };
-pub use render::{render_augmented, RenderInput};
+pub use render::{attach_gist, render_augmented, RenderInput};
 pub use human_render::render_markdown;
 pub use graph::render_mermaid_graph;
 pub use html_render::{render_html, render_html_fragment};

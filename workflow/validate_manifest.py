@@ -560,6 +560,37 @@ def validate_last_verified(
             require_not_placeholder(value[key], f"last_verified.{key}", claim_id)
 
 
+GIST_KEYS = ("what", "why", "wrong_if")
+GIST_MAX_CHARS = 300
+
+
+def validate_gist(value: Any, claim_id: str, *, kind: str | None) -> None:
+    """A claim told plainly, for fast screening: what it says, why it
+    matters, and what would show it wrong. Short by design; the precise
+    claim stays the thing that is checked."""
+    if not isinstance(value, dict):
+        fail(f"claim {claim_id}: gist must be a mapping with what, why and wrong_if")
+    unknown = sorted(str(k) for k in value if k not in GIST_KEYS)
+    if unknown:
+        fail(f"claim {claim_id}: gist has unknown keys: {unknown}")
+    required = ["what", "why"] + (["wrong_if"] if kind == "measurement" else [])
+    for key in required:
+        if key not in value:
+            fail(f"claim {claim_id}: gist.{key} is required")
+    for key in GIST_KEYS:
+        if key not in value:
+            continue
+        text = value[key]
+        if not isinstance(text, str) or not text.strip():
+            fail(f"claim {claim_id}: gist.{key} must be a non-empty string")
+        length = len(" ".join(text.split()))
+        if length > GIST_MAX_CHARS:
+            fail(
+                f"claim {claim_id}: gist.{key} is {length} characters; keep it "
+                f"under {GIST_MAX_CHARS} (the claim itself holds the detail)"
+            )
+
+
 def validate_metadata_block(value: Any, claim_id: str) -> None:
     if not isinstance(value, dict):
         fail(f"claim {claim_id}: metadata must be a mapping")
@@ -774,8 +805,40 @@ def merge_vocabularies(declared: Any) -> dict[str, set[str]]:
     return merged
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """SafeLoader that rejects a mapping with a repeated key. PyYAML keeps
+    the last value silently; the trust engine refuses the whole manifest,
+    so a manifest that validated could still fail to translate."""
+
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            # `<<` merges another mapping in; keys it brings may be
+            # overridden here by design, so only explicit keys count.
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                continue
+            key = self.construct_object(key_node, deep=deep)
+            try:
+                repeated = key in seen
+                seen.add(key)
+            except TypeError:
+                raise yaml.constructor.ConstructorError(
+                    None, None, f"unhashable mapping key {key!r}", key_node.start_mark
+                )
+            if repeated:
+                raise yaml.constructor.ConstructorError(
+                    None, None, f"duplicate key {key!r}", key_node.start_mark
+                )
+        return super().construct_mapping(node, deep=deep)
+
+
 def _load_yaml_mapping(path: pathlib.Path, label: str) -> dict:
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    try:
+        data = yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
+    except yaml.constructor.ConstructorError as exc:
+        mark = exc.problem_mark
+        where = f" at line {mark.line + 1}, column {mark.column + 1}" if mark else ""
+        fail(f"{label} {path}: {exc.problem}{where}")
     if not isinstance(data, dict):
         fail(f"{label} must be a mapping: {path}")
     return data
@@ -968,6 +1031,8 @@ def validate_manifest(path: pathlib.Path, *, strict_release_pins: bool = False) 
                     None,
                 ),
             )
+        if "gist" in claim:
+            validate_gist(claim["gist"], claim_id, kind=kind)
         validate_provenance_and_reviewers(claim, claim_id)
 
         if kind == "measurement":

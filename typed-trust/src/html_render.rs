@@ -133,6 +133,21 @@ pub fn render_html_fragment(augmented_json: &Value) -> String {
         format_status(status)
     ));
 
+    // The author's plain-language framing, labelled so it is not read as
+    // a result.
+    if let Some(g) = augmented_json.get("gist") {
+        out.push_str("  <div class=\"panel gist\">\n    <p class=\"panel-footnote\">In plain words — the author's summary, not a result.</p>\n");
+        for (label, key) in [("In short", "what"), ("Why it matters", "why"), ("Wrong if", "wrong_if")] {
+            if let Some(t) = g[key].as_str() {
+                out.push_str(&format!(
+                    "    <div class=\"detail-row\"><span class=\"detail-label\">{label}:</span> {}</div>\n",
+                    escape_html(t)
+                ));
+            }
+        }
+        out.push_str("  </div>\n");
+    }
+
     // Attestation graph (Mermaid).
     out.push_str("  <h2>Attestation graph</h2>\n");
     out.push_str("  <div class=\"mermaid\">\n");
