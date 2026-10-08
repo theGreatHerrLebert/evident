@@ -420,10 +420,13 @@ const SITE_JS: &str = r##"
   const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]));
   const TIERS = ['ci', 'release', 'research'];
   const PROJECT = DATA.project || 'this project';
+  // An example claim from this manifest, so the definition below is not
+  // illustrated with another project's claim.
+  const EXAMPLE = (CLAIMS.find(c => c.kind === 'measurement' && c.title) || CLAIMS.find(c => c.title) || {}).title;
 
   // ---------- glossary: one source of truth for every explanation on the page ----------
   const G = {
-    claim: `A claim is one specific, checkable statement about ${PROJECT} — for example "the SASA value on this structure agrees with Biopython within 1%". EVIDENT does not ask whether the code looks right; it asks what is claimed, what evidence supports it, and what would falsify it.`,
+    claim: `A claim is one specific, checkable statement about ${PROJECT}${EXAMPLE ? ` — for example "${EXAMPLE}"` : ''}. EVIDENT does not ask whether the code looks right; it asks what is claimed, what evidence supports it, and what would falsify it.`,
     kind: {
       _: 'What sort of statement the claim is. Most are measurements; a few are rules or placeholders.',
       measurement: 'A numeric result is compared against an independent reference (the oracle) and must land inside a stated tolerance. This is the kind that gets a pass/fail trust report.',
@@ -446,7 +449,7 @@ const SITE_JS: &str = r##"
     },
     status: {
       _: 'What the trust engine concluded after looking at the evidence and any review events. It is computed, never typed in by hand.',
-      current: 'No open objection. The evidence stands as recorded.',
+      current: 'No open objection has been filed. This is review state, not a result: the checks show whether the criteria passed, and a Current claim can have none assessed.',
       contested: 'Someone filed a challenge that is backed by evidence (or a procedural problem such as a missing artifact), and it has not been resolved.',
       superseded: 'A newer claim or attestation replaces this one.',
       not_synthesized: 'Policy and reference claims are not measurements, so there is nothing to compute a trust report from.',
@@ -460,9 +463,9 @@ const SITE_JS: &str = r##"
     },
     subsystem: `The part of ${PROJECT} the claim is about, in the project's own vocabulary (e.g. an I/O layer, a force field, an alignment routine). Useful for asking "how well is this area covered?".`,
     capability: 'The property a downstream user can rely on if the claim holds — phrased as a parity or a guarantee (e.g. "alignment TM-score parity"). Several claims can back the same capability at different tiers.',
-    oracle: 'The independent reference the output is compared against: an established tool, an analytic solution, or simulated ground truth. An oracle can itself be wrong; the manifest records which one was used so that can be argued about.',
-    criteria: 'Each tolerance on a claim becomes one criterion. ✓ the observed value met the tolerance · ✗ it did not · ? no observed value was available in this render — the check exists but this page was built without its replay results.',
-    verified: 'When the claim’s command was last re-run and the observed value recorded. Empty means the observation is not in the manifest; the project may keep it in a release bundle instead.',
+    oracle: 'The reference the output is compared against: an established tool, an analytic solution, or simulated ground truth. It should be independent of the code under test, but the page does not check that, and an oracle can itself be wrong; the manifest records which one was used so both can be argued about.',
+    criteria: 'Each tolerance on a claim becomes one criterion. ✓ the observed value met the tolerance · ✗ it did not · ? not assessed — the check exists, but the evidence this page was built from holds no dated observed value for it (or it is a prose-only tolerance, which cannot be assessed).',
+    verified: 'The date and commit of the last recorded result, from the manifest or its last_verified.json sidecar, with any observed values. A date without values records a run but no measurement; a date from a --no-execute replay marks when stored outputs were scored, not a re-run. Empty means nothing is recorded; the project may keep it in a release bundle instead.',
     provenance: 'Who or what authored the claim (a person, an automated extraction from a paper or repo) and whether it has been reviewed.',
   };
 
@@ -599,7 +602,7 @@ const SITE_JS: &str = r##"
       { v: st('superseded'), l: 'superseded', s: 'replaced by a newer claim', q: 'status' },
       { v: `${crit.pass} / ${crit.total}`, l: 'checks passed', s: 'observed value met its tolerance', q: 'criteria', cls: crit.pass ? 'good' : '' },
       { v: crit.fail, l: 'checks failed', s: 'observed value outside tolerance', q: 'criteria', cls: crit.fail ? 'bad' : '' },
-      { v: crit.na, l: 'not assessed', s: 'check exists, no observation in this render', q: 'criteria', cls: 'na' },
+      { v: crit.na, l: 'not assessed', s: 'check exists, no recorded value', q: 'criteria', cls: 'na' },
       { v: vis.filter(c => c.tier === 'release').length, l: 'release-tier', s: 'heavy, pinned, replayable evidence', q: 'tier' },
     ];
     $('#summary').innerHTML = tiles.map(t => `<div class="tile ${t.cls || ''}"><div class="num">${t.v}</div><div class="lbl">${t.l}${qbtn(t.q, t.l)}</div><div class="sub">${esc(t.s)}</div></div>`).join('');
@@ -612,10 +615,17 @@ const SITE_JS: &str = r##"
     const tiers = TIERS.filter(t => CLAIMS.some(c => c.tier === t));
     const statuses = [...new Set(CLAIMS.map(c => c.status))];
     const nOr = new Set(CLAIMS.flatMap(c => c.oracles || [])).size, nCap = new Set(CLAIMS.flatMap(c => c.capabilities || [])).size, nSub = new Set(CLAIMS.map(c => c.subsystem).filter(Boolean)).size;
+    const crit = CLAIMS.reduce((a, c) => { const k = c.criteria || {}; a.pass += k.pass || 0; a.fail += k.fail || 0; a.total += k.total || 0; return a; }, { pass: 0, fail: 0, total: 0 });
+    const assessed = crit.pass + crit.fail;
+    const assessedLine = crit.total === 0
+      ? 'No claim on this page has a check to assess.'
+      : assessed === 0
+        ? `None of its ${crit.total} checks has a recorded observation yet, so no claim on this page has been tested against its evidence.`
+        : `${assessed} of its ${crit.total} checks have a recorded observation (${crit.pass} passed, ${crit.fail} failed); the rest are not yet assessed.`;
     const gl = (obj, keys) => `<dl class="gloss">${keys.map(k => `<dt>${esc(STATUS_LABEL[k] || k)}</dt><dd>${esc(obj[k] || '')}</dd>`).join('')}</dl>`;
     $('#view-about').innerHTML = `<div class="about">
       <p class="lead">${esc(G.claim)}</p>
-      <p>This page is the current evidence record for <strong>${esc(PROJECT)}</strong>: ${CLAIMS.length} claims, checked against ${nOr} independent references, covering ${nSub} subsystems and ${nCap} capabilities. It was generated by the EVIDENT trust engine (<code>typed-trust</code>) from the project's claim manifest — nothing on it is written by hand, and no model was involved in computing any status.</p>
+      <p>This page is the current evidence record for <strong>${esc(PROJECT)}</strong>: ${CLAIMS.length} claims, naming ${nOr} oracles and covering ${nSub} subsystems and ${nCap} capabilities. ${esc(assessedLine)} It was generated by the EVIDENT trust engine (<code>typed-trust</code>) from the project's claim manifest — nothing on it is written by hand, and no model was involved in computing any status.</p>
       <h2>How to read it in four steps</h2>
       <ol class="journey">
         <li><strong>See where evidence is thick and where it is thin.</strong> Open <a href="#" data-go="matrix">Coverage</a>: rows are subsystems, columns are tiers. An empty <em>release</em> cell means that part of the code has no release-grade evidence yet — that is a finding, not a bug in the page.</li>
@@ -634,7 +644,7 @@ const SITE_JS: &str = r##"
       <div class="card"><strong>Checks (criteria)</strong> — ${esc(G.criteria)}</div>
       <div class="card"><strong>Last verified</strong> — ${esc(G.verified)}</div>
       <h2>Where this comes from</h2>
-      <p>The project keeps its claims in a manifest (<code>${esc(DATA.manifest_path)}</code>). Every claim there carries a trust strategy, an oracle, a structured tolerance, a reproducible command, an artifact, assumptions and failure modes; a validator refuses prose-only tolerances above research tier. The trust engine turns each measurement claim into a report and records <em>how</em> each value was established — run by a procedure, judged by a person, or sought and not found — so a fact and an interpretation can never be confused. The engine itself is deterministic; a model never decides whether a claim holds.</p>
+      <p>The project keeps its claims in a manifest (<code>${esc(DATA.manifest_path)}</code>). Every claim there carries a trust strategy, its evidence, assumptions and failure modes; measurement claims also name an oracle and structured tolerances, and a validator refuses prose-only tolerances above research tier. The trust engine turns each measurement claim into a report and records <em>how</em> each value was established — run by a procedure, judged by a person, or sought and not found — so a fact and an interpretation can never be confused. The engine itself is deterministic; a model never decides whether a claim holds.</p>
       <p>What this page cannot tell you: whether a tolerance is scientifically meaningful, or whether an oracle is right. It makes those choices visible so they can be argued about.</p>
       <p><a href="#" data-go="table">Go to the claims →</a></p>
     </div>`;
@@ -776,11 +786,11 @@ const SITE_JS: &str = r##"
         ${c.command ? `<dt>Command</dt><dd><code>${esc(c.command)}</code></dd>` : ''}
         ${c.case ? `<dt>Case notes</dt><dd><code>${esc(c.case)}</code></dd>` : ''}
         ${c.pattern ? `<dt>Pattern</dt><dd><code>${esc(c.pattern)}</code></dd>` : ''}
-        <dt title="${esc(G.verified)}">Last verified${qbtn('verified', 'last verified')}</dt><dd>${lv.date ? `${esc(lv.date)}${lv.commit ? ` @ <code>${esc(lv.commit)}</code>` : ''}${lv.value != null ? ` · observed ${esc(lv.value)}` : ''}` : '<em>no observation recorded in the manifest</em>'}</dd>
+        <dt title="${esc(G.verified)}">Last verified${qbtn('verified', 'last verified')}</dt><dd>${lv.date ? `${esc(lv.date)}${lv.commit ? ` @ <code>${esc(lv.commit)}</code>` : ''}${lv.value != null ? ` · observed ${esc(lv.value)}` : ''}${Object.entries(lv.values || {}).map(([k, v]) => ` · ${esc(k)} ${esc(v)}`).join('')}${lv.value == null && !Object.keys(lv.values || {}).length ? ' · <em>no value recorded</em>' : ''}` : '<em>no observation recorded in the manifest</em>'}</dd>
         <dt>Assumptions / failure modes</dt><dd>${c.n_assumptions} / ${c.n_failure_modes} recorded in the manifest</dd>
         <dt>Source</dt><dd><code>${esc(c.source_path)}</code></dd>
       </dl>`;
-    if (DATA.fragments[c.id]) html += `<div class="section-help"><strong>Below: the trust report</strong> computed by the engine. Each tolerance is one criterion; <em>Not assessed</em> means the check is defined but no observed value was available when this page was built. The attestation graph shows how the claim, its evidence and each criterion are linked.</div>${DATA.fragments[c.id]}`;
+    if (DATA.fragments[c.id]) html += `<div class="section-help"><strong>Below: the trust report</strong> computed by the engine. Each tolerance is one criterion; <em>Not assessed</em> means the check is defined but has no dated observed value in the evidence this page was built from, or is a prose-only tolerance, which cannot be assessed. The attestation graph shows how the claim, its evidence and each criterion are linked.</div>${DATA.fragments[c.id]}`;
     else if (c.skip_reason) html += `<div class="section-help"><strong>No trust report.</strong> ${esc(G.status[c.status] || '')} <span style="color:#6c757d">(${esc(c.skip_reason)})</span></div>`;
     const body = $('#drawer-body'); body.innerHTML = html; body.scrollTop = 0;
     body.querySelectorAll('.rel a').forEach(a => a.addEventListener('click', e => { e.preventDefault(); state.sel[a.dataset.facet] = new Set([a.dataset.val]); closeDetail(); setView('table'); update(); }));

@@ -674,7 +674,8 @@ fn emit_site(
                     cw.claim.id.clone(),
                     serde_json::json!({
                         "commit": lv.commit, "date": lv.date,
-                        "value": lv.value, "corpus_sha": lv.corpus_sha,
+                        "value": lv.value, "values": lv.values,
+                        "corpus_sha": lv.corpus_sha,
                     }),
                 )
             })
@@ -724,8 +725,8 @@ fn html_escape(s: &str) -> String {
 
 /// Load a sidecar JSON file mapping claim-id → ManifestLastVerified.
 /// The shape matches `evident-agent replay`'s `last_verified.json`
-/// convention: each entry has `commit`, `date`, `value`, `corpus_sha`
-/// fields, all optional / nullable.
+/// convention: each entry has `commit`, `date`, `value`, `values` (per
+/// tolerance output) and `corpus_sha` fields, all optional / nullable.
 fn load_sidecar(path: &str) -> Result<HashMap<String, ManifestLastVerified>, String> {
     let bytes = fs::read_to_string(path)
         .map_err(|e| format!("error reading sidecar {path}: {e}"))?;
