@@ -20,7 +20,7 @@ import datetime
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterator, List, Optional
+from typing import Callable, Dict, Iterator, List, Optional
 
 from . import docker, manifest, scoring, sidecar, typed_trust
 
@@ -104,6 +104,8 @@ class ReplayClaimResult:
     # completed | timed_out | infrastructure_error | skipped | dry_run
     outcome: str
     stderr_tail: Optional[str] = None
+    # Observed value per tolerance output (empty when none was extracted).
+    observed_values: Dict[str, float] = field(default_factory=dict)
 
     @property
     def skipped_execution(self) -> bool:
@@ -246,31 +248,51 @@ def run_replay(
             )
             continue
 
-        # Stage 2: extract observed value
-        observed = scoring.extract_primary_observation(claim.raw, resolved_source)
-        if observed is not None:
-            emit(f"  observed: {observed}")
-        else:
-            emit("  observed: (not extracted)")
+        # Stage 2: extract observed values
+        obs = scoring.extract_observations(claim.raw, resolved_source)
+        if obs.value is not None:
+            emit(f"  observed: {obs.value}")
+        for output, v in obs.values.items():
+            emit(f"  observed {output}: {v}")
+        if obs.ignored:
+            emit(
+                "  ignored (not the output of exactly one structured tolerance): "
+                + ", ".join(obs.ignored),
+                err=True,
+            )
+        result_row = ReplayClaimResult(
+            claim_id=claim.id,
+            exit_code=exit_code,
+            duration_s=duration_s,
+            observed=obs.value,
+            outcome=outcome,
+            stderr_tail=stderr_tail,
+            observed_values=dict(obs.values),
+        )
+        claim_results.append(result_row)
 
-        # Stage 3: stage sidecar entry
+        # A successful run that yields nothing is not an observation:
+        # keep the previous entry rather than overwrite it with an empty
+        # one stamped today, which would read as a fresh re-run.
+        if exit_code == 0 and not obs:
+            emit("  observed: (not extracted) — previous sidecar entry kept")
+            continue
+        # typed-trust rejects an entry whose value and values disagree, and
+        # would drop the whole claim; do not write one.
+        if exit_code == 0 and obs.conflict:
+            emit(f"  conflict: {obs.conflict} — previous sidecar entry kept", err=True)
+            continue
+
+        # Stage 3: stage sidecar entry. A failed run records the attempt
+        # with no values, so a stale pass does not survive it.
         entry = sidecar.LastVerifiedEntry(
             commit=_resolve_commit(resolved_source),
             date=today,
-            value=observed if exit_code == 0 else None,
+            value=obs.value if exit_code == 0 else None,
+            values=(dict(obs.values) or None) if exit_code == 0 else None,
             corpus_sha=claim.raw.get("inputs", {}).get("corpus_sha"),
         )
         new_entries[claim.id] = entry
-        claim_results.append(
-            ReplayClaimResult(
-                claim_id=claim.id,
-                exit_code=exit_code,
-                duration_s=duration_s,
-                observed=observed,
-                outcome=outcome,
-                stderr_tail=stderr_tail,
-            )
-        )
 
     written_path: Optional[Path] = None
     if dry_run:

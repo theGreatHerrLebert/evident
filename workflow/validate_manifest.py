@@ -498,6 +498,8 @@ def validate_last_verified(
     *,
     tier: str | None = None,
     strict_release_pins: bool = False,
+    outputs: list[str] | None = None,
+    first_output: str | None = None,
 ) -> None:
     if not isinstance(value, dict):
         fail(f"claim {claim_id}: last_verified must be a mapping")
@@ -509,8 +511,48 @@ def validate_last_verified(
                 value[key], bool
             ):
                 fail(f"claim {claim_id}: last_verified.value must be numeric or null")
+            if not math.isfinite(value[key]):
+                fail(f"claim {claim_id}: last_verified.value must be finite")
         elif not isinstance(value[key], str):
             fail(f"claim {claim_id}: last_verified.{key} must be a string or null")
+    values = value.get("values")
+    if values is not None:
+        # One observation per tolerance, keyed by its `output`; the trust
+        # engine binds each to that tolerance's criterion.
+        if not isinstance(values, dict):
+            fail(f"claim {claim_id}: last_verified.values must be a mapping")
+        declared = outputs or []
+        for key, observed in values.items():
+            if key not in declared:
+                fail(
+                    f"claim {claim_id}: last_verified.values names {key!r}, "
+                    f"which no tolerance declares as its output"
+                )
+            if declared.count(key) > 1:
+                fail(
+                    f"claim {claim_id}: last_verified.values names {key!r}, "
+                    f"which several tolerances declare"
+                )
+            if (
+                not isinstance(observed, (int, float))
+                or isinstance(observed, bool)
+                or not math.isfinite(observed)
+            ):
+                fail(
+                    f"claim {claim_id}: last_verified.values[{key!r}] must be "
+                    f"a finite number"
+                )
+        primary = value.get("value")
+        if (
+            primary is not None
+            and first_output in values
+            and values[first_output] != primary
+        ):
+            fail(
+                f"claim {claim_id}: last_verified.value and "
+                f"last_verified.values[{first_output!r}] disagree about the "
+                f"first tolerance"
+            )
     if strict_release_pins and tier == "release":
         for key in ("commit", "corpus_sha"):
             if key not in value or value[key] is None:
@@ -906,6 +948,25 @@ def validate_manifest(path: pathlib.Path, *, strict_release_pins: bool = False) 
                 claim_id,
                 tier=claim["tier"],
                 strict_release_pins=strict_release_pins,
+                # Only structured tolerances become criteria; a prose-only
+                # tolerance's output (null fields count as absent, as in
+                # typed-trust) cannot carry an observation.
+                outputs=[
+                    t.get("output")
+                    for t in claim.get("tolerances") or []
+                    if isinstance(t, dict)
+                    and t.get("output")
+                    and all(t.get(k) is not None for k in ("metric", "op", "value"))
+                ],
+                first_output=next(
+                    (
+                        t.get("output")
+                        for t in (claim.get("tolerances") or [])[:1]
+                        if isinstance(t, dict)
+                        and all(t.get(k) is not None for k in ("metric", "op", "value"))
+                    ),
+                    None,
+                ),
             )
         validate_provenance_and_reviewers(claim, claim_id)
 
