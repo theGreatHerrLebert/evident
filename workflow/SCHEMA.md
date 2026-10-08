@@ -97,7 +97,7 @@ silently mis-match.
 | `observation`     | yes⁵     | object | Paper-self third-party tool observation block for `kind: third_party_observation` |
 | `provenance`      | no       | enum/object | `automatic` (default), `human`, `peer-reviewed`, extractor provenance, or structured provenance (see below) |
 | `reviewers`       | no⁶      | list   | Named reviewers backing a `peer-reviewed` claim |
-| `last_verified`   | no       | object | `{commit, date, value, corpus_sha}` — staleness signal |
+| `last_verified`   | no       | object | `{commit, date, value, values, corpus_sha}` — staleness signal and observed values |
 | `assumptions`     | yes      | list   | Prose strings |
 | `failure_modes`   | yes      | list   | Prose strings |
 
@@ -357,8 +357,18 @@ last_verified:
   commit: 47fe1ab                # source SHA where the claim last passed
   date: 2026-04-13               # ISO date, always absolute
   value: 0.0017                  # primary observed metric, if scalar
+  values:                        # observed value per tolerance, by `output`
+    total_sasa: 0.0017
   corpus_sha: <sha>              # corpus version, if applicable
 ```
+
+`value` binds to the first tolerance only. To have every tolerance
+assessed, record `values`: each key must be the `output` of exactly one
+tolerance on the claim, and each value a finite number. A tolerance with
+no `output` can only be assessed through `value`, and only if it comes
+first. When `value` and `values` both cover the first tolerance they must
+agree. A `date` with neither records a run but no observation, and every
+criterion stays not assessed.
 
 Populated by the runner that re-executes `evidence.command`. Stays
 optional in the manifest itself; readers should treat `null` as

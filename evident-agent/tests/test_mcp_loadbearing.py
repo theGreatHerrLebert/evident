@@ -141,6 +141,9 @@ def _write_measurement_manifest(tmp_path: Path, claim_ids=("claim-A",)) -> Path:
     body = "version: 0.1\nproject: test\nclaims:\n"
     body += "\n".join(_claim_block(c) for c in claim_ids) + "\n"
     manifest.write_text(body)
+    # The artifact every claim points at, so a --no-execute replay has a
+    # value to record (an empty extraction writes no entry).
+    (tmp_path / "out.json").write_text('{"value": 0.005}')
     return manifest
 
 

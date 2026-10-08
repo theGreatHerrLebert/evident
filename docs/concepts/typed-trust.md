@@ -580,9 +580,6 @@ Listed so the spec does not overstate what the code guarantees.
 - **`reviewed_extraction_sha`** on a `PromoteFromExtracted` event is not
   compared to the claim's `source_sha`; the documented rejection of
   cross-run promotions does not happen.
-- **Multi-tolerance claims** — only the first criterion of a claim is
-  bound to `last_verified.value`; further criteria are permanently
-  `NotAssessed`.
 - **`Target::Criterion` / `Target::CriterionResult`** cannot be produced
   from manifest input; only `claim` and `review_event` targets translate.
 - **Backed challenges** — recursive synthesis of a challenge's backing

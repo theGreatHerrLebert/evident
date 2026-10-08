@@ -425,7 +425,13 @@ impl ManifestProvenance {
 pub struct ManifestLastVerified {
     pub commit: Option<String>,
     pub date: Option<String>,
+    /// The primary observed value; binds to the FIRST criterion.
     pub value: Option<f64>,
+    /// Observed values per criterion, keyed by the tolerance's `output`
+    /// name. Lets a claim with several tolerances have each assessed,
+    /// where `value` alone reaches only the first.
+    #[serde(default)]
+    pub values: Option<std::collections::BTreeMap<String, f64>>,
     pub corpus_sha: Option<String>,
 }
 
@@ -621,6 +627,17 @@ pub enum TranslateError {
     /// behavioral_concordance claim accidentally carries an
     /// `observation` block. Keeps the kinds disjoint.
     NonObservationClaimCarriesObservation { id: String },
+    /// `last_verified.values` names an output that no tolerance of the
+    /// claim declares.
+    LastVerifiedUnknownOutput { id: String, output: String },
+    /// `last_verified.values` names an output that more than one
+    /// tolerance declares, so the value cannot be bound to one criterion.
+    LastVerifiedAmbiguousOutput { id: String, output: String },
+    /// A `last_verified` value is NaN or infinite.
+    LastVerifiedNonFiniteValue { id: String, output: String },
+    /// `last_verified.value` and `last_verified.values` disagree about
+    /// the first criterion.
+    LastVerifiedConflictingValue { id: String, output: String },
     /// PR5f: `concordance.pattern.{enum_field}` carried an unknown
     /// enum value (e.g. `direction: "sideways"`,
     /// `tie_policy: "everything_goes"`, `zero_policy: "ignore"`).
@@ -845,6 +862,27 @@ impl std::fmt::Display for TranslateError {
                 f,
                 "claim {id}: only kind=third_party_observation may carry \
                  an `observation` block"
+            ),
+            TranslateError::LastVerifiedUnknownOutput { id, output } => write!(
+                f,
+                "claim {id}: last_verified.values names output {output:?}, \
+                 which no tolerance declares"
+            ),
+            TranslateError::LastVerifiedAmbiguousOutput { id, output } => write!(
+                f,
+                "claim {id}: last_verified.values names output {output:?}, \
+                 which several tolerances declare; it cannot be bound to one \
+                 criterion"
+            ),
+            TranslateError::LastVerifiedNonFiniteValue { id, output } => write!(
+                f,
+                "claim {id}: last_verified value for {output} must be a \
+                 finite number (no NaN, Inf, -Inf)"
+            ),
+            TranslateError::LastVerifiedConflictingValue { id, output } => write!(
+                f,
+                "claim {id}: last_verified.value and last_verified.values \
+                 give different values for the first criterion ({output})"
             ),
         }
     }
@@ -1557,9 +1595,9 @@ fn translate_tolerance(
 ///   forbids Automated judges, so even `provenance: automatic`
 ///   produces a Human identity flagged via details.
 /// - `last_verified` populates one [`Rerun`] in the Verified extraction
-///   when fully populated; primary observed value binds to the FIRST
-///   criterion id (shipping convention: `last_verified.value` is the
-///   primary scalar metric).
+///   when it has a date and at least one value. `value` binds to the
+///   FIRST criterion; `values` binds each entry to the criterion whose
+///   tolerance declares that `output`.
 pub fn translate_evidence(
     ctx: &TranslationContext,
     mc: &ManifestClaim,
@@ -1589,12 +1627,12 @@ pub fn translate_evidence(
     }
     let provenance_kind = mc.provenance.as_ref().map(|p| p.effective_kind());
     let runner = unspecified_runner_identity(provenance_kind);
-    let first_criterion = criteria.first().map(|c| c.id.clone());
     let reruns = translate_last_verified(
+        &mc.id,
         mc.last_verified.as_ref(),
-        first_criterion.as_ref(),
+        criteria,
         &runner,
-    );
+    )?;
     let (replay_status, replay_reason) = parse_replay_fields(&mc.id, me)?;
 
     Ok(Some(Evidence {
@@ -1703,33 +1741,99 @@ fn parse_replay_fields(
 /// empty vec when:
 /// - `last_verified` is absent;
 /// - `last_verified.date` is null (replay loop hasn't run);
-/// - `last_verified.value` is null (no primary observation).
+/// - neither `value` nor `values` holds an observation.
 ///
-/// When fully populated, returns a single Rerun bound to the FIRST
-/// criterion's id, per the shipping convention that `value` is the
-/// primary scalar metric.
+/// Otherwise returns a single Rerun carrying one observation per
+/// assessed criterion: `values[output]` for the criterion whose
+/// tolerance declares that output, and `value` for the first criterion
+/// (the shipping convention that `value` is the primary scalar metric).
 fn translate_last_verified(
+    claim_id: &str,
     lv: Option<&ManifestLastVerified>,
-    first_criterion: Option<&CriterionId>,
+    criteria: &[TranslatedCriterion],
     runner: &Identity,
-) -> Vec<Rerun> {
+) -> Result<Vec<Rerun>, TranslateError> {
     let Some(lv) = lv else {
-        return vec![];
-    };
-    let (Some(date), Some(value)) = (lv.date.as_ref(), lv.value) else {
-        return vec![];
+        return Ok(vec![]);
     };
 
-    let observed = match first_criterion {
-        Some(crit) => vec![MetricObservation {
-            criterion: crit.clone(),
-            value,
+    let finite = |output: &str, v: f64| {
+        if v.is_finite() {
+            Ok(v)
+        } else {
+            Err(TranslateError::LastVerifiedNonFiniteValue {
+                id: claim_id.into(),
+                output: output.into(),
+            })
+        }
+    };
+
+    // `values`: one observation per named output, each bound to the one
+    // criterion whose tolerance declares that output.
+    let mut observed: Vec<MetricObservation> = Vec::new();
+    for (output, &v) in lv.values.iter().flatten() {
+        let mut matching = criteria.iter().filter(|c| {
+            c.tolerance.as_ref().and_then(|t| t.output.as_deref()) == Some(output.as_str())
+        });
+        let crit = match (matching.next(), matching.next()) {
+            (Some(c), None) => c,
+            (None, _) => {
+                return Err(TranslateError::LastVerifiedUnknownOutput {
+                    id: claim_id.into(),
+                    output: output.clone(),
+                })
+            }
+            (Some(_), Some(_)) => {
+                return Err(TranslateError::LastVerifiedAmbiguousOutput {
+                    id: claim_id.into(),
+                    output: output.clone(),
+                })
+            }
+        };
+        observed.push(MetricObservation {
+            criterion: crit.id.clone(),
+            value: finite(output, v)?,
             unit: None,
-        }],
-        None => vec![],
-    };
+        });
+    }
 
-    vec![Rerun {
+    // `value`: the primary observation, bound to the first criterion
+    // unless `values` already covers it (and then they must agree).
+    if let (Some(v), Some(first)) = (lv.value, criteria.first()) {
+        let label = first
+            .tolerance
+            .as_ref()
+            .and_then(|t| t.output.clone())
+            .unwrap_or_else(|| first.id.as_str().to_string());
+        let v = finite(&label, v)?;
+        match observed.iter().find(|o| o.criterion == first.id) {
+            Some(o) if o.value != v => {
+                return Err(TranslateError::LastVerifiedConflictingValue {
+                    id: claim_id.into(),
+                    output: label,
+                })
+            }
+            Some(_) => {}
+            None => observed.insert(
+                0,
+                MetricObservation {
+                    criterion: first.id.clone(),
+                    value: v,
+                    unit: None,
+                },
+            ),
+        }
+    }
+
+    // Checked above even without a date, so a malformed entry is reported
+    // the same way the manifest validator reports it.
+    let Some(date) = lv.date.as_ref() else {
+        return Ok(vec![]);
+    };
+    if observed.is_empty() {
+        return Ok(vec![]);
+    }
+    Ok(vec![Rerun {
         at: date.clone(),
         by: runner.clone(),
         observed,
@@ -1737,7 +1841,7 @@ fn translate_last_verified(
         // Shipping convention: a populated last_verified records a
         // PASSING re-run; divergence wouldn't update the manifest.
         outcome: ReproductionOutcome::Matched,
-    }]
+    }])
 }
 
 fn unspecified_runner_identity(provenance: Option<&str>) -> Identity {

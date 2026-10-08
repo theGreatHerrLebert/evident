@@ -9,11 +9,14 @@ Format (shared with typed-trust's ``--last-verified-sidecar``):
         "commit": "...",
         "date": "YYYY-MM-DD",
         "value": 0.0017,
+        "values": {"total_sasa": 0.0017, "false_positives": 0},
         "corpus_sha": "..."
       }
     }
 
-All four fields are optional / nullable. Missing or null fields are
+All fields are optional / nullable. ``value`` is the primary observation
+(the first criterion); ``values`` holds one observation per tolerance,
+keyed by the tolerance's ``output`` name. Missing or null fields are
 preserved when re-reading. Writes merge with any existing sidecar so
 a partial agent run (one claim at a time) accumulates without
 clobbering prior entries.
@@ -32,12 +35,15 @@ class LastVerifiedEntry:
     """Mirrors typed-trust's ``ManifestLastVerified``.
 
     All fields are optional. ``value`` carries the primary observed
-    metric (typed-trust binds this to the first criterion).
+    metric (typed-trust binds this to the first criterion); ``values``
+    maps tolerance ``output`` names to their observed values, so every
+    criterion can be assessed.
     """
 
     commit: Optional[str] = None
     date: Optional[str] = None
     value: Optional[float] = None
+    values: Optional[Dict[str, float]] = None
     corpus_sha: Optional[str] = None
 
     def to_dict(self) -> dict:
@@ -73,6 +79,7 @@ def read(path: Path) -> Dict[str, LastVerifiedEntry]:
             commit=entry.get("commit"),
             date=entry.get("date"),
             value=entry.get("value"),
+            values=entry.get("values"),
             corpus_sha=entry.get("corpus_sha"),
         )
     return out

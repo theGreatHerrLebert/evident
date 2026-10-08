@@ -2321,3 +2321,172 @@ claims:
         "expected image digest in render"
     );
 }
+
+// ----------------------------------------------------------------------
+// Per-criterion observations: `last_verified.values`, keyed by output.
+// ----------------------------------------------------------------------
+
+/// A three-tolerance claim; `last_verified` is spliced in verbatim.
+fn multi_criterion_yaml(last_verified: &str) -> String {
+    format!(
+        r#"
+claims:
+  - id: multi
+    title: Three checks on one run
+    kind: measurement
+    subsystem: sasa
+    case: claims/multi.md
+    source: ..
+    tier: release
+    trust_strategy:
+      - validation
+    claim: Three properties of one run hold.
+    tolerances:
+      - metric: median_relative_error
+        op: "<"
+        value: 0.005
+        output: total_sasa
+        prose: error below half a percent
+      - metric: count
+        op: "=="
+        value: 0
+        output: false_positives
+        prose: no false positives
+      - metric: recall
+        op: ">="
+        value: 0.75
+        output: direction_correct
+        prose: three quarters in the right direction
+    evidence:
+      oracle:
+        - Biopython
+      command: python run.py
+      artifact: results.json
+    provenance: human
+{last_verified}
+    assumptions:
+      - none
+    failure_modes:
+      - none
+"#
+    )
+}
+
+fn results_for(last_verified: &str) -> Vec<CriterionResult> {
+    let (claim, criteria, evidence) = translate_to_pieces(&multi_criterion_yaml(last_verified));
+    let report = synthesize(
+        claim.id,
+        criteria,
+        &[evidence],
+        &[],
+        &[],
+        &std::collections::HashSet::new(),
+        "2026-06-01T00:00:00Z".into(),
+    );
+    report.criteria.into_iter().map(|c| c.result.value).collect()
+}
+
+#[test]
+fn values_assess_every_named_criterion() {
+    let r = results_for(
+        "    last_verified:\n      date: \"2026-05-11\"\n      values:\n        total_sasa: 0.001\n        false_positives: 2\n        direction_correct: 0.9",
+    );
+    assert_eq!(r[0], CriterionResult::Pass);
+    assert_eq!(r[1], CriterionResult::Fail);
+    assert_eq!(r[2], CriterionResult::Pass);
+}
+
+#[test]
+fn value_alone_still_reaches_only_the_first_criterion() {
+    let r = results_for("    last_verified:\n      date: \"2026-05-11\"\n      value: 0.001");
+    assert_eq!(r[0], CriterionResult::Pass);
+    assert!(matches!(r[1], CriterionResult::NotAssessed { .. }), "got {:?}", r[1]);
+    assert!(matches!(r[2], CriterionResult::NotAssessed { .. }), "got {:?}", r[2]);
+}
+
+#[test]
+fn values_may_cover_a_subset_and_combine_with_value() {
+    let r = results_for(
+        "    last_verified:\n      date: \"2026-05-11\"\n      value: 0.001\n      values:\n        direction_correct: 0.5",
+    );
+    assert_eq!(r[0], CriterionResult::Pass);
+    assert!(matches!(r[1], CriterionResult::NotAssessed { .. }), "got {:?}", r[1]);
+    assert_eq!(r[2], CriterionResult::Fail);
+}
+
+#[test]
+fn values_without_a_date_are_not_an_observation() {
+    let r = results_for("    last_verified:\n      values:\n        total_sasa: 0.001");
+    assert!(r.iter().all(|x| matches!(x, CriterionResult::NotAssessed { .. })), "got {r:?}");
+}
+
+fn translate_error(last_verified: &str) -> String {
+    let manifest = parse_manifest_file(&multi_criterion_yaml(last_verified)).unwrap();
+    let mc = &manifest.claims[0];
+    let criteria = translate_tolerances(mc).unwrap();
+    translate_evidence(&ctx(), mc, &criteria).unwrap_err().to_string()
+}
+
+#[test]
+fn values_reject_an_output_no_tolerance_declares() {
+    let e = translate_error("    last_verified:\n      date: \"2026-05-11\"\n      values:\n        total_sasaa: 0.001");
+    assert!(e.contains("total_sasaa") && e.contains("no tolerance"), "{e}");
+}
+
+#[test]
+fn values_reject_disagreement_with_value() {
+    let e = translate_error(
+        "    last_verified:\n      date: \"2026-05-11\"\n      value: 0.001\n      values:\n        total_sasa: 0.002",
+    );
+    assert!(e.contains("different values") && e.contains("total_sasa"), "{e}");
+}
+
+#[test]
+fn values_accept_agreement_with_value() {
+    let r = results_for(
+        "    last_verified:\n      date: \"2026-05-11\"\n      value: 0.001\n      values:\n        total_sasa: 0.001",
+    );
+    assert_eq!(r[0], CriterionResult::Pass);
+}
+
+#[test]
+fn values_reject_non_finite() {
+    let e = translate_error("    last_verified:\n      date: \"2026-05-11\"\n      values:\n        total_sasa: .nan");
+    assert!(e.contains("finite"), "{e}");
+}
+
+#[test]
+fn values_reject_an_output_two_tolerances_declare() {
+    let yaml = multi_criterion_yaml("    last_verified:\n      date: \"2026-05-11\"\n      values:\n        total_sasa: 0.001")
+        .replace("output: false_positives", "output: total_sasa");
+    let manifest = parse_manifest_file(&yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let criteria = translate_tolerances(mc).unwrap();
+    let e = translate_evidence(&ctx(), mc, &criteria).unwrap_err().to_string();
+    assert!(e.contains("several tolerances"), "{e}");
+}
+
+#[test]
+fn values_are_checked_even_without_a_date() {
+    // Same rule as workflow/validate_manifest.py, which checks values
+    // whether or not the entry is dated.
+    let e = translate_error("    last_verified:\n      values:\n        total_sasaa: 0.001");
+    assert!(e.contains("total_sasaa") && e.contains("no tolerance"), "{e}");
+}
+
+#[test]
+fn values_cannot_name_a_prose_only_tolerance() {
+    // A prose-only tolerance (research tier) translates to no structured
+    // tolerance, so its output cannot carry an observation.
+    let yaml = multi_criterion_yaml("    last_verified:\n      date: \"2026-05-11\"\n      values:\n        direction_correct: 0.9")
+        .replace("tier: release", "tier: research")
+        .replace(
+            "      - metric: recall\n        op: \">=\"\n        value: 0.75\n        output: direction_correct",
+            "      - output: direction_correct",
+        );
+    let manifest = parse_manifest_file(&yaml).unwrap();
+    let mc = &manifest.claims[0];
+    let criteria = translate_tolerances(mc).unwrap();
+    let e = translate_evidence(&ctx(), mc, &criteria).unwrap_err().to_string();
+    assert!(e.contains("direction_correct") && e.contains("no tolerance"), "{e}");
+}

@@ -328,6 +328,7 @@ def _replay(state: ServerState, args: dict) -> dict:
                 "exit_code": c.exit_code,
                 "duration_s": c.duration_s,
                 "observed": c.observed,
+                "observed_values": c.observed_values,
                 "skipped_execution": c.skipped_execution,
                 "outcome": c.outcome,
             }
